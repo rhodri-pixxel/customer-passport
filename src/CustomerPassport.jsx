@@ -1354,21 +1354,33 @@ function Passport({ deal, onBack, canEdit, onUpdate, onAssign, onNotifyAll, onPo
             const short = ROLE_SHORT[role];
             const name = deal.owners[role];
             const label = ROLE_LABEL[role];
+            const isOwnerRole = role === "owner";
+            const editable = canEdit && !isOwnerRole;
             return (
               <div className="owner-slot" key={role}>
                 <OwnerAvatar name={name} role={short} />
                 <div className="meta">
-                  <div className="role-tag">{label}</div>
-                  {name
-                    ? <div className="nm">{name}</div>
-                    : (canEdit
+                  <div className="role-tag">{label}{isOwnerRole && <span style={{fontSize:10,color:"var(--muted2)",marginLeft:4}}>via HubSpot</span>}</div>
+                  {name ? (
+                    <div style={{display:"flex",alignItems:"center",gap:4}}>
+                      <div
+                        className="nm"
+                        style={editable ? {cursor:"pointer",textDecoration:"underline dotted",textUnderlineOffset:3} : {}}
+                        onClick={editable ? () => setAssignOpen(assignOpen === role ? null : role) : undefined}
+                        title={editable ? "Click to reassign" : undefined}
+                      >{name}</div>
+                      {editable && <button onClick={() => assign(role, null)} style={{fontSize:11,color:"var(--muted2)",lineHeight:1,padding:"0 2px"}} title="Clear assignment">✕</button>}
+                    </div>
+                  ) : (
+                    editable
                       ? <button className="assign" onClick={() => setAssignOpen(assignOpen === role ? null : role)}>+ Assign owner</button>
-                      : <div className="nm" style={{ color: "var(--muted2)" }}>Unassigned</div>)}
+                      : <div className="nm" style={{ color: "var(--muted2)" }}>Unassigned</div>
+                  )}
                 </div>
-                {assignOpen === role && (
+                {assignOpen === role && editable && (
                   <div className="assign-menu">
                     {TEAM[role].map(p => (
-                      <button key={p} onClick={() => assign(role, p)}>{p}</button>
+                      <button key={p} onClick={() => assign(role, p)} style={p === name ? {fontWeight:600,color:"var(--accent)"} : {}}>{p}{p === name ? " ✓" : ""}</button>
                     ))}
                   </div>
                 )}
@@ -2758,6 +2770,12 @@ export default function App() {
     const deal = deals.find(d => d.id === passportId) || passportData?.passport;
     try {
       await assignOwner(passportId, r, name);
+      if (!name) {
+        // Clearing an assignment — no Slack notification, just refresh
+        toast(`${ROLE_LABEL[r]} assignment cleared`);
+        refreshDetail();
+        return;
+      }
       // Push in-app notification
       setNotifs(ns => [{
         id: Math.random(), person: name, email: emailFor(name),
