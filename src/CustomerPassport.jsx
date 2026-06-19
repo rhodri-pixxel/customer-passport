@@ -484,16 +484,72 @@ const STAGES = ["Discovery", "Technical Qualification", "Solution Validation", "
 //    in Lovable, then paste the URL). Empty string falls back to the wordmark. ──
 const PIXXEL_LOGO_URL = "";
 
-const TEAM = {
-  director: ["Anita Desai", "Greg Powell", "Sofia Marchetti"],
-  se: ["Ravi Menon", "Lena Hofer", "Tom Castellano", "Nadia Farouk"],
-  cs: ["Priya Shah", "Marcus Webb", "Dana Cole", "Owen Brady"],
-  analytics: ["Yuki Tanaka", "Sam Okoro", "Elise Berg", "Hiro Nakamura"],
+// ── Real Pixxel roster, grouped by team ──────────────────────
+// Source: HubSpot users export (active only). Each person has a clean
+// display name, email (matches HubSpot + Gmail), and Slack ID where known.
+// "owner" = Sales Owner (the HubSpot deal owner). SE / CS / Analytics
+// are assigned manually and only members of that team are pickable.
+const TEAM_MEMBERS = {
+  owner: [
+    { name: "Alex Koh Hock Poh", email: "alex@pixxel.space", slack: "U08Q0722W82" },
+    { name: "Allyson Jenkins", email: "allyson@pixxel.space", slack: "U085JVDKCMR" },
+    { name: "Anjul Garg", email: "anjul@pixxel.co.in", slack: "U03DEGHSEM6" },
+    { name: "Ashay Deo", email: "ashay@pixxel.co.in", slack: "U078BTL1TJT" },
+    { name: "Awais Ahmed", email: "awais@pixxel.co.in", slack: null },
+    { name: "Caio Miranda", email: "caio@pixxel.space", slack: "U0983ARJA5U" },
+    { name: "Gp Capt Debashish Sengupta (Retd)", email: "debashish@pixxel.co.in", slack: "U06UHEYB65U" },
+    { name: "Jimmy Greco", email: "jimmy@pixxel.space", slack: "U057D8LTT6K" },
+    { name: "Karan Mali", email: "karan@pixxel.co.in", slack: "U07FE2KPZBR" },
+    { name: "Markus Heynen", email: "markus@pixxel.space", slack: "U03MLS656U9" },
+    { name: "Mauricio Meira", email: "mauricio@pixxel.space", slack: "U08NXMHA1NJ" },
+    { name: "Ryan McKinney", email: "ryan.mckinney@pixxel.space", slack: "U0ACVKZ837T" },
+    { name: "Shantanu Thada", email: "shantanu@pixxel.co.in", slack: "U05T154T9L5" },
+    { name: "Shridutta Banerjee", email: "shridutta.banerjee@pixxel.co.in", slack: "U027F7R2EQ3" },
+    { name: "Usha Simhadri", email: "usha@pixxel.co.in", slack: "U03EAV4FZSB" },
+  ],
+  se: [
+    { name: "Amy Zammit", email: "amy@pixxel.space", slack: "U050FJYSEUU" },
+    { name: "Megan Gallagher", email: "megan@pixxel.space", slack: "U056T9UE23V" },
+    { name: "Rhodri Phillips", email: "rhodri@pixxel.space", slack: "U092KJ4AKPC" },
+    { name: "Ryan Hammock", email: "ryan@pixxel.space", slack: "U057QQ2BA8J" },
+    { name: "Spencer Wahrman", email: "spencer@pixxel.space", slack: "U07RWUTR22X" },
+    { name: "Terence Yuchen Xie", email: "terence@pixxel.space", slack: "U0B8T6ZSL7N" },
+  ],
+  cs: [
+    { name: "Aditya Chintalapati", email: "aditya@pixxel.co.in", slack: "U03MA603292" },
+    { name: "Ananya Banerjee", email: "ananya.banerjee@pixxel.co.in", slack: "U0A3M8TLWVD" },
+    { name: "Bandi Jay", email: "jaya.bandi@pixxel.co.in", slack: "U09UQH43Z5E" },
+    { name: "Megha Devaraju", email: "megha@pixxel.co.in", slack: "U07N71LAVU0" },
+    { name: "Meghana Shetty", email: "meghana.shetty@pixxel.co.in", slack: "U0A10SR26JX" },
+    { name: "Shubhavi P", email: "shubhavi@pixxel.co.in", slack: "U053Z522G20" },
+  ],
+  analytics: [
+    { name: "Jeremy Kravitz", email: "jeremy@pixxel.space", slack: "U064U233N2V" },
+    { name: "Subash Yeggina", email: "subash@pixxel.co.in", slack: "U01TK168BKR" },
+  ],
 };
-const ROLE_LABEL = { director: "Sales Director", se: "Sales Engineering", cs: "Customer Success", analytics: "Analytics" };
-const ROLE_SHORT = { director: "dir", se: "se", cs: "cs", analytics: "an" };
-const ORDER = ["director", "se", "cs", "analytics"];
-const emailFor = (n) => n ? n.toLowerCase().replace(/[^a-z ]/g, "").trim().split(/\s+/).join(".") + "@pixxel.space" : "";
+
+// Name-only arrays for dropdowns (role-restricted)
+const TEAM = {
+  owner: TEAM_MEMBERS.owner.map(p => p.name),
+  se: TEAM_MEMBERS.se.map(p => p.name),
+  cs: TEAM_MEMBERS.cs.map(p => p.name),
+  analytics: TEAM_MEMBERS.analytics.map(p => p.name),
+};
+
+// Flat lookup: name -> {email, slack}, and email -> name (for HubSpot matching)
+const PERSON_BY_NAME = {};
+const NAME_BY_EMAIL = {};
+Object.values(TEAM_MEMBERS).flat().forEach(p => {
+  PERSON_BY_NAME[p.name] = p;
+  if (p.email) NAME_BY_EMAIL[p.email.toLowerCase()] = p.name;
+});
+
+const ROLE_LABEL = { owner: "Sales Owner", se: "Sales Engineering", cs: "Customer Success", analytics: "Analytics" };
+const ROLE_SHORT = { owner: "dir", se: "se", cs: "cs", analytics: "an" };
+const ORDER = ["owner", "se", "cs", "analytics"];
+const emailFor = (n) => PERSON_BY_NAME[n] ? PERSON_BY_NAME[n].email : "";
+const slackFor = (n) => PERSON_BY_NAME[n] ? PERSON_BY_NAME[n].slack : null;
 // kept for existing references
 const SES = TEAM.se, CSS_OWN = TEAM.cs, ANS = TEAM.analytics;
 
@@ -504,15 +560,7 @@ const SES = TEAM.se, CSS_OWN = TEAM.cs, ANS = TEAM.analytics;
 // Create these in Slack — the IDs below are placeholders until they exist;
 // once created, paste the real channel IDs from Slack's channel settings.
 const SLACK_CHANNELS = [
-  { id: "CS_SE_ID",          name: "#cs-se",           label: "#cs-se (default)" },
-  { id: "ANALYTICS_ID",      name: "#analytics",       label: "#analytics" },
-  { id: "SE_REQUESTS_ID",    name: "#se-requests",     label: "#se-requests" },
-  { id: "CS_EMEA_ID",        name: "#cs-emea",         label: "#cs-emea" },
-  { id: "CUSTOMERSUCCESS_ID",name: "#customersuccess", label: "#customersuccess" },
-  { id: "APAC_SALES_CS_ID",  name: "#apac-sales-cs",   label: "#apac-sales-cs" },
-  // Existing live channels (fallback until above are created)
-  { id: "CANKSQ2H5",         name: "#general",         label: "#general (live)" },
-  { id: "C04AK2W77BQ",       name: "#space-main",      label: "#space-main (live)" },
+  { id: "C0BB1DC6LNB", name: "#customer-passport", label: "#customer-passport" },
 ];
 const DEFAULT_CHANNEL = SLACK_CHANNELS[0];
 
@@ -556,7 +604,7 @@ function fmtSlackDealSummary(deal, score) {
   return `:earth_americas: *Deal Update — ${deal.company}* (${deal.id})\n\n` +
     `*Stage:* ${STAGES[deal.stage]}   *ACV:* ${deal.amount ? "$" + (deal.amount / 1000).toFixed(0) + "k" : "TBD"}   *Readiness:* ${score}%\n\n` +
     `*Owners:*\n` +
-    (o.director ? `• Sales Director: ${o.director}\n` : "") +
+    (o.owner ? `• Sales Owner: ${o.owner}\n` : "") +
     (o.se ? `• Sales Engineering: ${o.se}\n` : "") +
     (o.cs ? `• Customer Success: ${o.cs}\n` : "") +
     (o.analytics ? `• Analytics: ${o.analytics}\n` : "") +
@@ -1174,8 +1222,8 @@ function DealList({ deals, onOpen }) {
           <select value={person} onChange={e => setPerson(e.target.value)}>
             <option value="all">All team members</option>
             {ORDER.map(role => (
-              <optgroup key={role} label={ROLE_LABEL[role] + (role === "director" ? "s" : role === "analytics" ? " team" : "s")}>
-                {TEAM[role].map(p => <option key={role + p} value={p}>{p}</option>)}
+              <optgroup key={role} label={ROLE_LABEL[role] + (role === "owner" ? "s" : role === "analytics" ? " team" : "s")}>
+                {(TEAM[role] || []).map(p => <option key={role + p} value={p}>{p}</option>)}
               </optgroup>
             ))}
           </select>
@@ -2118,11 +2166,6 @@ async function sbPatch(table, id, body) {
 }
 
 const CORE_PIPELINES_LIST = [
-  "EAP Private Sector",
-  "EAP (ROW)",
-  "Bespoke Analytics (EMEA & APAC)",
-  "Public Sector (USA)",
-  "Public Sector (India)",
   "Global Commercial Pipeline",
 ];
 
@@ -2235,13 +2278,6 @@ const PIPE_COLORS = {
   "Other": "#929BAB",
 };
 
-// All real SE owners from HubSpot data
-const REAL_SE_OWNERS = [
-  "Shridutta Banerjee", "Markus Heynen", "Jimmy Greco", "Caio Miranda",
-  "Alex Koh Hock Poh", "Shantanu Thada", "Gp Capt Debashish Sengupta (Retd)",
-  "Mauricio Meira", "Allyson Jenkins", "Ashay Deo", "Awais Ahmed",
-];
-
 function DealListLive({ deals, loading, onOpen, pipelineFilter, setPipelineFilter, stageFilter, setStageFilter, ownerFilter, setOwnerFilter, searchQ, setSearchQ }) {
   return (
     <>
@@ -2286,9 +2322,18 @@ function DealListLive({ deals, loading, onOpen, pipelineFilter, setPipelineFilte
         <div className="cp-select">
           <select value={ownerFilter} onChange={e => setOwnerFilter(e.target.value)}>
             <option value="">All team members</option>
-            {[...TEAM.director, ...TEAM.se, ...TEAM.cs, ...TEAM.analytics, ...REAL_SE_OWNERS.filter(n => !TEAM.se.includes(n))].filter((v,i,a) => a.indexOf(v) === i).map(p =>
-              <option key={p} value={p}>{p}</option>
-            )}
+            <optgroup label="Sales Owners">
+              {TEAM.owner.map(p => <option key={"o-"+p} value={p}>{p}</option>)}
+            </optgroup>
+            <optgroup label="Sales Engineers">
+              {TEAM.se.map(p => <option key={"s-"+p} value={p}>{p}</option>)}
+            </optgroup>
+            <optgroup label="Customer Success">
+              {TEAM.cs.map(p => <option key={"c-"+p} value={p}>{p}</option>)}
+            </optgroup>
+            <optgroup label="Analytics">
+              {TEAM.analytics.map(p => <option key={"a-"+p} value={p}>{p}</option>)}
+            </optgroup>
           </select>
           <ChevronDown size={15} className="chev" />
         </div>
@@ -2375,7 +2420,7 @@ function PassportDetail({ data, onBack, canEdit, onRefresh, onAssign, onNotifyAl
     } : null,
     stage: p.hubspot_stage_idx || 0,
     amount: p.hubspot_amount,
-    owners: { director: p.owner_director, se: p.owner_se, cs: p.owner_cs, analytics: p.owner_analytics },
+    owners: { owner: p.owner_director, se: p.owner_se, cs: p.owner_cs, analytics: p.owner_analytics },
     sectionStamps: { profile: p.stamp_profile, context: p.stamp_context, execution: p.stamp_execution },
     profile: {
       contacts: contacts.map(c => ({ name: c.name, role: c.role, email: c.email })),
@@ -2466,7 +2511,7 @@ function PassportDetail({ data, onBack, canEdit, onRefresh, onAssign, onNotifyAl
     // General passport field update — build Supabase fields from changed deal
     const fields = {};
     if (updated.owners) {
-      if (updated.owners.director !== deal.owners.director) fields.owner_director = updated.owners.director;
+      if (updated.owners.owner !== deal.owners.owner) fields.owner_director = updated.owners.owner;
       if (updated.owners.se !== deal.owners.se) fields.owner_se = updated.owners.se;
       if (updated.owners.cs !== deal.owners.cs) fields.owner_cs = updated.owners.cs;
       if (updated.owners.analytics !== deal.owners.analytics) fields.owner_analytics = updated.owners.analytics;
@@ -2724,6 +2769,7 @@ export default function App() {
       const { score } = calcReadinessFromData(passportData);
       const result = await sendSlackNotification("assignment", {
         person: name, role: ROLE_LABEL[r],
+        person_slack: slackFor(name), person_email: emailFor(name),
         company: deal?.company, dealId: deal?.deal_id_display,
         stage: deal?.hubspot_stage, amount: deal?.hubspot_amount,
         readiness: score, assignedBy: "Team",
@@ -2754,7 +2800,7 @@ export default function App() {
       company: p.company, dealId: p.deal_id_display,
       stage: p.hubspot_stage, amount: p.hubspot_amount,
       readiness: score, postedBy: "Team",
-      owners: { director: p.owner_director, se: p.owner_se, cs: p.owner_cs, analytics: p.owner_analytics },
+      owners: { owner: p.owner_director, se: p.owner_se, cs: p.owner_cs, analytics: p.owner_analytics },
     }, p.id, slackChannel.id);
     toast(result.ok
       ? `✓ ${owners.length} owners notified in ${slackChannel.name}`
@@ -2772,7 +2818,7 @@ export default function App() {
       company: p.company, dealId: p.deal_id_display,
       stage: p.hubspot_stage, amount: p.hubspot_amount,
       readiness: score, postedBy: "Team",
-      owners: { director: p.owner_director, se: p.owner_se, cs: p.owner_cs, analytics: p.owner_analytics },
+      owners: { owner: p.owner_director, se: p.owner_se, cs: p.owner_cs, analytics: p.owner_analytics },
     }, p.id, slackChannel.id);
     setSlackSending(false);
     setSlackStatus(result.ok
