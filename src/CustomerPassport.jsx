@@ -2280,9 +2280,12 @@ async function sbPatch(table, id, body) {
 
 // ── Sign-in screen ────────────────────────────────────────────
 function SignInScreen({ loading }) {
+  const INK = "#0B1220";
+  const MUTED = "#7C8595";
+  const ACCENT = "#0EA5B7";
   return (
     <div style={{
-      minHeight: "100vh", background: "var(--ink)", display: "flex",
+      minHeight: "100vh", background: INK, display: "flex",
       alignItems: "center", justifyContent: "center", flexDirection: "column",
       fontFamily: "Inter, sans-serif",
     }}>
@@ -2298,7 +2301,7 @@ function SignInScreen({ loading }) {
             display: "inline-flex", alignItems: "center", gap: 10, marginBottom: 8,
           }}>
             <div style={{
-              width: 40, height: 40, borderRadius: 10, background: "#0EA5B7",
+              width: 40, height: 40, borderRadius: 10, background: ACCENT,
               display: "flex", alignItems: "center", justifyContent: "center",
             }}>
               <svg width="22" height="22" viewBox="0 0 22 22" fill="none">
@@ -2309,7 +2312,7 @@ function SignInScreen({ loading }) {
             </div>
             <div style={{ textAlign: "left" }}>
               <div style={{ color: "white", fontFamily: "'Space Grotesk',sans-serif", fontWeight: 700, fontSize: 18, letterSpacing: -0.5 }}>pixxel</div>
-              <div style={{ color: "var(--muted2)", fontSize: 11, letterSpacing: 2, textTransform: "uppercase" }}>Customer Passport</div>
+              <div style={{ color: MUTED, fontSize: 11, letterSpacing: 2, textTransform: "uppercase" }}>Customer Passport</div>
             </div>
           </div>
         </div>
@@ -2317,7 +2320,7 @@ function SignInScreen({ loading }) {
         <h1 style={{ color: "white", fontFamily: "'Space Grotesk',sans-serif", fontSize: 28, fontWeight: 700, marginBottom: 8, letterSpacing: -0.5 }}>
           Welcome back
         </h1>
-        <p style={{ color: "var(--muted2)", fontSize: 14, marginBottom: 40, lineHeight: 1.6 }}>
+        <p style={{ color: MUTED, fontSize: 14, marginBottom: 40, lineHeight: 1.6 }}>
           Sign in with your Pixxel Google account to access deal passports, manage handovers, and track customer engagements.
         </p>
 
@@ -2326,16 +2329,17 @@ function SignInScreen({ loading }) {
           disabled={loading}
           style={{
             display: "flex", alignItems: "center", gap: 12, width: "100%",
-            padding: "14px 20px", borderRadius: 12, border: "1px solid rgba(255,255,255,0.12)",
-            background: "rgba(255,255,255,0.06)", color: "white", fontSize: 15,
-            fontWeight: 500, cursor: loading ? "wait" : "pointer",
+            padding: "14px 20px", borderRadius: 12, border: "none",
+            background: loading ? "#E2E5EA" : "#FFFFFF", color: "#1F2433", fontSize: 15,
+            fontWeight: 600, cursor: loading ? "wait" : "pointer",
             transition: "all 0.15s", justifyContent: "center",
+            boxShadow: "0 2px 12px rgba(0,0,0,0.25)",
           }}
-          onMouseEnter={e => e.currentTarget.style.background = "rgba(255,255,255,0.1)"}
-          onMouseLeave={e => e.currentTarget.style.background = "rgba(255,255,255,0.06)"}
+          onMouseEnter={e => { if (!loading) e.currentTarget.style.background = "#F0F2F5"; }}
+          onMouseLeave={e => { if (!loading) e.currentTarget.style.background = "#FFFFFF"; }}
         >
           {loading ? (
-            <span style={{ color: "var(--muted2)" }}>Signing in…</span>
+            <span style={{ color: "#5B6472" }}>Signing in…</span>
           ) : (
             <>
               <svg width="20" height="20" viewBox="0 0 24 24">
@@ -2349,8 +2353,8 @@ function SignInScreen({ loading }) {
           )}
         </button>
 
-        <p style={{ color: "var(--muted2)", fontSize: 12, marginTop: 24, lineHeight: 1.5 }}>
-          Access is restricted to the Pixxel Sales org.<br/>Use your <code style={{ color: "var(--accent)", fontSize: 11 }}>@pixxel.space</code> or <code style={{ color: "var(--accent)", fontSize: 11 }}>@pixxel.co.in</code> account.
+        <p style={{ color: MUTED, fontSize: 12, marginTop: 24, lineHeight: 1.5 }}>
+          Access is restricted to the Pixxel Sales org.<br/>Use your <code style={{ color: ACCENT, fontSize: 11 }}>@pixxel.space</code> or <code style={{ color: ACCENT, fontSize: 11 }}>@pixxel.co.in</code> account.
         </p>
       </div>
     </div>
