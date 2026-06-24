@@ -2146,22 +2146,123 @@ const SUPABASE_URL = (typeof import.meta !== "undefined" && import.meta.env && i
 const SUPABASE_ANON_KEY = (typeof import.meta !== "undefined" && import.meta.env && import.meta.env.VITE_SUPABASE_ANON_KEY)
   || "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InBsc3B1bmxrbWt2cGxnY3NuY3BhIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODE3NzA3NTMsImV4cCI6MjA5NzM0Njc1M30.SMybWhOWztQFzXSlosW1c_MVdndXsVOLcyfGJUd63eE";
 
-const SB_HEADERS = {
-  "apikey": SUPABASE_ANON_KEY,
-  "Authorization": `Bearer ${SUPABASE_ANON_KEY}`,
-  "Content-Type": "application/json",
-  "Prefer": "return=representation",
-};
+// ── Auth-aware Supabase client ────────────────────────────────
+// We keep a mutable session token so all REST calls automatically
+// use the authenticated user's JWT once they've signed in.
+let _authToken = SUPABASE_ANON_KEY;
+function setAuthToken(tok) { _authToken = tok || SUPABASE_ANON_KEY; }
+function getHeaders(extra = {}) {
+  return {
+    "apikey": SUPABASE_ANON_KEY,
+    "Authorization": `Bearer ${_authToken}`,
+    "Content-Type": "application/json",
+    "Prefer": "return=representation",
+    ...extra,
+  };
+}
+
+// ── Auth API helpers ──────────────────────────────────────────
+const AUTH_URL = `${SUPABASE_URL}/auth/v1`;
+
+async function signInWithGoogle() {
+  // Redirect to Supabase Google OAuth — comes back to current URL
+  const redirectTo = encodeURIComponent(window.location.origin + window.location.pathname);
+  window.location.href = `${AUTH_URL}/authorize?provider=google&redirect_to=${redirectTo}`;
+}
+
+async function signOut() {
+  await fetch(`${AUTH_URL}/logout`, {
+    method: "POST",
+    headers: { "apikey": SUPABASE_ANON_KEY, "Authorization": `Bearer ${_authToken}` },
+  });
+  setAuthToken(null);
+  // Clear hash/query params and reload
+  window.location.href = window.location.origin + window.location.pathname;
+}
+
+async function getSession() {
+  // Check URL hash for access_token (OAuth callback)
+  const hash = window.location.hash;
+  if (hash && hash.includes("access_token")) {
+    const params = new URLSearchParams(hash.replace("#", "?"));
+    const accessToken = params.get("access_token");
+    const refreshToken = params.get("refresh_token");
+    if (accessToken) {
+      // Store in sessionStorage so refresh survives navigation
+      sessionStorage.setItem("sb_access_token", accessToken);
+      if (refreshToken) sessionStorage.setItem("sb_refresh_token", refreshToken);
+      // Clean up URL
+      window.history.replaceState(null, "", window.location.pathname);
+      return accessToken;
+    }
+  }
+  // Check sessionStorage
+  const stored = sessionStorage.getItem("sb_access_token");
+  if (stored) {
+    // Verify it's still valid
+    try {
+      const res = await fetch(`${AUTH_URL}/user`, {
+        headers: { "apikey": SUPABASE_ANON_KEY, "Authorization": `Bearer ${stored}` },
+      });
+      if (res.ok) return stored;
+      // Token expired — try refresh
+      const refresh = sessionStorage.getItem("sb_refresh_token");
+      if (refresh) {
+        const rRes = await fetch(`${AUTH_URL}/token?grant_type=refresh_token`, {
+          method: "POST",
+          headers: { "apikey": SUPABASE_ANON_KEY, "Content-Type": "application/json" },
+          body: JSON.stringify({ refresh_token: refresh }),
+        });
+        if (rRes.ok) {
+          const data = await rRes.json();
+          sessionStorage.setItem("sb_access_token", data.access_token);
+          if (data.refresh_token) sessionStorage.setItem("sb_refresh_token", data.refresh_token);
+          return data.access_token;
+        }
+      }
+    } catch (e) {}
+    sessionStorage.removeItem("sb_access_token");
+    sessionStorage.removeItem("sb_refresh_token");
+  }
+  return null;
+}
+
+async function getUserFromToken(token) {
+  const res = await fetch(`${AUTH_URL}/user`, {
+    headers: { "apikey": SUPABASE_ANON_KEY, "Authorization": `Bearer ${token}` },
+  });
+  if (!res.ok) return null;
+  return res.json();
+}
+
+// Resolve access level from email
+// - In roster → 'member' (full edit access)
+// - @pixxel.space or @pixxel.co.in but not in roster → 'viewer'
+// - Anything else → 'denied'
+function resolveRoleFromEmail(email) {
+  const e = (email || "").toLowerCase();
+  const all = Object.values(TEAM_MEMBERS).flat();
+  if (all.some(p => p.email === e)) return "member";
+  if (e.endsWith("@pixxel.space") || e.endsWith("@pixxel.co.in")) return "viewer";
+  return "denied";
+}
+
+function resolveNameFromEmail(email) {
+  const e = (email || "").toLowerCase();
+  const all = Object.values(TEAM_MEMBERS).flat();
+  const match = all.find(p => p.email === e);
+  return match ? match.name : null;
+}
 
 async function sbGet(table, params = "") {
-  const r = await fetch(`${SUPABASE_URL}/rest/v1/${table}${params}`, { headers: SB_HEADERS });
+  const r = await fetch(`${SUPABASE_URL}/rest/v1/${table}${params}`, { headers: getHeaders() });
   if (!r.ok) throw new Error(`${r.status}: ${await r.text()}`);
   return r.json();
 }
 
 async function sbPost(table, body) {
   const r = await fetch(`${SUPABASE_URL}/rest/v1/${table}`, {
-    method: "POST", headers: SB_HEADERS, body: JSON.stringify(body),
+    method: "POST", headers: getHeaders(), body: JSON.stringify(body),
   });
   if (!r.ok) throw new Error(`${r.status}: ${await r.text()}`);
   const text = await r.text();
@@ -2171,10 +2272,89 @@ async function sbPost(table, body) {
 async function sbPatch(table, id, body) {
   const r = await fetch(`${SUPABASE_URL}/rest/v1/${table}?id=eq.${id}`, {
     method: "PATCH",
-    headers: { ...SB_HEADERS, "Prefer": "return=minimal" },
+    headers: getHeaders({ "Prefer": "return=minimal" }),
     body: JSON.stringify(body),
   });
   if (!r.ok) throw new Error(`${r.status}: ${await r.text()}`);
+}
+
+// ── Sign-in screen ────────────────────────────────────────────
+function SignInScreen({ loading }) {
+  return (
+    <div style={{
+      minHeight: "100vh", background: "var(--ink)", display: "flex",
+      alignItems: "center", justifyContent: "center", flexDirection: "column",
+      fontFamily: "Inter, sans-serif",
+    }}>
+      {/* Spectral header line */}
+      <div style={{
+        position: "fixed", top: 0, left: 0, right: 0, height: 3,
+        background: "linear-gradient(90deg,#7B2FBE,#2D7FF9,#0EA5B7,#2FB67A,#F0A429,#E5564B)",
+      }} />
+      <div style={{ textAlign: "center", maxWidth: 400, padding: "0 24px" }}>
+        {/* Logo */}
+        <div style={{ marginBottom: 32 }}>
+          <div style={{
+            display: "inline-flex", alignItems: "center", gap: 10, marginBottom: 8,
+          }}>
+            <div style={{
+              width: 40, height: 40, borderRadius: 10, background: "#0EA5B7",
+              display: "flex", alignItems: "center", justifyContent: "center",
+            }}>
+              <svg width="22" height="22" viewBox="0 0 22 22" fill="none">
+                <circle cx="11" cy="11" r="6" stroke="white" strokeWidth="1.5" fill="none"/>
+                <circle cx="11" cy="11" r="2.5" fill="white"/>
+                <path d="M11 2v3M11 17v3M2 11h3M17 11h3" stroke="white" strokeWidth="1.5" strokeLinecap="round"/>
+              </svg>
+            </div>
+            <div style={{ textAlign: "left" }}>
+              <div style={{ color: "white", fontFamily: "'Space Grotesk',sans-serif", fontWeight: 700, fontSize: 18, letterSpacing: -0.5 }}>pixxel</div>
+              <div style={{ color: "var(--muted2)", fontSize: 11, letterSpacing: 2, textTransform: "uppercase" }}>Customer Passport</div>
+            </div>
+          </div>
+        </div>
+
+        <h1 style={{ color: "white", fontFamily: "'Space Grotesk',sans-serif", fontSize: 28, fontWeight: 700, marginBottom: 8, letterSpacing: -0.5 }}>
+          Welcome back
+        </h1>
+        <p style={{ color: "var(--muted2)", fontSize: 14, marginBottom: 40, lineHeight: 1.6 }}>
+          Sign in with your Pixxel Google account to access deal passports, manage handovers, and track customer engagements.
+        </p>
+
+        <button
+          onClick={signInWithGoogle}
+          disabled={loading}
+          style={{
+            display: "flex", alignItems: "center", gap: 12, width: "100%",
+            padding: "14px 20px", borderRadius: 12, border: "1px solid rgba(255,255,255,0.12)",
+            background: "rgba(255,255,255,0.06)", color: "white", fontSize: 15,
+            fontWeight: 500, cursor: loading ? "wait" : "pointer",
+            transition: "all 0.15s", justifyContent: "center",
+          }}
+          onMouseEnter={e => e.currentTarget.style.background = "rgba(255,255,255,0.1)"}
+          onMouseLeave={e => e.currentTarget.style.background = "rgba(255,255,255,0.06)"}
+        >
+          {loading ? (
+            <span style={{ color: "var(--muted2)" }}>Signing in…</span>
+          ) : (
+            <>
+              <svg width="20" height="20" viewBox="0 0 24 24">
+                <path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" fill="#4285F4"/>
+                <path d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" fill="#34A853"/>
+                <path d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l3.66-2.84z" fill="#FBBC05"/>
+                <path d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" fill="#EA4335"/>
+              </svg>
+              Continue with Google
+            </>
+          )}
+        </button>
+
+        <p style={{ color: "var(--muted2)", fontSize: 12, marginTop: 24, lineHeight: 1.5 }}>
+          Access is restricted to the Pixxel Sales org.<br/>Use your <code style={{ color: "var(--accent)", fontSize: 11 }}>@pixxel.space</code> or <code style={{ color: "var(--accent)", fontSize: 11 }}>@pixxel.co.in</code> account.
+        </p>
+      </div>
+    </div>
+  );
 }
 
 const CORE_PIPELINES_LIST = [
@@ -2654,6 +2834,59 @@ function DashboardLive({ deals, onOpen }) {
    APP SHELL (Supabase-wired)
    ================================================================ */
 export default function App() {
+  // ── Auth state ───────────────────────────────────────────────
+  const [authLoading, setAuthLoading] = useState(true);
+  const [currentUser, setCurrentUser] = useState(null);
+  // currentUser: { email, name, role: 'se'|'cs'|'analytics'|'owner'|'viewer' }
+
+  useEffect(() => {
+    (async () => {
+      const token = await getSession();
+      if (token) {
+        setAuthToken(token);
+        const user = await getUserFromToken(token);
+        if (user) {
+          const email = user.email || "";
+          const role = resolveRoleFromEmail(email);
+          const name = resolveNameFromEmail(email) || user.user_metadata?.full_name || email;
+          setCurrentUser({ email, name, role });
+        } else {
+          sessionStorage.removeItem("sb_access_token");
+          sessionStorage.removeItem("sb_refresh_token");
+          setAuthToken(null);
+        }
+      }
+      setAuthLoading(false);
+    })();
+  }, []);
+
+  if (authLoading) return <SignInScreen loading={true} />;
+  if (!currentUser) return <SignInScreen loading={false} />;
+
+  // Non-pixxel email — blocked entirely
+  if (currentUser.role === "denied") {
+    return (
+      <div style={{ minHeight:"100vh", background:"var(--ink)", display:"flex", alignItems:"center", justifyContent:"center", flexDirection:"column", fontFamily:"Inter,sans-serif", textAlign:"center", padding:"0 24px" }}>
+        <div style={{ color:"var(--muted2)", marginBottom:16 }}>
+          <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><circle cx="12" cy="12" r="10"/><path d="M15 9l-6 6M9 9l6 6"/></svg>
+        </div>
+        <h2 style={{ color:"white", fontFamily:"'Space Grotesk',sans-serif", marginBottom:8 }}>Access Denied</h2>
+        <p style={{ color:"var(--muted2)", fontSize:14, marginBottom:24 }}>This tool is only accessible to the Pixxel team.<br/>You signed in as <code style={{ color:"var(--accent)" }}>{currentUser.email}</code></p>
+        <button onClick={() => signOut()} style={{ padding:"10px 20px", borderRadius:8, border:"1px solid var(--line)", background:"transparent", color:"white", cursor:"pointer" }}>Sign out and try again</button>
+      </div>
+    );
+  }
+
+  const canEdit = currentUser.role === "member";
+
+  return <AppMain
+    currentUser={currentUser}
+    canEdit={canEdit}
+    onSignOut={async () => { await signOut(); setCurrentUser(null); }}
+  />;
+}
+
+function AppMain({ currentUser, canEdit, onSignOut }) {
   const [deals, setDeals] = useState([]);
   const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
@@ -2664,13 +2897,12 @@ export default function App() {
   const [searchQ, setSearchQ] = useState("");
 
   // ── Passport detail state ───────────────────────────────────
-  const [openId, setOpenId] = useState(null);           // supabase uuid
-  const [passportData, setPassportData] = useState(null); // full detail
+  const [openId, setOpenId] = useState(null);
+  const [passportData, setPassportData] = useState(null);
   const [detailLoading, setDetailLoading] = useState(false);
 
   // ── UI state ────────────────────────────────────────────────
   const [view, setView] = useState("deals");
-  const [role, setRole] = useState("se");
   const [toastMsg, setToastMsg] = useState(null);
   const [notifs, setNotifs] = useState([]);
   const [bellOpen, setBellOpen] = useState(false);
@@ -2683,7 +2915,6 @@ export default function App() {
     window.clearTimeout(window.__t);
     window.__t = window.setTimeout(() => setToastMsg(null), 3000);
   };
-  const canEdit = role === "se";
   const unread = notifs.filter(n => !n.read).length;
 
   // ── Load deal list ──────────────────────────────────────────
@@ -2926,15 +3157,64 @@ export default function App() {
           )}
         </div>
 
-        <div className="cp-viewtoggle">
-          <button className={role === "se" ? "on" : ""} onClick={() => setRole("se")}><Pencil size={13} /> SE (editing)</button>
-          <button className={role === "cs" ? "on" : ""} onClick={() => setRole("cs")}><Eye size={13} /> CS (read-only)</button>
+        <div className="cp-viewtoggle" style={{display:"flex",alignItems:"center",gap:8}}>
+          <div style={{
+            display:"flex",alignItems:"center",gap:6,
+            padding:"6px 12px",borderRadius:8,
+            background: canEdit ? "rgba(14,165,183,0.1)" : "rgba(146,155,171,0.1)",
+            border: canEdit ? "1px solid rgba(14,165,183,0.2)" : "1px solid rgba(146,155,171,0.2)",
+            fontSize:12,fontWeight:500,
+            color: canEdit ? "var(--accent)" : "var(--muted2)",
+          }}>
+            {canEdit ? <Pencil size={12}/> : <Eye size={12}/>}
+            {currentUser.name} · {canEdit ? "Full access" : "View only"}
+          </div>
+          <button
+            onClick={onSignOut}
+            title="Sign out"
+            style={{
+              padding:"6px 10px",borderRadius:8,border:"1px solid var(--line)",
+              background:"transparent",color:"var(--muted2)",fontSize:12,cursor:"pointer",
+            }}
+          >Sign out</button>
         </div>
       </div>
 
       <div className="cp-page">
-        {role === "cs" && (
-          <div className="cp-banner"><Lock size={15} /> Read-only briefing view — Customer Success can review everything captured, but editing is locked.</div>
+        {!canEdit && (
+          <div className="cp-banner" style={{display:"flex",alignItems:"center",justifyContent:"space-between",flexWrap:"wrap",gap:8}}>
+            <span><Lock size={15}/> Read-only view — you can browse all deal passports but editing is locked.</span>
+            <button
+              onClick={async () => {
+                try {
+                  await fetch(`${SUPABASE_URL}/functions/v1/slack-notify`, {
+                    method:"POST",
+                    headers:{
+                      "Content-Type":"application/json",
+                      "Authorization":`Bearer ${SUPABASE_ANON_KEY}`,
+                    },
+                    body: JSON.stringify({
+                      event:"mention",
+                      mentionedPerson:"Rhodri Phillips",
+                      mentioned_slack:"U092KJ4AKPC",
+                      mentionedBy: currentUser.name || currentUser.email,
+                      company:"Customer Passport",
+                      dealId:"ACCESS REQUEST",
+                      noteText:`${currentUser.name || currentUser.email} (${currentUser.email}) is requesting edit access to the Customer Passport.`,
+                    }),
+                  });
+                  alert("Request sent! Rhodri will be notified in Slack.");
+                } catch(e) {
+                  alert("Couldn't send request — please message Rhodri directly.");
+                }
+              }}
+              style={{
+                padding:"6px 14px",borderRadius:6,border:"1px solid var(--accent)",
+                background:"transparent",color:"var(--accent)",fontSize:12,
+                fontWeight:500,cursor:"pointer",whiteSpace:"nowrap",
+              }}
+            >Request edit access</button>
+          </div>
         )}
 
         {openId
