@@ -4,8 +4,10 @@ import {
   AlertTriangle, CheckCircle2, Circle, Clock, Paperclip, Send, BarChart3,
   LayoutGrid, Eye, Pencil, ExternalLink, Building2, Mail, Satellite, Layers,
   Activity, TrendingUp, X, Lock, Gauge, AtSign, Plus, Radar, ChevronDown,
-  MessageSquare, Hash, Zap, RefreshCw, CheckCheck, Camera, ListChecks, CalendarClock
+  MessageSquare, Hash, Zap, RefreshCw, CheckCheck, Camera, ListChecks, CalendarClock, Upload, Trash2, UserPlus, Link2
 } from "lucide-react";
+import shp from "shpjs";
+import { kml as kmlToGeoJson } from "@tmcw/togeojson";
 
 /* ------------------------------------------------------------------ */
 /*  Design system (spectral / Earth-observation theme)                */
@@ -162,6 +164,11 @@ const CSS = `
 .assign-menu button{display:block;width:100%;text-align:left;padding:8px 10px;border-radius:8px;
   font-size:13px;color:var(--ink);}
 .assign-menu button:hover{background:var(--line-soft);}
+
+.add-row{display:inline-flex;align-items:center;gap:7px;padding:8px 12px;border:1px dashed var(--line);
+  border-radius:9px;background:transparent;color:var(--accent-deep);font-size:12.5px;font-weight:500;
+  cursor:pointer;margin-top:6px;width:100%;justify-content:center;}
+.add-row:hover{border-color:var(--accent);background:var(--accent-soft);}
 
 .readiness-panel{background:#fff;border:1px solid var(--line);border-radius:16px;padding:14px 20px;
   display:flex;align-items:center;gap:16px;cursor:pointer;min-width:230px;}
@@ -1135,6 +1142,161 @@ function fmt(n) {
   return "$" + (n / 1000).toFixed(0) + "k";
 }
 
+// ── Real GeoJSON renderer (SVG, self-contained, no tiles) ─────
+function geoJsonBounds(gj) {
+  let minX=Infinity, minY=Infinity, maxX=-Infinity, maxY=-Infinity;
+  const walk = (coords) => {
+    if (typeof coords[0] === "number") {
+      const [x,y] = coords;
+      if (x<minX)minX=x; if (x>maxX)maxX=x; if (y<minY)minY=y; if (y>maxY)maxY=y;
+    } else coords.forEach(walk);
+  };
+  const feats = gj.type === "FeatureCollection" ? gj.features : [gj];
+  feats.forEach(f => { const g = f.geometry || f; if (g && g.coordinates) walk(g.coordinates); });
+  return { minX, minY, maxX, maxY };
+}
+
+function geoJsonToSvgPaths(gj, b, W=100, H=100) {
+  const pad = 6;
+  const spanX = (b.maxX - b.minX) || 0.001;
+  const spanY = (b.maxY - b.minY) || 0.001;
+  const scale = Math.min((W - pad*2)/spanX, (H - pad*2)/spanY);
+  const offX = (W - spanX*scale)/2;
+  const offY = (H - spanY*scale)/2;
+  const proj = ([x,y]) => [offX + (x - b.minX)*scale, H - (offY + (y - b.minY)*scale)];
+  const paths = [];
+  const ring2path = (ring) => "M" + ring.map(c => { const [px,py] = proj(c); return `${px.toFixed(2)},${py.toFixed(2)}`; }).join(" L") + "Z";
+  const handleGeom = (g) => {
+    if (!g) return;
+    if (g.type === "Polygon") g.coordinates.forEach(r => paths.push(ring2path(r)));
+    else if (g.type === "MultiPolygon") g.coordinates.forEach(poly => poly.forEach(r => paths.push(ring2path(r))));
+    else if (g.type === "LineString") paths.push("M" + g.coordinates.map(c => { const [px,py]=proj(c); return `${px.toFixed(2)},${py.toFixed(2)}`; }).join(" L"));
+    else if (g.type === "Point") { const [px,py]=proj(g.coordinates); paths.push(`M${px},${py} m-1.4,0 a1.4,1.4 0 1,0 2.8,0 a1.4,1.4 0 1,0 -2.8,0`); }
+  };
+  const feats = gj.type === "FeatureCollection" ? gj.features : [gj];
+  feats.forEach(f => handleGeom(f.geometry || f));
+  return paths;
+}
+
+function GeoJsonMap({ geojson, onClear, canEdit }) {
+  let bounds, paths, centerLabel, featCount;
+  try {
+    bounds = geoJsonBounds(geojson);
+    paths = geoJsonToSvgPaths(geojson, bounds);
+    const cx = ((bounds.minX + bounds.maxX)/2).toFixed(3);
+    const cy = ((bounds.minY + bounds.maxY)/2).toFixed(3);
+    centerLabel = `${cy}°, ${cx}°`;
+    featCount = geojson.type === "FeatureCollection" ? geojson.features.length : 1;
+  } catch (e) {
+    return <div className="empty"><MapPin size={15} /> Could not render this AOI.</div>;
+  }
+  return (
+    <div className="aoi" style={{ height: 280, position:"relative" }}>
+      <svg viewBox="0 0 100 100" preserveAspectRatio="xMidYMid meet" width="100%" height="100%">
+        <defs>
+          <radialGradient id="terrain2" cx="40%" cy="35%" r="80%">
+            <stop offset="0%" stopColor="#13384a" /><stop offset="55%" stopColor="#0e2735" /><stop offset="100%" stopColor="#0a1822" />
+          </radialGradient>
+          <linearGradient id="aoifill2" x1="0" y1="0" x2="1" y2="1">
+            <stop offset="0%" stopColor="#0EA5B7" stopOpacity="0.34" /><stop offset="100%" stopColor="#2FB67A" stopOpacity="0.2" />
+          </linearGradient>
+        </defs>
+        <rect width="100" height="100" fill="url(#terrain2)" />
+        {[...Array(9)].map((_, i) => <line key={"v"+i} x1={i*12.5} y1="0" x2={i*12.5} y2="100" stroke="#5e8aa3" strokeWidth="0.2" opacity="0.22" />)}
+        {[...Array(9)].map((_, i) => <line key={"h"+i} x1="0" y1={i*12.5} x2="100" y2={i*12.5} stroke="#5e8aa3" strokeWidth="0.2" opacity="0.22" />)}
+        {paths.map((d, i) => <path key={i} d={d} fill="url(#aoifill2)" stroke="#3fe0ee" strokeWidth="0.6" strokeLinejoin="round" />)}
+      </svg>
+      <div className="badge"><Layers size={11} /> AOI · GeoJSON</div>
+      <div className="cap">{featCount} feature{featCount!==1?"s":""}<br />◎ {centerLabel}</div>
+      {canEdit && onClear && (
+        <button onClick={onClear} title="Remove AOI"
+          style={{ position:"absolute", top:8, right:8, background:"rgba(0,0,0,0.5)", border:"none", borderRadius:6, color:"#fff", padding:"4px 8px", fontSize:11, cursor:"pointer", display:"flex", alignItems:"center", gap:4 }}>
+          <Trash2 size={11} /> Remove
+        </button>
+      )}
+    </div>
+  );
+}
+
+// Parse an uploaded AOI file (GeoJSON / KML / KMZ / zipped Shapefile) → GeoJSON
+async function parseAoiFile(file) {
+  const name = file.name.toLowerCase();
+  if (name.endsWith(".geojson") || name.endsWith(".json")) {
+    const text = await file.text();
+    return JSON.parse(text);
+  }
+  if (name.endsWith(".kml")) {
+    const text = await file.text();
+    const dom = new DOMParser().parseFromString(text, "text/xml");
+    return kmlToGeoJson(dom);
+  }
+  if (name.endsWith(".zip")) {
+    // Shapefile (zipped) — shpjs handles the arraybuffer
+    const buf = await file.arrayBuffer();
+    return await shp(buf);
+  }
+  if (name.endsWith(".kmz")) {
+    throw new Error("KMZ: please unzip and upload the .kml inside, or upload as GeoJSON.");
+  }
+  throw new Error("Unsupported file. Use GeoJSON, KML, or a zipped Shapefile.");
+}
+
+function AoiUploader({ aoi, canEdit, which, onSetAoi }) {
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const inputId = `aoi-up-${which}-${Math.random().toString(36).slice(2,7)}`;
+
+  // aoi may be the new GeoJSON (object) or the legacy {poly,...} shape
+  const isGeoJson = aoi && (aoi.type === "FeatureCollection" || aoi.type === "Feature" || aoi.type === "Polygon" || aoi.type === "MultiPolygon");
+
+  const handleFile = async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    setBusy(true); setErr("");
+    try {
+      const gj = await parseAoiFile(file);
+      if (!gj || (!gj.features && !gj.coordinates)) throw new Error("No geometry found in file.");
+      await onSetAoi(gj);
+    } catch (ex) {
+      setErr(ex.message || "Failed to parse file");
+    } finally {
+      setBusy(false);
+      e.target.value = "";
+    }
+  };
+
+  if (isGeoJson) {
+    return <GeoJsonMap geojson={aoi} canEdit={canEdit} onClear={() => onSetAoi(null)} />;
+  }
+  if (aoi && aoi.poly) {
+    // legacy mock shape — show old renderer
+    return <AoiMap aoi={aoi} />;
+  }
+
+  return (
+    <div>
+      <div className="empty" style={{ flexDirection:"column", gap:10, padding:"24px 16px" }}>
+        <MapPin size={20} />
+        <span>No area of interest mapped yet.</span>
+        {canEdit && (
+          <>
+            <label htmlFor={inputId} style={{
+              display:"inline-flex", alignItems:"center", gap:7, cursor: busy?"wait":"pointer",
+              padding:"8px 16px", borderRadius:8, background:"var(--accent)", color:"#fff",
+              fontSize:12.5, fontWeight:600,
+            }}>
+              <Upload size={14} /> {busy ? "Parsing…" : "Upload AOI file"}
+            </label>
+            <input id={inputId} type="file" accept=".geojson,.json,.kml,.zip" onChange={handleFile} style={{ display:"none" }} />
+            <span style={{ fontSize:11, color:"var(--muted2)" }}>GeoJSON · KML · zipped Shapefile</span>
+            {err && <span style={{ fontSize:11.5, color:"var(--bad)" }}>{err}</span>}
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function AoiMap({ aoi }) {
   if (!aoi) {
     return (
@@ -1268,6 +1430,55 @@ function DealList({ deals, onOpen }) {
 /* ------------------------------------------------------------------ */
 /*  Passport detail                                                   */
 /* ------------------------------------------------------------------ */
+function CollaboratorsRow({ collaborators, canEdit, onAdd, onDelete }) {
+  const [open, setOpen] = useState(false);
+  const atMax = collaborators.length >= 3;
+  // Everyone in the roster, flat, for picking
+  const allPeople = Object.values(TEAM_MEMBERS).flat();
+  const alreadyEmails = collaborators.map(c => c.email);
+
+  return (
+    <div style={{
+      display:"flex", alignItems:"center", gap:12, flexWrap:"wrap",
+      padding:"10px 14px", marginTop:10, background:"var(--card)",
+      border:"1px solid var(--line)", borderRadius:12,
+    }}>
+      <span style={{ fontSize:11, letterSpacing:1, textTransform:"uppercase", color:"var(--muted2)", fontWeight:600 }}>
+        <Users size={12} style={{ verticalAlign:"-2px", marginRight:5 }} />Additional people
+      </span>
+      {collaborators.map((c, i) => (
+        <span key={c.id || i} style={{
+          display:"inline-flex", alignItems:"center", gap:6, padding:"4px 10px",
+          borderRadius:20, background:"var(--line-soft)", fontSize:12.5,
+        }}>
+          <span style={{ fontWeight:500 }}>{c.name}</span>
+          {canEdit && <button onClick={() => onDelete(c.id)} title="Remove" style={{ border:"none", background:"none", color:"var(--muted2)", cursor:"pointer", fontSize:12, lineHeight:1 }}>✕</button>}
+        </span>
+      ))}
+      {collaborators.length === 0 && <span style={{ fontSize:12.5, color:"var(--muted2)" }}>None added</span>}
+      {canEdit && !atMax && (
+        <div style={{ position:"relative" }}>
+          <button onClick={() => setOpen(o => !o)} style={{
+            display:"inline-flex", alignItems:"center", gap:5, padding:"4px 12px",
+            borderRadius:20, border:"1px dashed var(--accent)", background:"transparent",
+            color:"var(--accent)", fontSize:12.5, fontWeight:500, cursor:"pointer",
+          }}><UserPlus size={13} /> Add person</button>
+          {open && (
+            <div className="assign-menu" style={{ top:34, maxHeight:280, overflowY:"auto", minWidth:220 }}>
+              {allPeople.filter(p => !alreadyEmails.includes(p.email)).map(p => (
+                <button key={p.email} onClick={() => { onAdd({ name:p.name, email:p.email }); setOpen(false); }}>
+                  {p.name}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+      {atMax && <span style={{ fontSize:11.5, color:"var(--muted2)" }}>Max 3 reached</span>}
+    </div>
+  );
+}
+
 function Passport({ deal, onBack, canEdit, onUpdate, onAssign, onNotifyAll, onPostToSlack, slackChannel, slackSending, slackStatus, toast }) {
   const [tab, setTab] = useState("profile");
   const [showChecklist, setShowChecklist] = useState(false);
@@ -1354,21 +1565,33 @@ function Passport({ deal, onBack, canEdit, onUpdate, onAssign, onNotifyAll, onPo
             const short = ROLE_SHORT[role];
             const name = deal.owners[role];
             const label = ROLE_LABEL[role];
+            const isOwnerRole = role === "owner";
+            const editable = canEdit && !isOwnerRole;
             return (
               <div className="owner-slot" key={role}>
                 <OwnerAvatar name={name} role={short} />
                 <div className="meta">
-                  <div className="role-tag">{label}</div>
-                  {name
-                    ? <div className="nm">{name}</div>
-                    : (canEdit
+                  <div className="role-tag">{label}{isOwnerRole && <span style={{fontSize:10,color:"var(--muted2)",marginLeft:4}}>via HubSpot</span>}</div>
+                  {name ? (
+                    <div style={{display:"flex",alignItems:"center",gap:4}}>
+                      <div
+                        className="nm"
+                        style={editable ? {cursor:"pointer",textDecoration:"underline dotted",textUnderlineOffset:3} : {}}
+                        onClick={editable ? () => setAssignOpen(assignOpen === role ? null : role) : undefined}
+                        title={editable ? "Click to reassign" : undefined}
+                      >{name}</div>
+                      {editable && <button onClick={() => assign(role, null)} style={{fontSize:11,color:"var(--muted2)",lineHeight:1,padding:"0 2px"}} title="Clear assignment">✕</button>}
+                    </div>
+                  ) : (
+                    editable
                       ? <button className="assign" onClick={() => setAssignOpen(assignOpen === role ? null : role)}>+ Assign owner</button>
-                      : <div className="nm" style={{ color: "var(--muted2)" }}>Unassigned</div>)}
+                      : <div className="nm" style={{ color: "var(--muted2)" }}>Unassigned</div>
+                  )}
                 </div>
-                {assignOpen === role && (
+                {assignOpen === role && editable && (
                   <div className="assign-menu">
                     {TEAM[role].map(p => (
-                      <button key={p} onClick={() => assign(role, p)}>{p}</button>
+                      <button key={p} onClick={() => assign(role, p)} style={p === name ? {fontWeight:600,color:"var(--accent)"} : {}}>{p}{p === name ? " ✓" : ""}</button>
                     ))}
                   </div>
                 )}
@@ -1386,6 +1609,14 @@ function Passport({ deal, onBack, canEdit, onUpdate, onAssign, onNotifyAll, onPo
           </div>
         </div>
       </div>
+
+      {/* Additional collaborators */}
+      <CollaboratorsRow
+        collaborators={deal.collaborators || []}
+        canEdit={canEdit}
+        onAdd={(person) => onUpdate({ _addCollaborator: person })}
+        onDelete={(id) => onUpdate({ _deleteRecord: { table:"deal_collaborators", id } })}
+      />
 
       {showChecklist && (
         <div className="checklist">
@@ -1408,9 +1639,9 @@ function Passport({ deal, onBack, canEdit, onUpdate, onAssign, onNotifyAll, onPo
         ))}
       </div>
 
-      {tab === "profile" && <ProfileTab d={deal} />}
-      {tab === "context" && <ContextTab d={deal} />}
-      {tab === "execution" && <ExecutionTab d={deal} canEdit={canEdit} onUpdate={onUpdate} />}
+      {tab === "profile" && <ProfileTab d={deal} canEdit={canEdit} onSaveField={(f,v) => onUpdate({ _fieldUpdate: { field: f, value: v } })} onUpdate={onUpdate} />}
+      {tab === "context" && <ContextTab d={deal} canEdit={canEdit} onSaveField={(f,v) => onUpdate({ _fieldUpdate: { field: f, value: v } })} onUpdate={onUpdate} />}
+      {tab === "execution" && <ExecutionTab d={deal} canEdit={canEdit} onUpdate={onUpdate} onSaveField={(f,v) => onUpdate({ _fieldUpdate: { field: f, value: v } })} />}
       {tab === "notes" && <NotesTab d={deal} canEdit={canEdit} onUpdate={onUpdate} toast={toast} />}
       {tab === "feedback" && <FeedbackTab d={deal} canEdit={canEdit} onUpdate={onUpdate} toast={toast} />}
     </>
@@ -1437,13 +1668,213 @@ function Block({ icon: Ic, title, children, action, stamp }) {
     </div>
   );
 }
+// Link-or-upload control: paste a URL or upload a file
+function LinkOrUpload({ label, icon: Icon, canEdit, currentUrl, accept, onSetLink, onUploadFile, emptyLabel }) {
+  const [mode, setMode] = useState(null); // null | 'link'
+  const [url, setUrl] = useState("");
+  const [busy, setBusy] = useState(false);
+  const inputId = `lou-${label.replace(/\s/g,"")}-${Math.random().toString(36).slice(2,6)}`;
+
+  if (currentUrl) {
+    return (
+      <span style={{ display:"inline-flex", alignItems:"center", gap:6 }}>
+        <a className="link" href={currentUrl} target="_blank" rel="noreferrer"><Icon size={13} /> {label} <ExternalLink size={12} /></a>
+        {canEdit && <button onClick={() => onSetLink("")} title="Remove" style={{ border:"none", background:"none", color:"var(--muted2)", cursor:"pointer", fontSize:12 }}>✕</button>}
+      </span>
+    );
+  }
+
+  if (!canEdit) {
+    return <span className="empty" style={{ flex:"none", padding:"7px 11px" }}><Icon size={13} /> {emptyLabel}</span>;
+  }
+
+  if (mode === "link") {
+    return (
+      <span style={{ display:"inline-flex", alignItems:"center", gap:6 }}>
+        <input autoFocus placeholder="Paste URL…" value={url} onChange={e => setUrl(e.target.value)}
+          onKeyDown={e => { if (e.key==="Enter" && url.trim()) { onSetLink(url.trim()); setMode(null); setUrl(""); } if (e.key==="Escape") setMode(null); }}
+          style={{ border:"1px solid var(--accent)", borderRadius:7, padding:"6px 10px", fontSize:12.5, fontFamily:"inherit", outline:"none", width:220 }} />
+        <button onClick={() => { if (url.trim()) { onSetLink(url.trim()); setMode(null); setUrl(""); } }}
+          style={{ padding:"5px 10px", borderRadius:6, border:"none", background:"var(--accent)", color:"#fff", fontSize:12, fontWeight:600, cursor:"pointer" }}>Save</button>
+        <button onClick={() => setMode(null)} style={{ border:"none", background:"none", color:"var(--muted2)", cursor:"pointer", fontSize:12 }}>✕</button>
+      </span>
+    );
+  }
+
+  return (
+    <span style={{ display:"inline-flex", alignItems:"center", gap:8 }}>
+      <span className="empty" style={{ flex:"none", padding:"7px 11px" }}><Icon size={13} /> {emptyLabel}</span>
+      <button onClick={() => setMode("link")} style={{ border:"1px solid var(--line)", background:"transparent", borderRadius:6, padding:"5px 9px", fontSize:11.5, color:"var(--accent)", cursor:"pointer", display:"inline-flex", alignItems:"center", gap:4 }}><Link2 size={12}/> Link</button>
+      <label htmlFor={inputId} style={{ border:"1px solid var(--line)", background:"transparent", borderRadius:6, padding:"5px 9px", fontSize:11.5, color:"var(--accent)", cursor: busy?"wait":"pointer", display:"inline-flex", alignItems:"center", gap:4 }}>
+        <Upload size={12}/> {busy?"…":"Upload"}
+      </label>
+      <input id={inputId} type="file" accept={accept} style={{ display:"none" }}
+        onChange={async (e) => { const f = e.target.files[0]; if (!f) return; setBusy(true); try { await onUploadFile(f); } finally { setBusy(false); e.target.value=""; } }} />
+    </span>
+  );
+}
+
 function Field({ k, children }) {
   return <div><div className="k">{k}</div><div className="v">{children || <span style={{ color: "var(--muted2)" }}>Not captured yet</span>}</div></div>;
 }
 
-function ProfileTab({ d }) {
+// Inline-editable text field. Click to edit (when canEdit), textarea with save/cancel.
+function EditableField({ k, value, field, canEdit, onSave, mono, placeholder }) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(value || "");
+  const [saving, setSaving] = useState(false);
+  useEffect(() => { setDraft(value || ""); }, [value]);
+
+  const save = async () => {
+    setSaving(true);
+    try { await onSave(field, draft.trim()); setEditing(false); }
+    finally { setSaving(false); }
+  };
+
+  if (!canEdit) {
+    return <div><div className="k">{k}</div><div className="v">{value || <span style={{ color: "var(--muted2)" }}>Not captured yet</span>}</div></div>;
+  }
+
+  if (editing) {
+    return (
+      <div>
+        <div className="k">{k}</div>
+        <textarea
+          autoFocus
+          value={draft}
+          onChange={e => setDraft(e.target.value)}
+          placeholder={placeholder || "Type here…"}
+          style={{
+            width:"100%", border:"1px solid var(--accent)", borderRadius:9,
+            padding:"9px 12px", fontSize:13.5, fontFamily: mono ? "var(--font-mono)" : "inherit",
+            marginTop:4, resize:"vertical", minHeight:64, outline:"none",
+          }}
+          onKeyDown={e => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) save(); if (e.key === "Escape") { setDraft(value||""); setEditing(false); } }}
+        />
+        <div style={{ display:"flex", gap:8, marginTop:6 }}>
+          <button onClick={save} disabled={saving}
+            style={{ padding:"5px 14px", borderRadius:7, border:"none", background:"var(--accent)", color:"#fff", fontSize:12.5, fontWeight:600, cursor:"pointer" }}>
+            {saving ? "Saving…" : "Save"}
+          </button>
+          <button onClick={() => { setDraft(value||""); setEditing(false); }}
+            style={{ padding:"5px 14px", borderRadius:7, border:"1px solid var(--line)", background:"transparent", color:"var(--muted)", fontSize:12.5, cursor:"pointer" }}>
+            Cancel
+          </button>
+          <span style={{ fontSize:11, color:"var(--muted2)", alignSelf:"center" }}>⌘↵ to save · Esc to cancel</span>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      <div className="k">{k}</div>
+      <div
+        className="v"
+        onClick={() => setEditing(true)}
+        style={{ cursor:"pointer", borderRadius:6, padding:"2px 4px", margin:"-2px -4px", transition:"background 0.12s" }}
+        onMouseEnter={e => e.currentTarget.style.background = "var(--line-soft)"}
+        onMouseLeave={e => e.currentTarget.style.background = "transparent"}
+        title="Click to edit"
+      >
+        {value || <span style={{ color: "var(--muted2)" }}>Not captured yet · <span style={{ color:"var(--accent)" }}>click to add</span></span>}
+      </div>
+    </div>
+  );
+}
+
+// Inline-editable comma-separated tags (e.g. data sources).
+function EditableTags({ k, values, field, canEdit, onSave, cls }) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState((values || []).join(", "));
+  const [saving, setSaving] = useState(false);
+  useEffect(() => { setDraft((values || []).join(", ")); }, [values]);
+
+  const save = async () => {
+    setSaving(true);
+    try {
+      const arr = draft.split(",").map(s => s.trim()).filter(Boolean);
+      await onSave(field, arr);
+      setEditing(false);
+    } finally { setSaving(false); }
+  };
+
+  if (editing && canEdit) {
+    return (
+      <div>
+        <div className="k">{k}</div>
+        <input
+          autoFocus value={draft} onChange={e => setDraft(e.target.value)}
+          placeholder="Comma-separated, e.g. FireFly VNIR, Sentinel-2, PlanetScope"
+          style={{ width:"100%", border:"1px solid var(--accent)", borderRadius:8, padding:"8px 11px", fontSize:13, fontFamily:"inherit", marginTop:4, outline:"none" }}
+          onKeyDown={e => { if (e.key === "Enter") save(); if (e.key === "Escape") { setDraft((values||[]).join(", ")); setEditing(false); } }}
+        />
+        <div style={{ display:"flex", gap:8, marginTop:6 }}>
+          <button onClick={save} disabled={saving} style={{ padding:"5px 14px", borderRadius:7, border:"none", background:"var(--accent)", color:"#fff", fontSize:12.5, fontWeight:600, cursor:"pointer" }}>{saving ? "Saving…" : "Save"}</button>
+          <button onClick={() => { setDraft((values||[]).join(", ")); setEditing(false); }} style={{ padding:"5px 14px", borderRadius:7, border:"1px solid var(--line)", background:"transparent", color:"var(--muted)", fontSize:12.5, cursor:"pointer" }}>Cancel</button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      <div className="k">{k}</div>
+      <div className="tags" style={{ marginTop: 4, cursor: canEdit ? "pointer" : "default" }}
+        onClick={() => canEdit && setEditing(true)} title={canEdit ? "Click to edit" : undefined}>
+        {(values && values.length) ? values.map((s, i) => <span key={i} className={`tag ${cls||""}`}>{s}</span>)
+          : <span style={{ color: "var(--muted2)", fontSize: 13 }}>Not captured yet{canEdit && <span style={{ color:"var(--accent)" }}> · click to add</span>}</span>}
+      </div>
+    </div>
+  );
+}
+
+// Inline-editable bullet list (objectives, success criteria).
+function EditableList({ items, field, canEdit, onSave, emptyIcon: EmptyIcon, emptyText }) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState((items || []).join("\n"));
+  const [saving, setSaving] = useState(false);
+  useEffect(() => { setDraft((items || []).join("\n")); }, [items]);
+
+  const save = async () => {
+    setSaving(true);
+    try {
+      const arr = draft.split("\n").map(s => s.trim()).filter(Boolean);
+      await onSave(field, arr);
+      setEditing(false);
+    } finally { setSaving(false); }
+  };
+
+  if (editing && canEdit) {
+    return (
+      <div>
+        <textarea autoFocus value={draft} onChange={e => setDraft(e.target.value)}
+          placeholder="One item per line"
+          style={{ width:"100%", border:"1px solid var(--accent)", borderRadius:9, padding:"9px 12px", fontSize:13.5, fontFamily:"inherit", resize:"vertical", minHeight:90, outline:"none" }}
+          onKeyDown={e => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) save(); if (e.key === "Escape") { setDraft((items||[]).join("\n")); setEditing(false); } }}
+        />
+        <div style={{ display:"flex", gap:8, marginTop:6 }}>
+          <button onClick={save} disabled={saving} style={{ padding:"5px 14px", borderRadius:7, border:"none", background:"var(--accent)", color:"#fff", fontSize:12.5, fontWeight:600, cursor:"pointer" }}>{saving ? "Saving…" : "Save"}</button>
+          <button onClick={() => { setDraft((items||[]).join("\n")); setEditing(false); }} style={{ padding:"5px 14px", borderRadius:7, border:"1px solid var(--line)", background:"transparent", color:"var(--muted)", fontSize:12.5, cursor:"pointer" }}>Cancel</button>
+          <span style={{ fontSize:11, color:"var(--muted2)", alignSelf:"center" }}>One per line · ⌘↵ to save</span>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div onClick={() => canEdit && setEditing(true)} style={{ cursor: canEdit ? "pointer" : "default" }} title={canEdit ? "Click to edit" : undefined}>
+      {(items && items.length) ? items.map((o, i) => (
+        <div className="li" key={i}><span className="b" />{o}</div>
+      )) : <div className="empty"><EmptyIcon size={15} /> {emptyText}{canEdit && <span style={{ color:"var(--accent)" }}> · click to add</span>}</div>}
+    </div>
+  );
+}
+
+function ProfileTab({ d, canEdit, onSaveField, onUpdate }) {
   const t = d.profile.tech;
   const st = d.sectionStamps || {};
+  const links = d.links || {};
   return (
     <>
       <div className="cols">
@@ -1459,36 +1890,40 @@ function ProfileTab({ d }) {
           </div>
         </Block>
         <Block icon={Users} title="Team & expertise">
-          <div className="kv"><Field k="Customer team">{d.profile.team}</Field></div>
+          <div className="kv"><EditableField k="Customer team" value={d.profile.team} field="customer_team" canEdit={canEdit} onSave={onSaveField} /></div>
         </Block>
       </div>
 
       <Block icon={Target} title="Use case · pain points · support needs">
         <div className="kv">
-          <Field k="Use case">{d.profile.useCase}</Field>
-          <Field k="Pain points">{d.profile.painPoints}</Field>
-          <Field k="Support needs">{d.profile.supportNeeds}</Field>
+          <EditableField k="Use case" value={d.profile.useCase} field="use_case" canEdit={canEdit} onSave={onSaveField} />
+          <EditableField k="Pain points" value={d.profile.painPoints} field="pain_points" canEdit={canEdit} onSave={onSaveField} />
+          <EditableField k="Support needs" value={d.profile.supportNeeds} field="support_needs" canEdit={canEdit} onSave={onSaveField} />
         </div>
       </Block>
 
       <Block icon={Radar} title="Technical requirements">
         <div className="kv">
-          <div>
-            <div className="k">Data sources</div>
-            <div className="tags" style={{ marginTop: 4 }}>
-              {t.dataSources.length ? t.dataSources.map((s, i) => <span key={i} className="tag spec">{s}</span>)
-                : <span style={{ color: "var(--muted2)", fontSize: 13 }}>Not captured yet</span>}
-            </div>
-          </div>
-          <Field k="Bandset">{t.bandset}</Field>
-          <Field k="Cadence / revisit">{t.cadence}</Field>
-          <div style={{ display: "flex", gap: 18, marginTop: 2 }}>
-            {t.aoiLink
-              ? <span className="link"><MapPin size={13} /> AOI definition <ExternalLink size={12} /></span>
-              : <span className="empty" style={{ flex: "none", padding: "7px 11px" }}><MapPin size={13} /> No AOI link</span>}
-            {t.feasibilityLink
-              ? <span className="link"><Gauge size={13} /> Feasibility study <ExternalLink size={12} /></span>
-              : <span className="empty" style={{ flex: "none", padding: "7px 11px" }}><Gauge size={13} /> No feasibility link</span>}
+          <EditableTags k="Data sources" values={t.dataSources} field="data_sources" canEdit={canEdit} onSave={onSaveField} cls="spec" />
+          <EditableField k="Bandset" value={t.bandset} field="bandset" canEdit={canEdit} onSave={onSaveField} />
+          <EditableField k="Cadence / revisit" value={t.cadence} field="cadence" canEdit={canEdit} onSave={onSaveField} />
+          <div style={{ display:"flex", gap:18, marginTop:2, flexWrap:"wrap" }}>
+            <LinkOrUpload
+              label="AOI definition" icon={MapPin} canEdit={canEdit}
+              currentUrl={links.aoiLink}
+              accept=".geojson,.json,.kml,.zip"
+              onSetLink={(url) => onUpdate({ _setLink: { field:"aoi_link", url } })}
+              onUploadFile={(file) => onUpdate({ _uploadFile: { file, kind:"attachment" } })}
+              emptyLabel="No AOI link"
+            />
+            <LinkOrUpload
+              label="Feasibility study" icon={Gauge} canEdit={canEdit}
+              currentUrl={links.feasibilityLink}
+              accept=".pdf"
+              onSetLink={(url) => onUpdate({ _setLink: { field:"feasibility_link", url } })}
+              onUploadFile={(file) => onUpdate({ _uploadFile: { file, kind:"feasibility" } })}
+              emptyLabel="No feasibility link"
+            />
           </div>
         </div>
       </Block>
@@ -1496,20 +1931,19 @@ function ProfileTab({ d }) {
   );
 }
 
-function ContextTab({ d }) {
+function ContextTab({ d, canEdit, onSaveField, onUpdate }) {
   return (
     <>
       <Block icon={Target} title="Problem statement">
-        <div className="kv"><Field k="What the customer is trying to solve">{d.context.problem}</Field></div>
+        <div className="kv"><EditableField k="What the customer is trying to solve" value={d.context.problem} field="problem_statement" canEdit={canEdit} onSave={onSaveField} /></div>
       </Block>
       <div className="cols">
         <Block icon={CheckCircle2} title="Objectives">
-          {d.context.objectives.length ? d.context.objectives.map((o, i) => (
-            <div className="li" key={i}><span className="b" />{o}</div>
-          )) : <div className="empty"><Target size={15} /> No objectives defined.</div>}
+          <EditableList items={d.context.objectives} field="objectives" canEdit={canEdit} onSave={onSaveField} emptyIcon={Target} emptyText="No objectives defined." />
         </Block>
         <Block icon={MapPin} title="Area of interest">
-          <AoiMap aoi={d.context.aoi} />
+          <AoiUploader aoi={d.context.aoi} canEdit={canEdit} which="aoi"
+            onSetAoi={(geojson) => onUpdate({ _setAoi: { geojson, which:"aoi" } })} />
         </Block>
       </div>
     </>
@@ -1665,7 +2099,110 @@ function ActionPlan({ items, canEdit, onToggle, onAdd }) {
   );
 }
 
-function ExecutionTab({ d, canEdit, onUpdate }) {
+// ── Small inline adders for child records ─────────────────────
+function PocAdder({ pocs, canEdit, onAdd, onDelete }) {
+  const [open, setOpen] = useState(false);
+  const [form, setForm] = useState({ name:"", status:"Planned", note:"" });
+  const POC_STATUSES = ["Planned","In Progress","Complete","Blocked"];
+  const submit = () => { if (!form.name.trim()) return; onAdd({ name: form.name.trim(), status: form.status, note: form.note.trim() }); setForm({ name:"", status:"Planned", note:"" }); setOpen(false); };
+  return (
+    <>
+      {pocs.length ? pocs.map((p, i) => (
+        <div key={p.id || i} style={{ marginBottom: 12 }}>
+          <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center" }}>
+            <span style={{ fontSize:13.5, fontWeight:600 }}>{p.name}</span>
+            <div style={{ display:"flex", alignItems:"center", gap:6 }}>
+              <span className="tag" style={{ background: p.status === "Complete" ? "#E3F7EC" : "var(--accent-soft)", color: p.status === "Complete" ? "#1f8a57" : "var(--accent-deep)" }}>{p.status}</span>
+              {canEdit && <button onClick={() => onDelete(p.id)} title="Delete" style={{ border:"none", background:"none", color:"var(--muted2)", cursor:"pointer", fontSize:13 }}>✕</button>}
+            </div>
+          </div>
+          {p.note && <div style={{ fontSize:12.5, color:"var(--muted)", marginTop:3 }}>{p.note}</div>}
+        </div>
+      )) : !open && <div className="empty"><Activity size={15} /> No POCs logged.</div>}
+      {canEdit && (open ? (
+        <div style={{ marginTop:8, display:"flex", flexDirection:"column", gap:8 }}>
+          <input autoFocus placeholder="POC name (e.g. Crop classification accuracy test)" value={form.name} onChange={e => setForm(f => ({...f, name:e.target.value}))}
+            style={{ border:"1px solid var(--accent)", borderRadius:8, padding:"8px 11px", fontSize:13, fontFamily:"inherit", outline:"none" }} />
+          <select value={form.status} onChange={e => setForm(f => ({...f, status:e.target.value}))}
+            style={{ border:"1px solid var(--line)", borderRadius:8, padding:"8px 11px", fontSize:13, fontFamily:"inherit", outline:"none" }}>
+            {POC_STATUSES.map(s => <option key={s} value={s}>{s}</option>)}
+          </select>
+          <textarea placeholder="Notes…" value={form.note} onChange={e => setForm(f => ({...f, note:e.target.value}))}
+            style={{ border:"1px solid var(--line)", borderRadius:8, padding:"8px 11px", fontSize:13, fontFamily:"inherit", resize:"vertical", minHeight:52, outline:"none" }} />
+          <div style={{ display:"flex", gap:8 }}>
+            <button onClick={submit} style={{ padding:"6px 14px", borderRadius:7, border:"none", background:"var(--accent)", color:"#fff", fontSize:12.5, fontWeight:600, cursor:"pointer" }}>Add POC</button>
+            <button onClick={() => setOpen(false)} style={{ padding:"6px 14px", borderRadius:7, border:"1px solid var(--line)", background:"transparent", color:"var(--muted)", fontSize:12.5, cursor:"pointer" }}>Cancel</button>
+          </div>
+        </div>
+      ) : (
+        <button onClick={() => setOpen(true)} className="add-row"><Plus size={14} /> Add POC</button>
+      ))}
+    </>
+  );
+}
+
+function RiskAdder({ risks, canEdit, onAdd, onDelete }) {
+  const [open, setOpen] = useState(false);
+  const [form, setForm] = useState({ severity:"med", description:"" });
+  const submit = () => { if (!form.description.trim()) return; onAdd({ severity: form.severity, description: form.description.trim() }); setForm({ severity:"med", description:"" }); setOpen(false); };
+  return (
+    <>
+      {risks.length ? risks.map((r, i) => (
+        <div className="risk" key={r.id || i} style={{ display:"flex", alignItems:"flex-start", gap:8 }}>
+          <span className={"sev " + r.sev}>{r.sev}</span>
+          <span style={{ fontSize:13, color:"var(--ink2)", lineHeight:1.5, flex:1 }}>{r.text}</span>
+          {canEdit && <button onClick={() => onDelete(r.id)} title="Delete" style={{ border:"none", background:"none", color:"var(--muted2)", cursor:"pointer", fontSize:13 }}>✕</button>}
+        </div>
+      )) : !open && <div className="empty"><AlertTriangle size={15} /> No risks flagged.</div>}
+      {canEdit && (open ? (
+        <div style={{ marginTop:8, display:"flex", flexDirection:"column", gap:8 }}>
+          <select value={form.severity} onChange={e => setForm(f => ({...f, severity:e.target.value}))}
+            style={{ border:"1px solid var(--line)", borderRadius:8, padding:"8px 11px", fontSize:13, fontFamily:"inherit", outline:"none" }}>
+            <option value="low">low</option><option value="med">med</option><option value="high">high</option>
+          </select>
+          <textarea autoFocus placeholder="Describe the risk…" value={form.description} onChange={e => setForm(f => ({...f, description:e.target.value}))}
+            style={{ border:"1px solid var(--accent)", borderRadius:8, padding:"8px 11px", fontSize:13, fontFamily:"inherit", resize:"vertical", minHeight:52, outline:"none" }} />
+          <div style={{ display:"flex", gap:8 }}>
+            <button onClick={submit} style={{ padding:"6px 14px", borderRadius:7, border:"none", background:"var(--accent)", color:"#fff", fontSize:12.5, fontWeight:600, cursor:"pointer" }}>Add risk</button>
+            <button onClick={() => setOpen(false)} style={{ padding:"6px 14px", borderRadius:7, border:"1px solid var(--line)", background:"transparent", color:"var(--muted)", fontSize:12.5, cursor:"pointer" }}>Cancel</button>
+          </div>
+        </div>
+      ) : (
+        <button onClick={() => setOpen(true)} className="add-row"><Plus size={14} /> Add risk</button>
+      ))}
+    </>
+  );
+}
+
+function SampleDataAdder({ items, canEdit, onAdd, onDelete }) {
+  const [open, setOpen] = useState(false);
+  const [text, setText] = useState("");
+  const submit = () => { if (!text.trim()) return; onAdd(text.trim()); setText(""); setOpen(false); };
+  return (
+    <>
+      {items.length ? items.map((s, i) => (
+        <div className="li" key={s.id || i} style={{ display:"flex", alignItems:"flex-start", gap:6 }}>
+          <span className="b" /><span style={{ flex:1 }}>{s.text}</span>
+          {canEdit && <button onClick={() => onDelete(s.id)} title="Delete" style={{ border:"none", background:"none", color:"var(--muted2)", cursor:"pointer", fontSize:13 }}>✕</button>}
+        </div>
+      )) : !open && <div className="empty"><Layers size={15} /> Nothing delivered yet.</div>}
+      {canEdit && (open ? (
+        <div style={{ marginTop:8, display:"flex", flexDirection:"column", gap:8 }}>
+          <textarea autoFocus placeholder="Image IDs and notes, e.g. FF03_20260421_xyz — delivered to client 21 Apr" value={text} onChange={e => setText(e.target.value)}
+            style={{ border:"1px solid var(--accent)", borderRadius:8, padding:"8px 11px", fontSize:13, fontFamily:"inherit", resize:"vertical", minHeight:52, outline:"none" }} />
+          <div style={{ display:"flex", gap:8 }}>
+            <button onClick={submit} style={{ padding:"6px 14px", borderRadius:7, border:"none", background:"var(--accent)", color:"#fff", fontSize:12.5, fontWeight:600, cursor:"pointer" }}>Add</button>
+            <button onClick={() => setOpen(false)} style={{ padding:"6px 14px", borderRadius:7, border:"1px solid var(--line)", background:"transparent", color:"var(--muted)", fontSize:12.5, cursor:"pointer" }}>Cancel</button>
+          </div>
+        </div>
+      ) : (
+        <button onClick={() => setOpen(true)} className="add-row"><Plus size={14} /> Add sample data</button>
+      ))}
+    </>
+  );
+}
+
+function ExecutionTab({ d, canEdit, onUpdate, onSaveField }) {
   const e = d.execution;
   const st = d.sectionStamps || {};
 
@@ -1683,20 +2220,12 @@ function ExecutionTab({ d, canEdit, onUpdate }) {
     <>
       <div className="cols">
         <Block icon={CheckCircle2} title="Success criteria" stamp={st.execution}>
-          {e.successCriteria.length ? e.successCriteria.map((s, i) => (
-            <div className="li" key={i}><CheckCircle2 size={15} color="var(--ok)" style={{ flex: "none", marginTop: 1 }} />{s}</div>
-          )) : <div className="empty"><CheckCircle2 size={15} /> No success criteria yet — needed before handover.</div>}
+          <EditableList items={e.successCriteria} field="success_criteria" canEdit={canEdit} onSave={onSaveField} emptyIcon={CheckCircle2} emptyText="No success criteria yet — needed before handover." />
         </Block>
         <Block icon={Activity} title="Proofs of concept">
-          {e.pocs.length ? e.pocs.map((p, i) => (
-            <div key={i} style={{ marginBottom: 12 }}>
-              <div style={{ display: "flex", justifyContent: "space-between" }}>
-                <span style={{ fontSize: 13.5, fontWeight: 600 }}>{p.name}</span>
-                <span className="tag" style={{ background: p.status === "Complete" ? "#E3F7EC" : "var(--accent-soft)", color: p.status === "Complete" ? "#1f8a57" : "var(--accent-deep)" }}>{p.status}</span>
-              </div>
-              <div style={{ fontSize: 12.5, color: "var(--muted)", marginTop: 3 }}>{p.note}</div>
-            </div>
-          )) : <div className="empty"><Activity size={15} /> No POCs logged.</div>}
+          <PocAdder pocs={e.pocs} canEdit={canEdit}
+            onAdd={(poc) => onUpdate({ _addPoc: poc })}
+            onDelete={(id) => onUpdate({ _deleteRecord: { table:"deal_pocs", id } })} />
         </Block>
       </div>
 
@@ -1707,28 +2236,26 @@ function ExecutionTab({ d, canEdit, onUpdate }) {
 
       <div className="cols">
         <Block icon={Layers} title="Sample data delivered">
-          {e.sampleData.length ? e.sampleData.map((s, i) => (
-            <div className="li" key={i}><span className="b" />{s}</div>
-          )) : <div className="empty"><Layers size={15} /> Nothing delivered yet.</div>}
+          <SampleDataAdder items={e.sampleData} canEdit={canEdit}
+            onAdd={(text) => onUpdate({ _addSample: text })}
+            onDelete={(id) => onUpdate({ _deleteRecord: { table:"deal_sample_data", id } })} />
         </Block>
         <Block icon={MapPin} title="Sample delivery AOI">
-          <AoiMap aoi={e.sampleAoi} />
+          <AoiUploader aoi={e.sampleAoi} canEdit={canEdit} which="sample"
+            onSetAoi={(geojson) => onUpdate({ _setAoi: { geojson, which:"sample" } })} />
         </Block>
       </div>
 
       <div className="cols">
         <Block icon={AlertTriangle} title="Risks">
-          {e.risks.length ? e.risks.map((r, i) => (
-            <div className="risk" key={i}>
-              <span className={"sev " + r.sev}>{r.sev}</span>
-              <span style={{ fontSize: 13, color: "var(--ink2)", lineHeight: 1.5 }}>{r.text}</span>
-            </div>
-          )) : <div className="empty"><AlertTriangle size={15} /> No risks flagged.</div>}
+          <RiskAdder risks={e.risks} canEdit={canEdit}
+            onAdd={(risk) => onUpdate({ _addRisk: risk })}
+            onDelete={(id) => onUpdate({ _deleteRecord: { table:"deal_risks", id } })} />
         </Block>
         <Block icon={TrendingUp} title="Next steps & commercial pathway">
           <div className="kv">
-            <Field k="Next steps">{e.nextSteps}</Field>
-            <Field k="Commercial model">{e.commercial}</Field>
+            <EditableField k="Next steps" value={e.nextSteps} field="next_steps" canEdit={canEdit} onSave={onSaveField} />
+            <EditableField k="Commercial model" value={e.commercial} field="commercial_model" canEdit={canEdit} onSave={onSaveField} />
           </div>
         </Block>
       </div>
@@ -1779,21 +2306,14 @@ function NotesTab({ d, canEdit, onUpdate, toast }) {
       <div className="cols">
         <div>
           <Block icon={FileText} title="Meeting notes">
-            {d.notes.meetings.map((m, i) => (
-              <div key={i} style={{ marginBottom: 14 }}>
-                <div style={{ fontSize: 11, fontFamily: "var(--font-mono)", color: "var(--muted2)" }}>{m.date} · {m.author}</div>
-                <div style={{ fontSize: 13.5, color: "var(--ink2)", lineHeight: 1.55, marginTop: 4 }}>{m.text}</div>
-              </div>
-            ))}
+            <MeetingNotesAdder notes={d.notes.meetings} canEdit={canEdit}
+              onAdd={(note) => onUpdate({ _addMeetingNote: note })}
+              onDelete={(id) => onUpdate({ _deleteRecord: { table:"meeting_notes", id } })} />
           </Block>
           <Block icon={Paperclip} title="Attachments">
-            {d.notes.attachments.length ? d.notes.attachments.map((a, i) => (
-              <div className="attach" key={i}>
-                <div className="ai"><FileText size={16} /></div>
-                <div><div className="an2">{a.name}</div><div className="as">{a.type.toUpperCase()} · {a.size}</div></div>
-                <Download size={15} color="var(--muted2)" style={{ marginLeft: "auto" }} />
-              </div>
-            )) : <div className="empty"><Paperclip size={15} /> No attachments.</div>}
+            <AttachmentsManager attachments={d.notes.attachments} canEdit={canEdit}
+              onUpload={(file) => onUpdate({ _uploadFile: { file, kind:"attachment" } })}
+              onDelete={(id) => onUpdate({ _deleteRecord: { table:"attachments", id } })} />
           </Block>
         </div>
 
@@ -1811,6 +2331,67 @@ function NotesTab({ d, canEdit, onUpdate, toast }) {
           ))}
         </Block>
       </div>
+    </>
+  );
+}
+
+function MeetingNotesAdder({ notes, canEdit, onAdd, onDelete }) {
+  const [open, setOpen] = useState(false);
+  const [form, setForm] = useState({ note_date: new Date().toISOString().slice(0,10), body:"" });
+  const submit = () => { if (!form.body.trim()) return; onAdd({ note_date: form.note_date, author: "You", body: form.body.trim() }); setForm({ note_date: new Date().toISOString().slice(0,10), body:"" }); setOpen(false); };
+  return (
+    <>
+      {notes.length ? notes.map((m, i) => (
+        <div key={m.id || i} style={{ marginBottom: 14 }}>
+          <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center" }}>
+            <div style={{ fontSize: 11, fontFamily: "var(--font-mono)", color: "var(--muted2)" }}>{m.date} · {m.author}</div>
+            {canEdit && <button onClick={() => onDelete(m.id)} title="Delete" style={{ border:"none", background:"none", color:"var(--muted2)", cursor:"pointer", fontSize:12 }}>✕</button>}
+          </div>
+          <div style={{ fontSize: 13.5, color: "var(--ink2)", lineHeight: 1.55, marginTop: 4 }}>{m.text}</div>
+        </div>
+      )) : !open && <div className="empty"><FileText size={15} /> No meeting notes yet.</div>}
+      {canEdit && (open ? (
+        <div style={{ marginTop:8, display:"flex", flexDirection:"column", gap:8 }}>
+          <input type="date" value={form.note_date} onChange={e => setForm(f => ({...f, note_date:e.target.value}))}
+            style={{ border:"1px solid var(--line)", borderRadius:8, padding:"7px 10px", fontSize:13, fontFamily:"inherit", outline:"none" }} />
+          <textarea autoFocus placeholder="Meeting notes…" value={form.body} onChange={e => setForm(f => ({...f, body:e.target.value}))}
+            style={{ border:"1px solid var(--accent)", borderRadius:8, padding:"8px 11px", fontSize:13, fontFamily:"inherit", resize:"vertical", minHeight:72, outline:"none" }} />
+          <div style={{ display:"flex", gap:8 }}>
+            <button onClick={submit} style={{ padding:"6px 14px", borderRadius:7, border:"none", background:"var(--accent)", color:"#fff", fontSize:12.5, fontWeight:600, cursor:"pointer" }}>Add note</button>
+            <button onClick={() => setOpen(false)} style={{ padding:"6px 14px", borderRadius:7, border:"1px solid var(--line)", background:"transparent", color:"var(--muted)", fontSize:12.5, cursor:"pointer" }}>Cancel</button>
+          </div>
+        </div>
+      ) : (
+        <button onClick={() => setOpen(true)} className="add-row"><Plus size={14} /> Add meeting note</button>
+      ))}
+    </>
+  );
+}
+
+function AttachmentsManager({ attachments, canEdit, onUpload, onDelete }) {
+  const [busy, setBusy] = useState(false);
+  const inputId = `att-${Math.random().toString(36).slice(2,7)}`;
+  return (
+    <>
+      {attachments.length ? attachments.map((a, i) => (
+        <div className="attach" key={a.id || i}>
+          <div className="ai"><FileText size={16} /></div>
+          <div><div className="an2">{a.name}</div><div className="as">{(a.type||"file").toUpperCase()} · {a.size}</div></div>
+          <div style={{ marginLeft:"auto", display:"flex", gap:8, alignItems:"center" }}>
+            {a.path && <a href={`${SUPABASE_URL}/storage/v1/object/public/${STORAGE_BUCKET}/${a.path}`} target="_blank" rel="noreferrer" title="Download"><Download size={15} color="var(--muted2)" /></a>}
+            {canEdit && <button onClick={() => onDelete(a.id)} title="Delete" style={{ border:"none", background:"none", color:"var(--muted2)", cursor:"pointer", fontSize:13 }}>✕</button>}
+          </div>
+        </div>
+      )) : <div className="empty"><Paperclip size={15} /> No attachments.</div>}
+      {canEdit && (
+        <>
+          <label htmlFor={inputId} className="add-row" style={{ cursor: busy?"wait":"pointer", marginTop:8 }}>
+            <Upload size={14} /> {busy ? "Uploading…" : "Upload attachment"}
+          </label>
+          <input id={inputId} type="file" style={{ display:"none" }}
+            onChange={async (e) => { const f = e.target.files[0]; if (!f) return; setBusy(true); try { await onUpload(f); } finally { setBusy(false); e.target.value=""; } }} />
+        </>
+      )}
     </>
   );
 }
@@ -2007,7 +2588,7 @@ function FeedbackTab({ d, canEdit, onUpdate, toast }) {
             </div>
             <div>
               <div className="k">Image IDs (comma-separated)</div>
-              <input style={{ width:"100%",border:"1px solid var(--line)",borderRadius:8,padding:"8px 11px",fontSize:13,fontFamily:"inherit",marginTop:4,outline:"none",fontFamily:"var(--font-mono)" }}
+              <input style={{ width:"100%",border:"1px solid var(--line)",borderRadius:8,padding:"8px 11px",fontSize:13,marginTop:4,outline:"none",fontFamily:"var(--font-mono)" }}
                 placeholder="FF03_20260421_..." value={form.imageIds}
                 onChange={e => setForm(f => ({ ...f, imageIds: e.target.value }))} />
             </div>
@@ -2134,22 +2715,123 @@ const SUPABASE_URL = (typeof import.meta !== "undefined" && import.meta.env && i
 const SUPABASE_ANON_KEY = (typeof import.meta !== "undefined" && import.meta.env && import.meta.env.VITE_SUPABASE_ANON_KEY)
   || "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InBsc3B1bmxrbWt2cGxnY3NuY3BhIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODE3NzA3NTMsImV4cCI6MjA5NzM0Njc1M30.SMybWhOWztQFzXSlosW1c_MVdndXsVOLcyfGJUd63eE";
 
-const SB_HEADERS = {
-  "apikey": SUPABASE_ANON_KEY,
-  "Authorization": `Bearer ${SUPABASE_ANON_KEY}`,
-  "Content-Type": "application/json",
-  "Prefer": "return=representation",
-};
+// ── Auth-aware Supabase client ────────────────────────────────
+// We keep a mutable session token so all REST calls automatically
+// use the authenticated user's JWT once they've signed in.
+let _authToken = SUPABASE_ANON_KEY;
+function setAuthToken(tok) { _authToken = tok || SUPABASE_ANON_KEY; }
+function getHeaders(extra = {}) {
+  return {
+    "apikey": SUPABASE_ANON_KEY,
+    "Authorization": `Bearer ${_authToken}`,
+    "Content-Type": "application/json",
+    "Prefer": "return=representation",
+    ...extra,
+  };
+}
+
+// ── Auth API helpers ──────────────────────────────────────────
+const AUTH_URL = `${SUPABASE_URL}/auth/v1`;
+
+async function signInWithGoogle() {
+  // Redirect to Supabase Google OAuth — comes back to current URL
+  const redirectTo = encodeURIComponent(window.location.origin + window.location.pathname);
+  window.location.href = `${AUTH_URL}/authorize?provider=google&redirect_to=${redirectTo}`;
+}
+
+async function signOut() {
+  await fetch(`${AUTH_URL}/logout`, {
+    method: "POST",
+    headers: { "apikey": SUPABASE_ANON_KEY, "Authorization": `Bearer ${_authToken}` },
+  });
+  setAuthToken(null);
+  // Clear hash/query params and reload
+  window.location.href = window.location.origin + window.location.pathname;
+}
+
+async function getSession() {
+  // Check URL hash for access_token (OAuth callback)
+  const hash = window.location.hash;
+  if (hash && hash.includes("access_token")) {
+    const params = new URLSearchParams(hash.replace("#", "?"));
+    const accessToken = params.get("access_token");
+    const refreshToken = params.get("refresh_token");
+    if (accessToken) {
+      // Store in sessionStorage so refresh survives navigation
+      sessionStorage.setItem("sb_access_token", accessToken);
+      if (refreshToken) sessionStorage.setItem("sb_refresh_token", refreshToken);
+      // Clean up URL
+      window.history.replaceState(null, "", window.location.pathname);
+      return accessToken;
+    }
+  }
+  // Check sessionStorage
+  const stored = sessionStorage.getItem("sb_access_token");
+  if (stored) {
+    // Verify it's still valid
+    try {
+      const res = await fetch(`${AUTH_URL}/user`, {
+        headers: { "apikey": SUPABASE_ANON_KEY, "Authorization": `Bearer ${stored}` },
+      });
+      if (res.ok) return stored;
+      // Token expired — try refresh
+      const refresh = sessionStorage.getItem("sb_refresh_token");
+      if (refresh) {
+        const rRes = await fetch(`${AUTH_URL}/token?grant_type=refresh_token`, {
+          method: "POST",
+          headers: { "apikey": SUPABASE_ANON_KEY, "Content-Type": "application/json" },
+          body: JSON.stringify({ refresh_token: refresh }),
+        });
+        if (rRes.ok) {
+          const data = await rRes.json();
+          sessionStorage.setItem("sb_access_token", data.access_token);
+          if (data.refresh_token) sessionStorage.setItem("sb_refresh_token", data.refresh_token);
+          return data.access_token;
+        }
+      }
+    } catch (e) {}
+    sessionStorage.removeItem("sb_access_token");
+    sessionStorage.removeItem("sb_refresh_token");
+  }
+  return null;
+}
+
+async function getUserFromToken(token) {
+  const res = await fetch(`${AUTH_URL}/user`, {
+    headers: { "apikey": SUPABASE_ANON_KEY, "Authorization": `Bearer ${token}` },
+  });
+  if (!res.ok) return null;
+  return res.json();
+}
+
+// Resolve access level from email
+// - In roster → 'member' (full edit access)
+// - @pixxel.space or @pixxel.co.in but not in roster → 'viewer'
+// - Anything else → 'denied'
+function resolveRoleFromEmail(email) {
+  const e = (email || "").toLowerCase();
+  const all = Object.values(TEAM_MEMBERS).flat();
+  if (all.some(p => p.email === e)) return "member";
+  if (e.endsWith("@pixxel.space") || e.endsWith("@pixxel.co.in")) return "viewer";
+  return "denied";
+}
+
+function resolveNameFromEmail(email) {
+  const e = (email || "").toLowerCase();
+  const all = Object.values(TEAM_MEMBERS).flat();
+  const match = all.find(p => p.email === e);
+  return match ? match.name : null;
+}
 
 async function sbGet(table, params = "") {
-  const r = await fetch(`${SUPABASE_URL}/rest/v1/${table}${params}`, { headers: SB_HEADERS });
+  const r = await fetch(`${SUPABASE_URL}/rest/v1/${table}${params}`, { headers: getHeaders() });
   if (!r.ok) throw new Error(`${r.status}: ${await r.text()}`);
   return r.json();
 }
 
 async function sbPost(table, body) {
   const r = await fetch(`${SUPABASE_URL}/rest/v1/${table}`, {
-    method: "POST", headers: SB_HEADERS, body: JSON.stringify(body),
+    method: "POST", headers: getHeaders(), body: JSON.stringify(body),
   });
   if (!r.ok) throw new Error(`${r.status}: ${await r.text()}`);
   const text = await r.text();
@@ -2159,10 +2841,93 @@ async function sbPost(table, body) {
 async function sbPatch(table, id, body) {
   const r = await fetch(`${SUPABASE_URL}/rest/v1/${table}?id=eq.${id}`, {
     method: "PATCH",
-    headers: { ...SB_HEADERS, "Prefer": "return=minimal" },
+    headers: getHeaders({ "Prefer": "return=minimal" }),
     body: JSON.stringify(body),
   });
   if (!r.ok) throw new Error(`${r.status}: ${await r.text()}`);
+}
+
+// ── Sign-in screen ────────────────────────────────────────────
+function SignInScreen({ loading }) {
+  const INK = "#0B1220";
+  const MUTED = "#7C8595";
+  const ACCENT = "#0EA5B7";
+  return (
+    <div style={{
+      minHeight: "100vh", background: INK, display: "flex",
+      alignItems: "center", justifyContent: "center", flexDirection: "column",
+      fontFamily: "Inter, sans-serif",
+    }}>
+      {/* Spectral header line */}
+      <div style={{
+        position: "fixed", top: 0, left: 0, right: 0, height: 3,
+        background: "linear-gradient(90deg,#7B2FBE,#2D7FF9,#0EA5B7,#2FB67A,#F0A429,#E5564B)",
+      }} />
+      <div style={{ textAlign: "center", maxWidth: 400, padding: "0 24px" }}>
+        {/* Logo */}
+        <div style={{ marginBottom: 32 }}>
+          <div style={{
+            display: "inline-flex", alignItems: "center", gap: 10, marginBottom: 8,
+          }}>
+            <div style={{
+              width: 40, height: 40, borderRadius: 10, background: ACCENT,
+              display: "flex", alignItems: "center", justifyContent: "center",
+            }}>
+              <svg width="22" height="22" viewBox="0 0 22 22" fill="none">
+                <circle cx="11" cy="11" r="6" stroke="white" strokeWidth="1.5" fill="none"/>
+                <circle cx="11" cy="11" r="2.5" fill="white"/>
+                <path d="M11 2v3M11 17v3M2 11h3M17 11h3" stroke="white" strokeWidth="1.5" strokeLinecap="round"/>
+              </svg>
+            </div>
+            <div style={{ textAlign: "left" }}>
+              <div style={{ color: "white", fontFamily: "'Space Grotesk',sans-serif", fontWeight: 700, fontSize: 18, letterSpacing: -0.5 }}>pixxel</div>
+              <div style={{ color: MUTED, fontSize: 11, letterSpacing: 2, textTransform: "uppercase" }}>Customer Passport</div>
+            </div>
+          </div>
+        </div>
+
+        <h1 style={{ color: "white", fontFamily: "'Space Grotesk',sans-serif", fontSize: 28, fontWeight: 700, marginBottom: 8, letterSpacing: -0.5 }}>
+          Welcome back
+        </h1>
+        <p style={{ color: MUTED, fontSize: 14, marginBottom: 40, lineHeight: 1.6 }}>
+          Sign in with your Pixxel Google account to access deal passports, manage handovers, and track customer engagements.
+        </p>
+
+        <button
+          onClick={signInWithGoogle}
+          disabled={loading}
+          style={{
+            display: "flex", alignItems: "center", gap: 12, width: "100%",
+            padding: "14px 20px", borderRadius: 12, border: "none",
+            background: loading ? "#E2E5EA" : "#FFFFFF", color: "#1F2433", fontSize: 15,
+            fontWeight: 600, cursor: loading ? "wait" : "pointer",
+            transition: "all 0.15s", justifyContent: "center",
+            boxShadow: "0 2px 12px rgba(0,0,0,0.25)",
+          }}
+          onMouseEnter={e => { if (!loading) e.currentTarget.style.background = "#F0F2F5"; }}
+          onMouseLeave={e => { if (!loading) e.currentTarget.style.background = "#FFFFFF"; }}
+        >
+          {loading ? (
+            <span style={{ color: "#5B6472" }}>Signing in…</span>
+          ) : (
+            <>
+              <svg width="20" height="20" viewBox="0 0 24 24">
+                <path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" fill="#4285F4"/>
+                <path d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" fill="#34A853"/>
+                <path d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l3.66-2.84z" fill="#FBBC05"/>
+                <path d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" fill="#EA4335"/>
+              </svg>
+              Continue with Google
+            </>
+          )}
+        </button>
+
+        <p style={{ color: MUTED, fontSize: 12, marginTop: 24, lineHeight: 1.5 }}>
+          Access is restricted to the Pixxel Sales org.<br/>Use your <code style={{ color: ACCENT, fontSize: 11 }}>@pixxel.space</code> or <code style={{ color: ACCENT, fontSize: 11 }}>@pixxel.co.in</code> account.
+        </p>
+      </div>
+    </div>
+  );
 }
 
 const CORE_PIPELINES_LIST = [
@@ -2186,7 +2951,7 @@ async function fetchPassports({ pipeline, stage, ownerFilter, search } = {}) {
 }
 
 async function fetchPassportDetail(id) {
-  const [passport, contacts, pocs, risks, sampleData, captureLog, actionItems, meetingNotes, activityFeed, attachments, feedback] = await Promise.all([
+  const [passport, contacts, pocs, risks, sampleData, captureLog, actionItems, meetingNotes, activityFeed, attachments, feedback, collaborators] = await Promise.all([
     sbGet("handover_passports", `?id=eq.${id}`).then(r => r[0]),
     sbGet("deal_contacts", `?passport_id=eq.${id}`),
     sbGet("deal_pocs", `?passport_id=eq.${id}`),
@@ -2198,8 +2963,9 @@ async function fetchPassportDetail(id) {
     sbGet("activity_feed", `?passport_id=eq.${id}&order=created_at.desc`),
     sbGet("attachments", `?passport_id=eq.${id}`),
     sbGet("customer_feedback", `?passport_id=eq.${id}&order=feedback_date.desc`),
+    sbGet("deal_collaborators", `?passport_id=eq.${id}&order=created_at.asc`).catch(() => []),
   ]);
-  return { passport, contacts: contacts||[], pocs: pocs||[], risks: risks||[], sampleData: sampleData||[], captureLog: captureLog||[], actionItems: actionItems||[], meetingNotes: meetingNotes||[], activityFeed: activityFeed||[], attachments: attachments||[], feedback: feedback||[] };
+  return { passport, contacts: contacts||[], pocs: pocs||[], risks: risks||[], sampleData: sampleData||[], captureLog: captureLog||[], actionItems: actionItems||[], meetingNotes: meetingNotes||[], activityFeed: activityFeed||[], attachments: attachments||[], feedback: feedback||[], collaborators: collaborators||[] };
 }
 
 function calcReadiness(passport, contacts) {
@@ -2243,6 +3009,58 @@ async function addActionItem(passportId, item) {
 
 async function addFeedbackEntry(passportId, entry) {
   await sbPost("customer_feedback", { passport_id: passportId, ...entry });
+}
+
+// ── New child-record helpers ──────────────────────────────────
+async function sbDelete(table, id) {
+  const r = await fetch(`${SUPABASE_URL}/rest/v1/${table}?id=eq.${id}`, {
+    method: "DELETE", headers: getHeaders({ "Prefer": "return=minimal" }),
+  });
+  if (!r.ok) throw new Error(`${r.status}: ${await r.text()}`);
+}
+
+async function addPoc(passportId, poc) {
+  await sbPost("deal_pocs", { passport_id: passportId, ...poc });
+}
+async function addRisk(passportId, risk) {
+  await sbPost("deal_risks", { passport_id: passportId, ...risk });
+}
+async function addSampleData(passportId, description) {
+  await sbPost("deal_sample_data", { passport_id: passportId, description });
+}
+async function addMeetingNote(passportId, note) {
+  await sbPost("meeting_notes", { passport_id: passportId, ...note });
+}
+async function addCollaborator(passportId, person) {
+  await sbPost("deal_collaborators", { passport_id: passportId, ...person });
+}
+async function addAttachmentRecord(passportId, rec) {
+  await sbPost("attachments", { passport_id: passportId, ...rec });
+}
+
+// ── Supabase Storage ──────────────────────────────────────────
+const STORAGE_BUCKET = "passport-files";
+async function uploadFile(passportId, file) {
+  const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, "_");
+  const path = `${passportId}/${Date.now()}_${safeName}`;
+  const r = await fetch(`${SUPABASE_URL}/storage/v1/object/${STORAGE_BUCKET}/${path}`, {
+    method: "POST",
+    headers: { "apikey": SUPABASE_ANON_KEY, "Authorization": `Bearer ${_authToken}` },
+    body: file,
+  });
+  if (!r.ok) throw new Error(`Upload failed: ${r.status} ${await r.text()}`);
+  return path;
+}
+function publicFileUrl(path) {
+  return `${SUPABASE_URL}/storage/v1/object/public/${STORAGE_BUCKET}/${path}`;
+}
+async function downloadFileText(path) {
+  // For parsing AOI files — fetch as text/arraybuffer
+  const r = await fetch(`${SUPABASE_URL}/storage/v1/object/${STORAGE_BUCKET}/${path}`, {
+    headers: { "apikey": SUPABASE_ANON_KEY, "Authorization": `Bearer ${_authToken}` },
+  });
+  if (!r.ok) throw new Error(`Download failed: ${r.status}`);
+  return r;
 }
 
 async function triggerHubspotSync() {
@@ -2402,7 +3220,7 @@ function DealListLive({ deals, loading, onOpen, pipelineFilter, setPipelineFilte
    ================================================================ */
 
 function PassportDetail({ data, onBack, canEdit, onRefresh, onAssign, onNotifyAll, onPostToSlack, slackChannel, slackSending, slackStatus, toast }) {
-  const { passport: p, contacts, pocs, risks, sampleData, captureLog, actionItems, meetingNotes, activityFeed, attachments, feedback } = data;
+  const { passport: p, contacts, pocs, risks, sampleData, captureLog, actionItems, meetingNotes, activityFeed, attachments, feedback, collaborators } = data;
   const { score, items: readinessItems } = calcReadiness(p, contacts);
 
   // Map Supabase passport → the shape Passport component expects
@@ -2443,9 +3261,9 @@ function PassportDetail({ data, onBack, canEdit, onRefresh, onAssign, onNotifyAl
     },
     execution: {
       successCriteria: p.success_criteria || [],
-      pocs: pocs.map(poc => ({ name: poc.name, status: poc.status, note: poc.note })),
-      sampleData: sampleData.map(s => s.description),
-      risks: risks.map(r => ({ sev: r.severity, text: r.description })),
+      pocs: pocs.map(poc => ({ id: poc.id, name: poc.name, status: poc.status, note: poc.note })),
+      sampleData: sampleData.map(s => ({ id: s.id, text: s.description })),
+      risks: risks.map(r => ({ id: r.id, sev: r.severity, text: r.description })),
       nextSteps: p.next_steps || "",
       commercial: p.commercial_model || "",
       captureLog: captureLog.map(e => ({
@@ -2458,13 +3276,15 @@ function PassportDetail({ data, onBack, canEdit, onRefresh, onAssign, onNotifyAl
       })),
     },
     notes: {
-      meetings: meetingNotes.map(n => ({ date: n.note_date || "", author: n.author, text: n.body })),
+      meetings: meetingNotes.map(n => ({ id: n.id, date: n.note_date || "", author: n.author, text: n.body })),
       activity: activityFeed.map(a => ({
         date: new Date(a.created_at).toLocaleString("en-GB", { month:"short", day:"2-digit", hour:"2-digit", minute:"2-digit" }),
         author: a.author, text: a.body, mentions: a.mentions || [],
       })),
-      attachments: attachments.map(a => ({ name: a.file_name, type: a.file_type, size: a.file_size })),
+      attachments: attachments.map(a => ({ id: a.id, name: a.file_name, type: a.file_type, size: a.file_size, path: a.storage_path })),
     },
+    collaborators: (collaborators || []).map(c => ({ id: c.id, name: c.name, email: c.email, note: c.note })),
+    links: { aoiLink: p.aoi_link || "", feasibilityLink: p.feasibility_link || "" },
     feedback: feedback.map(f => ({
       id: f.id, date: f.feedback_date, type: f.feedback_type,
       satisfaction: f.satisfaction, keyInsights: f.key_insights || "",
@@ -2506,6 +3326,61 @@ function PassportDetail({ data, onBack, canEdit, onRefresh, onAssign, onNotifyAl
     if (updated._feedbackEntry) {
       await addFeedbackEntry(p.id, updated._feedbackEntry);
       await onRefresh();
+      return;
+    }
+    // ── New child records ──────────────────────────────────────
+    if (updated._addPoc) { await addPoc(p.id, updated._addPoc); await onRefresh(); return; }
+    if (updated._addRisk) { await addRisk(p.id, updated._addRisk); await onRefresh(); return; }
+    if (updated._addSample) { await addSampleData(p.id, updated._addSample); await onRefresh(); return; }
+    if (updated._addMeetingNote) { await addMeetingNote(p.id, updated._addMeetingNote); await onRefresh(); return; }
+    if (updated._addCollaborator) { await addCollaborator(p.id, updated._addCollaborator); await onRefresh(); return; }
+    if (updated._deleteRecord) {
+      await sbDelete(updated._deleteRecord.table, updated._deleteRecord.id);
+      await onRefresh();
+      return;
+    }
+    // ── File upload (attachment / feasibility PDF) ─────────────
+    if (updated._uploadFile) {
+      const { file, kind } = updated._uploadFile;
+      const path = await uploadFile(p.id, file);
+      if (kind === "attachment") {
+        await addAttachmentRecord(p.id, {
+          file_name: file.name, file_type: file.type || "file",
+          file_size: (file.size/1024).toFixed(0) + " KB", storage_path: path,
+        });
+      } else if (kind === "feasibility") {
+        await sbPatch("handover_passports", p.id, { feasibility_link: publicFileUrl(path) });
+      }
+      await onRefresh();
+      return;
+    }
+    // ── AOI upload (parsed GeoJSON) ────────────────────────────
+    if (updated._setAoi) {
+      const { geojson, which } = updated._setAoi; // which: 'aoi' | 'sample'
+      const col = which === "sample" ? "sample_aoi_geojson" : "aoi_geojson";
+      await sbPatch("handover_passports", p.id, { [col]: geojson });
+      await onRefresh();
+      return;
+    }
+    // ── AOI / feasibility link (text URL) ──────────────────────
+    if (updated._setLink) {
+      const { field, url } = updated._setLink; // field: 'aoi_link' | 'feasibility_link'
+      await sbPatch("handover_passports", p.id, { [field]: url });
+      await onRefresh();
+      return;
+    }
+    // General single-field update (text, tags, lists) → persist to passport row
+    if (updated._fieldUpdate) {
+      const { field, value } = updated._fieldUpdate;
+      const ALLOWED = [
+        "customer_team","use_case","pain_points","support_needs","data_sources",
+        "bandset","cadence","problem_statement","objectives","success_criteria",
+        "next_steps","commercial_model",
+      ];
+      if (ALLOWED.includes(field)) {
+        await sbPatch("handover_passports", p.id, { [field]: value });
+        await onRefresh();
+      }
       return;
     }
     // General passport field update — build Supabase fields from changed deal
@@ -2642,6 +3517,59 @@ function DashboardLive({ deals, onOpen }) {
    APP SHELL (Supabase-wired)
    ================================================================ */
 export default function App() {
+  // ── Auth state ───────────────────────────────────────────────
+  const [authLoading, setAuthLoading] = useState(true);
+  const [currentUser, setCurrentUser] = useState(null);
+  // currentUser: { email, name, role: 'se'|'cs'|'analytics'|'owner'|'viewer' }
+
+  useEffect(() => {
+    (async () => {
+      const token = await getSession();
+      if (token) {
+        setAuthToken(token);
+        const user = await getUserFromToken(token);
+        if (user) {
+          const email = user.email || "";
+          const role = resolveRoleFromEmail(email);
+          const name = resolveNameFromEmail(email) || user.user_metadata?.full_name || email;
+          setCurrentUser({ email, name, role });
+        } else {
+          sessionStorage.removeItem("sb_access_token");
+          sessionStorage.removeItem("sb_refresh_token");
+          setAuthToken(null);
+        }
+      }
+      setAuthLoading(false);
+    })();
+  }, []);
+
+  if (authLoading) return <SignInScreen loading={true} />;
+  if (!currentUser) return <SignInScreen loading={false} />;
+
+  // Non-pixxel email — blocked entirely
+  if (currentUser.role === "denied") {
+    return (
+      <div style={{ minHeight:"100vh", background:"var(--ink)", display:"flex", alignItems:"center", justifyContent:"center", flexDirection:"column", fontFamily:"Inter,sans-serif", textAlign:"center", padding:"0 24px" }}>
+        <div style={{ color:"var(--muted2)", marginBottom:16 }}>
+          <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><circle cx="12" cy="12" r="10"/><path d="M15 9l-6 6M9 9l6 6"/></svg>
+        </div>
+        <h2 style={{ color:"white", fontFamily:"'Space Grotesk',sans-serif", marginBottom:8 }}>Access Denied</h2>
+        <p style={{ color:"var(--muted2)", fontSize:14, marginBottom:24 }}>This tool is only accessible to the Pixxel team.<br/>You signed in as <code style={{ color:"var(--accent)" }}>{currentUser.email}</code></p>
+        <button onClick={() => signOut()} style={{ padding:"10px 20px", borderRadius:8, border:"1px solid var(--line)", background:"transparent", color:"white", cursor:"pointer" }}>Sign out and try again</button>
+      </div>
+    );
+  }
+
+  const canEdit = currentUser.role === "member";
+
+  return <AppMain
+    currentUser={currentUser}
+    canEdit={canEdit}
+    onSignOut={async () => { await signOut(); setCurrentUser(null); }}
+  />;
+}
+
+function AppMain({ currentUser, canEdit, onSignOut }) {
   const [deals, setDeals] = useState([]);
   const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
@@ -2652,13 +3580,12 @@ export default function App() {
   const [searchQ, setSearchQ] = useState("");
 
   // ── Passport detail state ───────────────────────────────────
-  const [openId, setOpenId] = useState(null);           // supabase uuid
-  const [passportData, setPassportData] = useState(null); // full detail
+  const [openId, setOpenId] = useState(null);
+  const [passportData, setPassportData] = useState(null);
   const [detailLoading, setDetailLoading] = useState(false);
 
   // ── UI state ────────────────────────────────────────────────
   const [view, setView] = useState("deals");
-  const [role, setRole] = useState("se");
   const [toastMsg, setToastMsg] = useState(null);
   const [notifs, setNotifs] = useState([]);
   const [bellOpen, setBellOpen] = useState(false);
@@ -2671,7 +3598,6 @@ export default function App() {
     window.clearTimeout(window.__t);
     window.__t = window.setTimeout(() => setToastMsg(null), 3000);
   };
-  const canEdit = role === "se";
   const unread = notifs.filter(n => !n.read).length;
 
   // ── Load deal list ──────────────────────────────────────────
@@ -2758,6 +3684,12 @@ export default function App() {
     const deal = deals.find(d => d.id === passportId) || passportData?.passport;
     try {
       await assignOwner(passportId, r, name);
+      if (!name) {
+        // Clearing an assignment — no Slack notification, just refresh
+        toast(`${ROLE_LABEL[r]} assignment cleared`);
+        refreshDetail();
+        return;
+      }
       // Push in-app notification
       setNotifs(ns => [{
         id: Math.random(), person: name, email: emailFor(name),
@@ -2908,15 +3840,64 @@ export default function App() {
           )}
         </div>
 
-        <div className="cp-viewtoggle">
-          <button className={role === "se" ? "on" : ""} onClick={() => setRole("se")}><Pencil size={13} /> SE (editing)</button>
-          <button className={role === "cs" ? "on" : ""} onClick={() => setRole("cs")}><Eye size={13} /> CS (read-only)</button>
+        <div className="cp-viewtoggle" style={{display:"flex",alignItems:"center",gap:8}}>
+          <div style={{
+            display:"flex",alignItems:"center",gap:6,
+            padding:"6px 12px",borderRadius:8,
+            background: canEdit ? "rgba(14,165,183,0.1)" : "rgba(146,155,171,0.1)",
+            border: canEdit ? "1px solid rgba(14,165,183,0.2)" : "1px solid rgba(146,155,171,0.2)",
+            fontSize:12,fontWeight:500,
+            color: canEdit ? "var(--accent)" : "var(--muted2)",
+          }}>
+            {canEdit ? <Pencil size={12}/> : <Eye size={12}/>}
+            {currentUser.name} · {canEdit ? "Full access" : "View only"}
+          </div>
+          <button
+            onClick={onSignOut}
+            title="Sign out"
+            style={{
+              padding:"6px 10px",borderRadius:8,border:"1px solid var(--line)",
+              background:"transparent",color:"var(--muted2)",fontSize:12,cursor:"pointer",
+            }}
+          >Sign out</button>
         </div>
       </div>
 
       <div className="cp-page">
-        {role === "cs" && (
-          <div className="cp-banner"><Lock size={15} /> Read-only briefing view — Customer Success can review everything captured, but editing is locked.</div>
+        {!canEdit && (
+          <div className="cp-banner" style={{display:"flex",alignItems:"center",justifyContent:"space-between",flexWrap:"wrap",gap:8}}>
+            <span><Lock size={15}/> Read-only view — you can browse all deal passports but editing is locked.</span>
+            <button
+              onClick={async () => {
+                try {
+                  await fetch(`${SUPABASE_URL}/functions/v1/slack-notify`, {
+                    method:"POST",
+                    headers:{
+                      "Content-Type":"application/json",
+                      "Authorization":`Bearer ${SUPABASE_ANON_KEY}`,
+                    },
+                    body: JSON.stringify({
+                      event:"mention",
+                      mentionedPerson:"Rhodri Phillips",
+                      mentioned_slack:"U092KJ4AKPC",
+                      mentionedBy: currentUser.name || currentUser.email,
+                      company:"Customer Passport",
+                      dealId:"ACCESS REQUEST",
+                      noteText:`${currentUser.name || currentUser.email} (${currentUser.email}) is requesting edit access to the Customer Passport.`,
+                    }),
+                  });
+                  alert("Request sent! Rhodri will be notified in Slack.");
+                } catch(e) {
+                  alert("Couldn't send request — please message Rhodri directly.");
+                }
+              }}
+              style={{
+                padding:"6px 14px",borderRadius:6,border:"1px solid var(--accent)",
+                background:"transparent",color:"var(--accent)",fontSize:12,
+                fontWeight:500,cursor:"pointer",whiteSpace:"nowrap",
+              }}
+            >Request edit access</button>
+          </div>
         )}
 
         {openId

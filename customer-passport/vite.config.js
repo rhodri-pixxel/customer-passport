@@ -8,7 +8,8 @@ export default defineConfig({
   },
   resolve: {
     alias: {
-      buffer: "buffer",
+      // Force the browser ESM build so Vite bundles it instead of externalizing
+      buffer: "buffer/index.js",
     },
   },
   optimizeDeps: {
