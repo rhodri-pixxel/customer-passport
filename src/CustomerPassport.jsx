@@ -1194,7 +1194,7 @@ function GeoJsonMap({ geojson, onClear, canEdit }) {
       mapRef.current = L.map(containerRef.current, {
         zoomControl: true, attributionControl: false, scrollWheelZoom: false,
       });
-      L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png", {
+      L.tileLayer("https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png", {
         maxZoom: 19, subdomains: "abcd",
       }).addTo(mapRef.current);
     }
@@ -1203,8 +1203,8 @@ function GeoJsonMap({ geojson, onClear, canEdit }) {
     if (map._aoiLayer) { map.removeLayer(map._aoiLayer); }
     try {
       const layer = L.geoJSON(geojson, {
-        style: { color: "#3fe0ee", weight: 2, fillColor: "#0EA5B7", fillOpacity: 0.25 },
-        pointToLayer: (f, latlng) => L.circleMarker(latlng, { radius: 5, color: "#3fe0ee", fillColor: "#0EA5B7", fillOpacity: 0.7 }),
+        style: { color: "#0B7E8C", weight: 2.5, fillColor: "#0EA5B7", fillOpacity: 0.35 },
+        pointToLayer: (f, latlng) => L.circleMarker(latlng, { radius: 5, color: "#0B7E8C", fillColor: "#0EA5B7", fillOpacity: 0.8 }),
       });
       layer.addTo(map);
       map._aoiLayer = layer;
@@ -1227,7 +1227,7 @@ function GeoJsonMap({ geojson, onClear, canEdit }) {
 
   return (
     <div style={{ position: "relative", borderRadius: 12, overflow: "hidden", border: "1px solid var(--line)" }}>
-      <div ref={containerRef} style={{ height: 300, width: "100%", background: "#0a1822" }} />
+      <div ref={containerRef} style={{ height: 300, width: "100%", background: "#e8eef2" }} />
       <div style={{ position:"absolute", bottom:8, left:8, zIndex:500, background:"rgba(11,18,32,0.78)", color:"#cdd6e3", fontSize:11, padding:"4px 9px", borderRadius:6, fontFamily:"var(--font-mono)", pointerEvents:"none" }}>
         {meta.features} feature{meta.features !== 1 ? "s" : ""} · ◎ {meta.center}
       </div>
@@ -1453,6 +1453,85 @@ function DealList({ deals, onOpen }) {
 /* ------------------------------------------------------------------ */
 /*  Passport detail                                                   */
 /* ------------------------------------------------------------------ */
+function exportPassportPdf(deal) {
+  const esc = (s) => String(s == null ? "" : s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+  const list = (arr) => (arr && arr.length) ? "<ul>" + arr.map(x => `<li>${esc(typeof x === "string" ? x : (x.text || x.task || x.name || ""))}</li>`).join("") + "</ul>" : "<p class='muted'>—</p>";
+  const p = deal.profile || {};
+  const c = deal.context || {};
+  const e = deal.execution || {};
+  const t = p.tech || {};
+  const o = deal.owners || {};
+  const contacts = (p.contacts || []).map(x => `<div><strong>${esc(x.name)}</strong>${x.role ? " · " + esc(x.role) : ""}${x.email ? " · " + esc(x.email) : ""}</div>`).join("") || "<p class='muted'>No contacts</p>";
+  const pocs = (e.pocs || []).map(x => `<li><strong>${esc(x.name)}</strong> — ${esc(x.status)}${x.note ? ": " + esc(x.note) : ""}</li>`).join("");
+  const risks = (e.risks || []).map(x => `<li>[${esc(x.sev)}] ${esc(x.text)}</li>`).join("");
+
+  const html = `<!doctype html><html><head><meta charset="utf-8"><title>${esc(deal.company)} — Customer Passport</title>
+<style>
+  * { box-sizing: border-box; }
+  body { font-family: -apple-system, "Segoe UI", Roboto, sans-serif; color: #1a2230; margin: 0; padding: 40px; line-height: 1.5; }
+  .bar { height: 4px; background: linear-gradient(90deg,#7B2FBE,#2D7FF9,#0EA5B7,#2FB67A,#F0A429,#E5564B); margin: -40px -40px 28px; }
+  h1 { font-size: 22px; margin: 0 0 4px; }
+  .sub { color: #6b7480; font-size: 12px; font-family: monospace; margin-bottom: 24px; }
+  h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .08em; color: #0B7E8C; border-bottom: 1px solid #e3e8ef; padding-bottom: 5px; margin: 24px 0 10px; }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 24px; }
+  .k { font-size: 10px; text-transform: uppercase; letter-spacing: .06em; color: #97a0ad; margin-top: 8px; }
+  .v { font-size: 13px; }
+  .muted { color: #97a0ad; }
+  ul { margin: 4px 0; padding-left: 18px; font-size: 13px; }
+  .owners { display: flex; gap: 20px; flex-wrap: wrap; font-size: 13px; }
+  .owners div span { display: block; font-size: 10px; text-transform: uppercase; color: #97a0ad; }
+  @media print { body { padding: 24px; } .bar { margin: -24px -24px 20px; } }
+</style></head><body>
+  <div class="bar"></div>
+  <h1>${esc(deal.company)}</h1>
+  <div class="sub">${esc(deal.pipeline)} · HubSpot ${esc(deal.hubspotId)} · ${esc(deal.hubsotStage || deal.hubspot_stage || "")}</div>
+
+  <div class="owners">
+    <div><span>Sales Owner</span>${esc(o.owner || "—")}</div>
+    <div><span>Sales Engineering</span>${esc(o.se || "—")}</div>
+    <div><span>Customer Success</span>${esc(o.cs || "—")}</div>
+    <div><span>Analytics</span>${esc(o.analytics || "—")}</div>
+  </div>
+
+  <h2>Company &amp; Contacts</h2>
+  ${contacts}
+  <div class="k">Customer team</div><div class="v">${esc(p.team) || "<span class='muted'>—</span>"}</div>
+  <div class="k">Expertise level</div><div class="v">${esc(p.expertiseLevel) || "<span class='muted'>—</span>"}</div>
+
+  <h2>Use case &amp; needs</h2>
+  <div class="k">Use case</div><div class="v">${esc(p.useCase) || "—"}</div>
+  <div class="k">Pain points</div><div class="v">${esc(p.painPoints) || "—"}</div>
+  <div class="k">Support needs</div><div class="v">${esc(p.supportNeeds) || "—"}</div>
+
+  <h2>Technical requirements</h2>
+  <div class="grid">
+    <div><div class="k">Data sources</div><div class="v">${(t.dataSources||[]).map(esc).join(", ") || "—"}</div></div>
+    <div><div class="k">Bandset</div><div class="v">${esc(t.bandset) || "—"}</div></div>
+    <div><div class="k">Cadence / revisit</div><div class="v">${esc(t.cadence) || "—"}</div></div>
+  </div>
+
+  <h2>Context</h2>
+  <div class="k">Problem statement</div><div class="v">${esc(c.problem) || "—"}</div>
+  <div class="k">Objectives</div>${list(c.objectives)}
+
+  <h2>Execution</h2>
+  <div class="k">Success criteria</div>${list(e.successCriteria)}
+  <div class="k">Proofs of concept</div>${pocs ? "<ul>"+pocs+"</ul>" : "<p class='muted'>—</p>"}
+  <div class="k">Sample data delivered</div>${list(e.sampleData)}
+  <div class="k">Risks</div>${risks ? "<ul>"+risks+"</ul>" : "<p class='muted'>—</p>"}
+  <div class="k">Next steps</div><div class="v">${esc(e.nextSteps) || "—"}</div>
+  <div class="k">Commercial model</div><div class="v">${esc(e.commercial) || "—"}</div>
+
+  <p class="sub" style="margin-top:32px">Generated from Pixxel Customer Passport · ${new Date().toLocaleDateString("en-GB")}</p>
+  <script>window.onload = function(){ window.print(); }</script>
+</body></html>`;
+
+  const w = window.open("", "_blank");
+  if (!w) { alert("Please allow popups to export the PDF."); return; }
+  w.document.write(html);
+  w.document.close();
+}
+
 function CollaboratorsRow({ collaborators, canEdit, onAdd, onDelete }) {
   const [open, setOpen] = useState(false);
   const atMax = collaborators.length >= 3;
@@ -1533,7 +1612,7 @@ function Passport({ deal, onBack, canEdit, onUpdate, onAssign, onNotifyAll, onPo
             </div>
           </div>
           <div className="h-actions">
-            <button className="btn ghost" onClick={() => toast("PDF export — would generate a shareable passport PDF")}>
+            <button className="btn ghost" onClick={() => exportPassportPdf(deal)}>
               <Download size={14} /> Export PDF
             </button>
             <button className="btn ghost" disabled title="Needs PlanHat token + tenant ID (with CS team)">
@@ -2011,18 +2090,15 @@ function ProfileTab({ d, canEdit, onSaveField, onUpdate }) {
     <>
       <div className="cols">
         <Block icon={Building2} title="Company & contacts" stamp={st.profile}>
-          <div className="kv">
-            {d.profile.contacts.length ? d.profile.contacts.map((c, i) => (
-              <div key={i}>
-                <div style={{ fontSize: 13.5, fontWeight: 600 }}>{c.name}</div>
-                <div style={{ fontSize: 12, color: "var(--muted)" }}>{c.role}</div>
-                <div className="link" style={{ marginTop: 3 }}><Mail size={12} /> {c.email}</div>
-              </div>
-            )) : <div className="empty"><Users size={15} /> No contacts captured.</div>}
-          </div>
+          <ContactsEditor contacts={d.profile.contacts} canEdit={canEdit}
+            onAdd={(c) => onUpdate({ _addContact: c })}
+            onDelete={(id) => onUpdate({ _deleteRecord: { table:"deal_contacts", id } })} />
         </Block>
         <Block icon={Users} title="Team & expertise">
-          <div className="kv"><EditableField k="Customer team" value={d.profile.team} field="customer_team" canEdit={canEdit} onSave={onSaveField} /></div>
+          <div className="kv">
+            <EditableSelect k="Expertise level" value={d.profile.expertiseLevel} field="expertise_level" canEdit={canEdit} onSave={onSaveField} options={["Beginner","Intermediate","Advanced","Expert"]} customLabel="Other" />
+            <EditableField k="Customer team" value={d.profile.team} field="customer_team" canEdit={canEdit} onSave={onSaveField} />
+          </div>
         </Block>
       </div>
 
@@ -2082,14 +2158,32 @@ const QC_FAIL_REASONS = ["BBR","Cloud cover","Geometric","Bounding-box","Stripin
 const STATUS_CLS = { "Tasked":"cs-tasked","Captured":"cs-captured","QC In Progress":"cs-qcprog","QC Passed":"cs-qcpass","QC Failed":"cs-qcfail","Shared":"cs-shared" };
 const STATUS_DOT = { "Tasked":"var(--se)","Captured":"var(--accent)","QC In Progress":"var(--warn)","QC Passed":"var(--ok)","QC Failed":"var(--bad)","Shared":"var(--an)" };
 
-function CaptureLog({ entries, canEdit, onAdd }) {
+function CaptureLog({ entries, canEdit, onAdd, onUploadShot }) {
   const [open, setOpen] = useState(false);
-  const [form, setForm] = useState({ date: new Date().toISOString().slice(0,10), status:"Tasked", failReason:"", note:"" });
+  const [form, setForm] = useState({ date: new Date().toISOString().slice(0,10), status:"Tasked", failReasons:[], otherText:"", note:"", shotPath:"" });
+  const [uploading, setUploading] = useState(false);
+  const toggleReason = (r) => setForm(f => ({ ...f, failReasons: f.failReasons.includes(r) ? f.failReasons.filter(x => x !== r) : [...f.failReasons, r] }));
   const submit = () => {
-    if (!form.note.trim()) return;
-    onAdd({ ...form, id:"cl"+Date.now(), author:"You", ts:"Just now" });
+    if (!form.note.trim() && form.failReasons.length === 0) { return; }
+    // Build a readable failReason string from the selected reasons + other text
+    let reasonStr = "";
+    if (form.status === "QC Failed") {
+      const parts = form.failReasons.map(r => r === "Other" && form.otherText.trim() ? `Other: ${form.otherText.trim()}` : r);
+      reasonStr = parts.join(", ");
+    }
+    onAdd({
+      date: form.date, status: form.status, failReason: reasonStr,
+      note: form.note, shotPath: form.shotPath, author:"You",
+    });
     setOpen(false);
-    setForm({ date: new Date().toISOString().slice(0,10), status:"Tasked", failReason:"", note:"" });
+    setForm({ date: new Date().toISOString().slice(0,10), status:"Tasked", failReasons:[], otherText:"", note:"", shotPath:"" });
+  };
+  const handleShot = async (e) => {
+    const file = e.target.files[0];
+    if (!file || !onUploadShot) return;
+    setUploading(true);
+    try { const path = await onUploadShot(file); setForm(f => ({ ...f, shotPath: path })); }
+    finally { setUploading(false); e.target.value = ""; }
   };
   return (
     <div className="clog-wrap">
@@ -2106,6 +2200,7 @@ function CaptureLog({ entries, canEdit, onAdd }) {
               {e.failReason && <span className="clog-reason"><AlertTriangle size={11} /> {e.failReason}</span>}
             </div>
             <div className="clog-note">{e.note}</div>
+            {e.shotPath && <a href={`${SUPABASE_URL}/storage/v1/object/public/${STORAGE_BUCKET}/${e.shotPath}`} target="_blank" rel="noreferrer" style={{ display:"inline-flex", alignItems:"center", gap:5, fontSize:12, color:"var(--accent-deep)", marginTop:4 }}><Camera size={12} /> View failed image</a>}
             <div className="clog-meta">{e.author} · {e.ts}</div>
           </div>
         </div>
@@ -2125,7 +2220,7 @@ function CaptureLog({ entries, canEdit, onAdd }) {
             <div>
               <div className="k" style={{ fontFamily:"var(--font-mono)", fontSize:"9.5px", letterSpacing:".1em", textTransform:"uppercase", color:"var(--muted2)", marginBottom:4 }}>Status</div>
               <div className="cp-select">
-                <select value={form.status} onChange={e => setForm(f => ({ ...f, status:e.target.value, failReason:"" }))}>
+                <select value={form.status} onChange={e => setForm(f => ({ ...f, status:e.target.value, failReasons:[], otherText:"" }))}>
                   {CAPTURE_STATUSES.map(s => <option key={s}>{s}</option>)}
                 </select>
                 <ChevronDown size={13} className="chev" />
@@ -2134,14 +2229,19 @@ function CaptureLog({ entries, canEdit, onAdd }) {
           </div>
           {form.status === "QC Failed" && (
             <div style={{ marginBottom:10 }}>
-              <div className="k" style={{ fontFamily:"var(--font-mono)", fontSize:"9.5px", letterSpacing:".1em", textTransform:"uppercase", color:"var(--muted2)", marginBottom:4 }}>Failure reason</div>
-              <div className="cp-select">
-                <select value={form.failReason} onChange={e => setForm(f => ({ ...f, failReason:e.target.value }))}>
-                  <option value="">— select —</option>
-                  {QC_FAIL_REASONS.map(r => <option key={r}>{r}</option>)}
-                </select>
-                <ChevronDown size={13} className="chev" />
+              <div className="k" style={{ fontFamily:"var(--font-mono)", fontSize:"9.5px", letterSpacing:".1em", textTransform:"uppercase", color:"var(--muted2)", marginBottom:6 }}>Failure reasons (select all that apply)</div>
+              <div style={{ display:"flex", flexWrap:"wrap", gap:8 }}>
+                {QC_FAIL_REASONS.map(r => (
+                  <label key={r} style={{ display:"inline-flex", alignItems:"center", gap:6, fontSize:12.5, padding:"5px 10px", borderRadius:8, border:"1px solid " + (form.failReasons.includes(r) ? "var(--accent)" : "var(--line)"), background: form.failReasons.includes(r) ? "var(--accent-soft)" : "transparent", cursor:"pointer" }}>
+                    <input type="checkbox" checked={form.failReasons.includes(r)} onChange={() => toggleReason(r)} style={{ accentColor:"var(--accent)" }} />
+                    {r}
+                  </label>
+                ))}
               </div>
+              {form.failReasons.includes("Other") && (
+                <input autoFocus placeholder="Describe the other reason…" value={form.otherText} onChange={e => setForm(f => ({ ...f, otherText:e.target.value }))}
+                  style={{ width:"100%", border:"1px solid var(--accent)", borderRadius:8, padding:"8px 11px", fontSize:13, fontFamily:"inherit", marginTop:8, outline:"none" }} />
+              )}
             </div>
           )}
           <div>
@@ -2150,6 +2250,24 @@ function CaptureLog({ entries, canEdit, onAdd }) {
               placeholder="What happened? Any details about the capture, QC result, or delivery…"
               value={form.note} onChange={e => setForm(f => ({ ...f, note:e.target.value }))} />
           </div>
+          {form.status === "QC Failed" && canEdit && (
+            <div style={{ marginTop:10 }}>
+              <div className="k" style={{ fontFamily:"var(--font-mono)", fontSize:"9.5px", letterSpacing:".1em", textTransform:"uppercase", color:"var(--muted2)", marginBottom:4 }}>Screenshot of failed image</div>
+              {form.shotPath ? (
+                <div style={{ display:"flex", alignItems:"center", gap:8, fontSize:12.5, color:"var(--ok)" }}>
+                  <CheckCircle2 size={14} /> Image attached
+                  <button onClick={() => setForm(f => ({ ...f, shotPath:"" }))} style={{ border:"none", background:"none", color:"var(--muted2)", cursor:"pointer" }}>✕</button>
+                </div>
+              ) : (
+                <>
+                  <label htmlFor="clog-shot" style={{ display:"inline-flex", alignItems:"center", gap:7, cursor: uploading?"wait":"pointer", padding:"7px 13px", borderRadius:8, border:"1px solid var(--line)", fontSize:12.5, color:"var(--accent-deep)" }}>
+                    <Upload size={13} /> {uploading ? "Uploading…" : "Upload screenshot (JPG/PNG)"}
+                  </label>
+                  <input id="clog-shot" type="file" accept=".jpg,.jpeg,.png" style={{ display:"none" }} onChange={handleShot} />
+                </>
+              )}
+            </div>
+          )}
           <div style={{ display:"flex", gap:8, justifyContent:"flex-end", marginTop:10 }}>
             <button className="btn ghost" style={{ color:"var(--muted)", border:"1px solid var(--line)", background:"#fff" }} onClick={() => setOpen(false)}>Cancel</button>
             <button className="btn solid" onClick={submit}><Camera size={13} /> Save event</button>
@@ -2227,6 +2345,42 @@ function ActionPlan({ items, canEdit, onToggle, onAdd }) {
 }
 
 // ── Small inline adders for child records ─────────────────────
+function ContactsEditor({ contacts, canEdit, onAdd, onDelete }) {
+  const [open, setOpen] = useState(false);
+  const [form, setForm] = useState({ name:"", role:"", email:"" });
+  const submit = () => { if (!form.name.trim()) return; onAdd({ name: form.name.trim(), role: form.role.trim(), email: form.email.trim() }); setForm({ name:"", role:"", email:"" }); setOpen(false); };
+  return (
+    <div className="kv">
+      {contacts.length ? contacts.map((c, i) => (
+        <div key={c.id || i} style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start" }}>
+          <div>
+            <div style={{ fontSize: 13.5, fontWeight: 600 }}>{c.name}</div>
+            {c.role && <div style={{ fontSize: 12, color: "var(--muted)" }}>{c.role}</div>}
+            {c.email && <div className="link" style={{ marginTop: 3 }}><Mail size={12} /> {c.email}</div>}
+          </div>
+          {canEdit && c.id && <button onClick={() => onDelete(c.id)} title="Remove" style={{ border:"none", background:"none", color:"var(--muted2)", cursor:"pointer", fontSize:13 }}>✕</button>}
+        </div>
+      )) : !open && <div className="empty"><Users size={15} /> No contacts captured.</div>}
+      {canEdit && (open ? (
+        <div style={{ display:"flex", flexDirection:"column", gap:8, marginTop:6 }}>
+          <input autoFocus placeholder="Name" value={form.name} onChange={e => setForm(f => ({...f, name:e.target.value}))}
+            style={{ border:"1px solid var(--accent)", borderRadius:8, padding:"8px 11px", fontSize:13, fontFamily:"inherit", outline:"none" }} />
+          <input placeholder="Role / title" value={form.role} onChange={e => setForm(f => ({...f, role:e.target.value}))}
+            style={{ border:"1px solid var(--line)", borderRadius:8, padding:"8px 11px", fontSize:13, fontFamily:"inherit", outline:"none" }} />
+          <input placeholder="Email" value={form.email} onChange={e => setForm(f => ({...f, email:e.target.value}))}
+            style={{ border:"1px solid var(--line)", borderRadius:8, padding:"8px 11px", fontSize:13, fontFamily:"inherit", outline:"none" }} />
+          <div style={{ display:"flex", gap:8 }}>
+            <button onClick={submit} style={{ padding:"6px 14px", borderRadius:7, border:"none", background:"var(--accent)", color:"#fff", fontSize:12.5, fontWeight:600, cursor:"pointer" }}>Add contact</button>
+            <button onClick={() => setOpen(false)} style={{ padding:"6px 14px", borderRadius:7, border:"1px solid var(--line)", background:"transparent", color:"var(--muted)", fontSize:12.5, cursor:"pointer" }}>Cancel</button>
+          </div>
+        </div>
+      ) : (
+        <button onClick={() => setOpen(true)} className="add-row"><Plus size={14} /> Add contact</button>
+      ))}
+    </div>
+  );
+}
+
 function PocAdder({ pocs, canEdit, onAdd, onDelete }) {
   const [open, setOpen] = useState(false);
   const [form, setForm] = useState({ name:"", status:"Planned", note:"" });
@@ -2339,14 +2493,22 @@ function ExecutionTab({ d, canEdit, onUpdate, onSaveField }) {
       status: entry.status,
       fail_reason: entry.failReason || null,
       note: entry.note,
+      screenshot_path: entry.shotPath || null,
       author: "You",
     }});
   };
   const toggleAction = (id) => {
-    onUpdate({ ...d, execution: { ...e, actionItems: (e.actionItems||[]).map(a => a.id===id ? {...a, done:!a.done} : a) } });
+    const item = (e.actionItems||[]).find(a => a.id === id);
+    onUpdate({ _toggleAction: { id, done: item ? !item.done : true } });
   };
   const addAction = (item) => {
-    onUpdate({ ...d, execution: { ...e, actionItems: [...(e.actionItems||[]), item] } });
+    onUpdate({ _addAction: {
+      task: item.task,
+      owner: item.owner || null,
+      due_date: item.due || null,
+      done: false,
+      created_by: "You",
+    }});
   };
 
   return (
@@ -2364,7 +2526,8 @@ function ExecutionTab({ d, canEdit, onUpdate, onSaveField }) {
 
       {/* Capture / image progress log */}
       <Block icon={Camera} title="Capture & image progress log">
-        <CaptureLog entries={e.captureLog||[]} canEdit={canEdit} onAdd={addCaptureEvent} />
+        <CaptureLog entries={e.captureLog||[]} canEdit={canEdit} onAdd={addCaptureEvent}
+          onUploadShot={async (file) => await uploadFile(d.id, file)} />
       </Block>
 
       <div className="cols">
@@ -2405,10 +2568,8 @@ function NotesTab({ d, canEdit, onUpdate, toast }) {
   const [draft, setDraft] = useState("");
   const post = () => {
     if (!draft.trim()) return;
-    const now = "Just now";
     const mentions = (draft.match(/@([\w ]+?)(?=[,.!?]|$)/g) || []).map(m => m.slice(1).trim());
-    const entry = { date: now, author: "You", text: draft.trim(), mentions };
-    onUpdate({ ...d, notes: { ...d.notes, activity: [entry, ...d.notes.activity] } });
+    onUpdate({ _activityPost: { author: "You", body: draft.trim(), mentions } });
     setDraft("");
     toast(mentions.length ? `Update posted · notified ${mentions.join(", ")}` : "Update posted to the activity feed");
   };
@@ -2482,7 +2643,7 @@ function MeetingNotesAdder({ notes, canEdit, onAdd, onDelete, onSyncFromHubspot 
           style={{ display:"inline-flex", alignItems:"center", gap:6, marginBottom:10, padding:"6px 12px",
             borderRadius:8, border:"1px solid var(--line)", background:"transparent", color:"var(--accent-deep)",
             fontSize:12, fontWeight:500, cursor: syncing?"wait":"pointer" }}>
-          <RefreshCw size={13} className={syncing ? "spin" : ""} /> {syncing ? "Pulling from HubSpot…" : "Sync notes from HubSpot"}
+          <RefreshCw size={13} className={syncing ? "spin" : ""} /> {syncing ? "Pulling from HubSpot…" : "Sync notes & contacts from HubSpot"}
         </button>
       )}
       {notes.length ? notes.map((m, i) => (
@@ -2635,19 +2796,22 @@ function FeedbackTab({ d, canEdit, onUpdate, toast }) {
 
   const submitFeedback = () => {
     if (!form.keyInsights.trim()) { toast("Key insights are required"); return; }
-    const entry = {
-      id: "fb-" + Date.now(), date: new Date().toISOString().slice(0, 10), type: form.type,
-      satisfaction: form.satisfaction, keyInsights: form.keyInsights,
-      imageBandsets: form.imageBandsets.split(",").map(s => s.trim()).filter(Boolean),
-      imageIds: form.imageIds.split(",").map(s => s.trim()).filter(Boolean),
-      customerExpertise: form.customerExpertise, softwareUsed: form.softwareUsed,
-      followUpDate: form.followUpDate, followUpAssignedTo: form.followUpAssignedTo,
-      supportingFiles: [], notionPageId: "",
-    };
-    onUpdate({ ...d, feedback: [entry, ...(d.feedback || [])] });
+    onUpdate({ _feedbackEntry: {
+      feedback_date: new Date().toISOString().slice(0, 10),
+      feedback_type: form.type,
+      satisfaction: form.satisfaction,
+      key_insights: form.keyInsights,
+      image_bandsets: form.imageBandsets.split(",").map(s => s.trim()).filter(Boolean),
+      image_ids: form.imageIds.split(",").map(s => s.trim()).filter(Boolean),
+      customer_expertise: form.customerExpertise,
+      software_used: form.softwareUsed,
+      follow_up_date: form.followUpDate || null,
+      follow_up_assigned_to: form.followUpAssignedTo || null,
+      supporting_files: [],
+    }});
     setShowForm(false);
     setForm({ satisfaction: "Satisfied", keyInsights: "", imageBandsets: "", imageIds: "", customerExpertise: "Intermediate", softwareUsed: "", followUpDate: "", followUpAssignedTo: "", type: "Client" });
-    toast("Feedback entry added — ready to sync to Notion");
+    toast("Feedback entry added");
   };
 
   return (
@@ -3168,6 +3332,9 @@ async function sbDelete(table, id) {
 async function addPoc(passportId, poc) {
   await sbPost("deal_pocs", { passport_id: passportId, ...poc });
 }
+async function addContactRecord(passportId, contact) {
+  await sbPost("deal_contacts", { passport_id: passportId, ...contact });
+}
 async function addRisk(passportId, risk) {
   await sbPost("deal_risks", { passport_id: passportId, ...risk });
 }
@@ -3388,8 +3555,9 @@ function PassportDetail({ data, onBack, canEdit, onRefresh, onAssign, onNotifyAl
     owners: { owner: p.owner_director, se: p.owner_se, cs: p.owner_cs, analytics: p.owner_analytics },
     sectionStamps: { profile: p.stamp_profile, context: p.stamp_context, execution: p.stamp_execution },
     profile: {
-      contacts: contacts.map(c => ({ name: c.name, role: c.role, email: c.email })),
+      contacts: contacts.map(c => ({ id: c.id, name: c.name, role: c.role, email: c.email })),
       team: p.customer_team || "",
+      expertiseLevel: p.expertise_level || "",
       useCase: p.use_case || "",
       painPoints: p.pain_points || "",
       supportNeeds: p.support_needs || "",
@@ -3415,7 +3583,8 @@ function PassportDetail({ data, onBack, canEdit, onRefresh, onAssign, onNotifyAl
       commercial: p.commercial_model || "",
       captureLog: captureLog.map(e => ({
         id: e.id, date: e.entry_date, status: e.status, failReason: e.fail_reason || "",
-        note: e.note, author: e.author, ts: new Date(e.created_at).toLocaleString("en-GB", { month:"short", day:"2-digit", hour:"2-digit", minute:"2-digit" }),
+        note: e.note, author: e.author, shotPath: e.screenshot_path || "",
+        ts: new Date(e.created_at).toLocaleString("en-GB", { month:"short", day:"2-digit", hour:"2-digit", minute:"2-digit" }),
       })),
       sampleAoi: p.sample_aoi_geojson || null,
       actionItems: actionItems.map(a => ({
@@ -3477,6 +3646,7 @@ function PassportDetail({ data, onBack, canEdit, onRefresh, onAssign, onNotifyAl
     }
     // ── New child records ──────────────────────────────────────
     if (updated._addPoc) { await addPoc(p.id, updated._addPoc); await onRefresh(); return; }
+    if (updated._addContact) { await addContactRecord(p.id, updated._addContact); await onRefresh(); return; }
     if (updated._addRisk) { await addRisk(p.id, updated._addRisk); await onRefresh(); return; }
     if (updated._addSample) { await addSampleData(p.id, updated._addSample); await onRefresh(); return; }
     if (updated._addMeetingNote) { await addMeetingNote(p.id, updated._addMeetingNote); await onRefresh(); return; }
@@ -3529,8 +3699,13 @@ function PassportDetail({ data, onBack, canEdit, onRefresh, onAssign, onNotifyAl
           }),
         });
         const data = await res.json();
-        if (data.ok) toast(data.notes_added > 0 ? `Pulled ${data.notes_added} note${data.notes_added!==1?"s":""} from HubSpot` : "No new notes in HubSpot");
-        else toast("Notes sync failed: " + (data.error || "unknown"));
+        if (data.ok) {
+          const bits = [];
+          if (data.notes_added > 0) bits.push(`${data.notes_added} note${data.notes_added!==1?"s":""}`);
+          if (data.contacts_added > 0) bits.push(`${data.contacts_added} contact${data.contacts_added!==1?"s":""}`);
+          toast(bits.length ? `Pulled ${bits.join(" and ")} from HubSpot` : "Already up to date with HubSpot");
+        }
+        else toast("Sync failed: " + (data.error || "unknown"));
         await onRefresh();
       } catch (e) { toast("Notes sync failed: " + e.message); }
       return;
@@ -3541,10 +3716,13 @@ function PassportDetail({ data, onBack, canEdit, onRefresh, onAssign, onNotifyAl
       const ALLOWED = [
         "customer_team","use_case","pain_points","support_needs","data_sources",
         "bandset","cadence","problem_statement","objectives","success_criteria",
-        "next_steps","commercial_model",
+        "next_steps","commercial_model","expertise_level",
       ];
       if (ALLOWED.includes(field)) {
-        await sbPatch("handover_passports", p.id, { [field]: value });
+        // Record this field as app-edited so the HubSpot sync won't overwrite it
+        const prevEdited = Array.isArray(p.app_edited_fields) ? p.app_edited_fields : [];
+        const nextEdited = prevEdited.includes(field) ? prevEdited : [...prevEdited, field];
+        await sbPatch("handover_passports", p.id, { [field]: value, app_edited_fields: nextEdited });
         await onRefresh();
       }
       return;
