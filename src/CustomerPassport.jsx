@@ -1420,9 +1420,9 @@ function Passport({ deal, onBack, canEdit, onUpdate, onAssign, onNotifyAll, onPo
         ))}
       </div>
 
-      {tab === "profile" && <ProfileTab d={deal} />}
-      {tab === "context" && <ContextTab d={deal} />}
-      {tab === "execution" && <ExecutionTab d={deal} canEdit={canEdit} onUpdate={onUpdate} />}
+      {tab === "profile" && <ProfileTab d={deal} canEdit={canEdit} onSaveField={(f,v) => onUpdate({ _fieldUpdate: { field: f, value: v } })} />}
+      {tab === "context" && <ContextTab d={deal} canEdit={canEdit} onSaveField={(f,v) => onUpdate({ _fieldUpdate: { field: f, value: v } })} />}
+      {tab === "execution" && <ExecutionTab d={deal} canEdit={canEdit} onUpdate={onUpdate} onSaveField={(f,v) => onUpdate({ _fieldUpdate: { field: f, value: v } })} />}
       {tab === "notes" && <NotesTab d={deal} canEdit={canEdit} onUpdate={onUpdate} toast={toast} />}
       {tab === "feedback" && <FeedbackTab d={deal} canEdit={canEdit} onUpdate={onUpdate} toast={toast} />}
     </>
@@ -1453,7 +1453,160 @@ function Field({ k, children }) {
   return <div><div className="k">{k}</div><div className="v">{children || <span style={{ color: "var(--muted2)" }}>Not captured yet</span>}</div></div>;
 }
 
-function ProfileTab({ d }) {
+// Inline-editable text field. Click to edit (when canEdit), textarea with save/cancel.
+function EditableField({ k, value, field, canEdit, onSave, mono, placeholder }) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(value || "");
+  const [saving, setSaving] = useState(false);
+  useEffect(() => { setDraft(value || ""); }, [value]);
+
+  const save = async () => {
+    setSaving(true);
+    try { await onSave(field, draft.trim()); setEditing(false); }
+    finally { setSaving(false); }
+  };
+
+  if (!canEdit) {
+    return <div><div className="k">{k}</div><div className="v">{value || <span style={{ color: "var(--muted2)" }}>Not captured yet</span>}</div></div>;
+  }
+
+  if (editing) {
+    return (
+      <div>
+        <div className="k">{k}</div>
+        <textarea
+          autoFocus
+          value={draft}
+          onChange={e => setDraft(e.target.value)}
+          placeholder={placeholder || "Type here…"}
+          style={{
+            width:"100%", border:"1px solid var(--accent)", borderRadius:9,
+            padding:"9px 12px", fontSize:13.5, fontFamily: mono ? "var(--font-mono)" : "inherit",
+            marginTop:4, resize:"vertical", minHeight:64, outline:"none",
+          }}
+          onKeyDown={e => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) save(); if (e.key === "Escape") { setDraft(value||""); setEditing(false); } }}
+        />
+        <div style={{ display:"flex", gap:8, marginTop:6 }}>
+          <button onClick={save} disabled={saving}
+            style={{ padding:"5px 14px", borderRadius:7, border:"none", background:"var(--accent)", color:"#fff", fontSize:12.5, fontWeight:600, cursor:"pointer" }}>
+            {saving ? "Saving…" : "Save"}
+          </button>
+          <button onClick={() => { setDraft(value||""); setEditing(false); }}
+            style={{ padding:"5px 14px", borderRadius:7, border:"1px solid var(--line)", background:"transparent", color:"var(--muted)", fontSize:12.5, cursor:"pointer" }}>
+            Cancel
+          </button>
+          <span style={{ fontSize:11, color:"var(--muted2)", alignSelf:"center" }}>⌘↵ to save · Esc to cancel</span>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      <div className="k">{k}</div>
+      <div
+        className="v"
+        onClick={() => setEditing(true)}
+        style={{ cursor:"pointer", borderRadius:6, padding:"2px 4px", margin:"-2px -4px", transition:"background 0.12s" }}
+        onMouseEnter={e => e.currentTarget.style.background = "var(--line-soft)"}
+        onMouseLeave={e => e.currentTarget.style.background = "transparent"}
+        title="Click to edit"
+      >
+        {value || <span style={{ color: "var(--muted2)" }}>Not captured yet · <span style={{ color:"var(--accent)" }}>click to add</span></span>}
+      </div>
+    </div>
+  );
+}
+
+// Inline-editable comma-separated tags (e.g. data sources).
+function EditableTags({ k, values, field, canEdit, onSave, cls }) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState((values || []).join(", "));
+  const [saving, setSaving] = useState(false);
+  useEffect(() => { setDraft((values || []).join(", ")); }, [values]);
+
+  const save = async () => {
+    setSaving(true);
+    try {
+      const arr = draft.split(",").map(s => s.trim()).filter(Boolean);
+      await onSave(field, arr);
+      setEditing(false);
+    } finally { setSaving(false); }
+  };
+
+  if (editing && canEdit) {
+    return (
+      <div>
+        <div className="k">{k}</div>
+        <input
+          autoFocus value={draft} onChange={e => setDraft(e.target.value)}
+          placeholder="Comma-separated, e.g. FireFly VNIR, Sentinel-2, PlanetScope"
+          style={{ width:"100%", border:"1px solid var(--accent)", borderRadius:8, padding:"8px 11px", fontSize:13, fontFamily:"inherit", marginTop:4, outline:"none" }}
+          onKeyDown={e => { if (e.key === "Enter") save(); if (e.key === "Escape") { setDraft((values||[]).join(", ")); setEditing(false); } }}
+        />
+        <div style={{ display:"flex", gap:8, marginTop:6 }}>
+          <button onClick={save} disabled={saving} style={{ padding:"5px 14px", borderRadius:7, border:"none", background:"var(--accent)", color:"#fff", fontSize:12.5, fontWeight:600, cursor:"pointer" }}>{saving ? "Saving…" : "Save"}</button>
+          <button onClick={() => { setDraft((values||[]).join(", ")); setEditing(false); }} style={{ padding:"5px 14px", borderRadius:7, border:"1px solid var(--line)", background:"transparent", color:"var(--muted)", fontSize:12.5, cursor:"pointer" }}>Cancel</button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      <div className="k">{k}</div>
+      <div className="tags" style={{ marginTop: 4, cursor: canEdit ? "pointer" : "default" }}
+        onClick={() => canEdit && setEditing(true)} title={canEdit ? "Click to edit" : undefined}>
+        {(values && values.length) ? values.map((s, i) => <span key={i} className={`tag ${cls||""}`}>{s}</span>)
+          : <span style={{ color: "var(--muted2)", fontSize: 13 }}>Not captured yet{canEdit && <span style={{ color:"var(--accent)" }}> · click to add</span>}</span>}
+      </div>
+    </div>
+  );
+}
+
+// Inline-editable bullet list (objectives, success criteria).
+function EditableList({ items, field, canEdit, onSave, emptyIcon: EmptyIcon, emptyText }) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState((items || []).join("\n"));
+  const [saving, setSaving] = useState(false);
+  useEffect(() => { setDraft((items || []).join("\n")); }, [items]);
+
+  const save = async () => {
+    setSaving(true);
+    try {
+      const arr = draft.split("\n").map(s => s.trim()).filter(Boolean);
+      await onSave(field, arr);
+      setEditing(false);
+    } finally { setSaving(false); }
+  };
+
+  if (editing && canEdit) {
+    return (
+      <div>
+        <textarea autoFocus value={draft} onChange={e => setDraft(e.target.value)}
+          placeholder="One item per line"
+          style={{ width:"100%", border:"1px solid var(--accent)", borderRadius:9, padding:"9px 12px", fontSize:13.5, fontFamily:"inherit", resize:"vertical", minHeight:90, outline:"none" }}
+          onKeyDown={e => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) save(); if (e.key === "Escape") { setDraft((items||[]).join("\n")); setEditing(false); } }}
+        />
+        <div style={{ display:"flex", gap:8, marginTop:6 }}>
+          <button onClick={save} disabled={saving} style={{ padding:"5px 14px", borderRadius:7, border:"none", background:"var(--accent)", color:"#fff", fontSize:12.5, fontWeight:600, cursor:"pointer" }}>{saving ? "Saving…" : "Save"}</button>
+          <button onClick={() => { setDraft((items||[]).join("\n")); setEditing(false); }} style={{ padding:"5px 14px", borderRadius:7, border:"1px solid var(--line)", background:"transparent", color:"var(--muted)", fontSize:12.5, cursor:"pointer" }}>Cancel</button>
+          <span style={{ fontSize:11, color:"var(--muted2)", alignSelf:"center" }}>One per line · ⌘↵ to save</span>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div onClick={() => canEdit && setEditing(true)} style={{ cursor: canEdit ? "pointer" : "default" }} title={canEdit ? "Click to edit" : undefined}>
+      {(items && items.length) ? items.map((o, i) => (
+        <div className="li" key={i}><span className="b" />{o}</div>
+      )) : <div className="empty"><EmptyIcon size={15} /> {emptyText}{canEdit && <span style={{ color:"var(--accent)" }}> · click to add</span>}</div>}
+    </div>
+  );
+}
+
+function ProfileTab({ d, canEdit, onSaveField }) {
   const t = d.profile.tech;
   const st = d.sectionStamps || {};
   return (
@@ -1471,29 +1624,23 @@ function ProfileTab({ d }) {
           </div>
         </Block>
         <Block icon={Users} title="Team & expertise">
-          <div className="kv"><Field k="Customer team">{d.profile.team}</Field></div>
+          <div className="kv"><EditableField k="Customer team" value={d.profile.team} field="customer_team" canEdit={canEdit} onSave={onSaveField} /></div>
         </Block>
       </div>
 
       <Block icon={Target} title="Use case · pain points · support needs">
         <div className="kv">
-          <Field k="Use case">{d.profile.useCase}</Field>
-          <Field k="Pain points">{d.profile.painPoints}</Field>
-          <Field k="Support needs">{d.profile.supportNeeds}</Field>
+          <EditableField k="Use case" value={d.profile.useCase} field="use_case" canEdit={canEdit} onSave={onSaveField} />
+          <EditableField k="Pain points" value={d.profile.painPoints} field="pain_points" canEdit={canEdit} onSave={onSaveField} />
+          <EditableField k="Support needs" value={d.profile.supportNeeds} field="support_needs" canEdit={canEdit} onSave={onSaveField} />
         </div>
       </Block>
 
       <Block icon={Radar} title="Technical requirements">
         <div className="kv">
-          <div>
-            <div className="k">Data sources</div>
-            <div className="tags" style={{ marginTop: 4 }}>
-              {t.dataSources.length ? t.dataSources.map((s, i) => <span key={i} className="tag spec">{s}</span>)
-                : <span style={{ color: "var(--muted2)", fontSize: 13 }}>Not captured yet</span>}
-            </div>
-          </div>
-          <Field k="Bandset">{t.bandset}</Field>
-          <Field k="Cadence / revisit">{t.cadence}</Field>
+          <EditableTags k="Data sources" values={t.dataSources} field="data_sources" canEdit={canEdit} onSave={onSaveField} cls="spec" />
+          <EditableField k="Bandset" value={t.bandset} field="bandset" canEdit={canEdit} onSave={onSaveField} />
+          <EditableField k="Cadence / revisit" value={t.cadence} field="cadence" canEdit={canEdit} onSave={onSaveField} />
           <div style={{ display: "flex", gap: 18, marginTop: 2 }}>
             {t.aoiLink
               ? <span className="link"><MapPin size={13} /> AOI definition <ExternalLink size={12} /></span>
@@ -1508,17 +1655,15 @@ function ProfileTab({ d }) {
   );
 }
 
-function ContextTab({ d }) {
+function ContextTab({ d, canEdit, onSaveField }) {
   return (
     <>
       <Block icon={Target} title="Problem statement">
-        <div className="kv"><Field k="What the customer is trying to solve">{d.context.problem}</Field></div>
+        <div className="kv"><EditableField k="What the customer is trying to solve" value={d.context.problem} field="problem_statement" canEdit={canEdit} onSave={onSaveField} /></div>
       </Block>
       <div className="cols">
         <Block icon={CheckCircle2} title="Objectives">
-          {d.context.objectives.length ? d.context.objectives.map((o, i) => (
-            <div className="li" key={i}><span className="b" />{o}</div>
-          )) : <div className="empty"><Target size={15} /> No objectives defined.</div>}
+          <EditableList items={d.context.objectives} field="objectives" canEdit={canEdit} onSave={onSaveField} emptyIcon={Target} emptyText="No objectives defined." />
         </Block>
         <Block icon={MapPin} title="Area of interest">
           <AoiMap aoi={d.context.aoi} />
@@ -1677,7 +1822,7 @@ function ActionPlan({ items, canEdit, onToggle, onAdd }) {
   );
 }
 
-function ExecutionTab({ d, canEdit, onUpdate }) {
+function ExecutionTab({ d, canEdit, onUpdate, onSaveField }) {
   const e = d.execution;
   const st = d.sectionStamps || {};
 
@@ -1695,9 +1840,7 @@ function ExecutionTab({ d, canEdit, onUpdate }) {
     <>
       <div className="cols">
         <Block icon={CheckCircle2} title="Success criteria" stamp={st.execution}>
-          {e.successCriteria.length ? e.successCriteria.map((s, i) => (
-            <div className="li" key={i}><CheckCircle2 size={15} color="var(--ok)" style={{ flex: "none", marginTop: 1 }} />{s}</div>
-          )) : <div className="empty"><CheckCircle2 size={15} /> No success criteria yet — needed before handover.</div>}
+          <EditableList items={e.successCriteria} field="success_criteria" canEdit={canEdit} onSave={onSaveField} emptyIcon={CheckCircle2} emptyText="No success criteria yet — needed before handover." />
         </Block>
         <Block icon={Activity} title="Proofs of concept">
           {e.pocs.length ? e.pocs.map((p, i) => (
@@ -1739,8 +1882,8 @@ function ExecutionTab({ d, canEdit, onUpdate }) {
         </Block>
         <Block icon={TrendingUp} title="Next steps & commercial pathway">
           <div className="kv">
-            <Field k="Next steps">{e.nextSteps}</Field>
-            <Field k="Commercial model">{e.commercial}</Field>
+            <EditableField k="Next steps" value={e.nextSteps} field="next_steps" canEdit={canEdit} onSave={onSaveField} />
+            <EditableField k="Commercial model" value={e.commercial} field="commercial_model" canEdit={canEdit} onSave={onSaveField} />
           </div>
         </Block>
       </div>
@@ -2702,6 +2845,20 @@ function PassportDetail({ data, onBack, canEdit, onRefresh, onAssign, onNotifyAl
     if (updated._feedbackEntry) {
       await addFeedbackEntry(p.id, updated._feedbackEntry);
       await onRefresh();
+      return;
+    }
+    // General single-field update (text, tags, lists) → persist to passport row
+    if (updated._fieldUpdate) {
+      const { field, value } = updated._fieldUpdate;
+      const ALLOWED = [
+        "customer_team","use_case","pain_points","support_needs","data_sources",
+        "bandset","cadence","problem_statement","objectives","success_criteria",
+        "next_steps","commercial_model",
+      ];
+      if (ALLOWED.includes(field)) {
+        await sbPatch("handover_passports", p.id, { [field]: value });
+        await onRefresh();
+      }
       return;
     }
     // General passport field update — build Supabase fields from changed deal
