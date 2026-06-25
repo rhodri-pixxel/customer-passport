@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useEffect } from "react";
+import React, { useState, useMemo, useEffect, useRef } from "react";
 import {
   Search, ChevronLeft, Download, Bell, FileText, MapPin, Users, Target,
   AlertTriangle, CheckCircle2, Circle, Clock, Paperclip, Send, BarChart3,
@@ -8,6 +8,8 @@ import {
 } from "lucide-react";
 import shp from "shpjs";
 import { kml as kmlToGeoJson } from "@tmcw/togeojson";
+import L from "leaflet";
+import "leaflet/dist/leaflet.css";
 
 /* ------------------------------------------------------------------ */
 /*  Design system (spectral / Earth-observation theme)                */
@@ -169,6 +171,8 @@ const CSS = `
   border-radius:9px;background:transparent;color:var(--accent-deep);font-size:12.5px;font-weight:500;
   cursor:pointer;margin-top:6px;width:100%;justify-content:center;}
 .add-row:hover{border-color:var(--accent);background:var(--accent-soft);}
+@keyframes spin{to{transform:rotate(360deg);}}
+.spin{animation:spin 0.9s linear infinite;}
 
 .readiness-panel{background:#fff;border:1px solid var(--line);border-radius:16px;padding:14px 20px;
   display:flex;align-items:center;gap:16px;cursor:pointer;min-width:230px;}
@@ -1179,38 +1183,57 @@ function geoJsonToSvgPaths(gj, b, W=100, H=100) {
 }
 
 function GeoJsonMap({ geojson, onClear, canEdit }) {
-  let bounds, paths, centerLabel, featCount;
-  try {
-    bounds = geoJsonBounds(geojson);
-    paths = geoJsonToSvgPaths(geojson, bounds);
-    const cx = ((bounds.minX + bounds.maxX)/2).toFixed(3);
-    const cy = ((bounds.minY + bounds.maxY)/2).toFixed(3);
-    centerLabel = `${cy}°, ${cx}°`;
-    featCount = geojson.type === "FeatureCollection" ? geojson.features.length : 1;
-  } catch (e) {
-    return <div className="empty"><MapPin size={15} /> Could not render this AOI.</div>;
-  }
+  const mapRef = useRef(null);
+  const containerRef = useRef(null);
+  const [meta, setMeta] = useState({ features: 0, center: "" });
+
+  useEffect(() => {
+    if (!containerRef.current || !geojson) return;
+    // Init map once
+    if (!mapRef.current) {
+      mapRef.current = L.map(containerRef.current, {
+        zoomControl: true, attributionControl: false, scrollWheelZoom: false,
+      });
+      L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png", {
+        maxZoom: 19, subdomains: "abcd",
+      }).addTo(mapRef.current);
+    }
+    const map = mapRef.current;
+    // Clear previous overlay
+    if (map._aoiLayer) { map.removeLayer(map._aoiLayer); }
+    try {
+      const layer = L.geoJSON(geojson, {
+        style: { color: "#3fe0ee", weight: 2, fillColor: "#0EA5B7", fillOpacity: 0.25 },
+        pointToLayer: (f, latlng) => L.circleMarker(latlng, { radius: 5, color: "#3fe0ee", fillColor: "#0EA5B7", fillOpacity: 0.7 }),
+      });
+      layer.addTo(map);
+      map._aoiLayer = layer;
+      const bounds = layer.getBounds();
+      if (bounds.isValid()) {
+        map.fitBounds(bounds, { padding: [24, 24], maxZoom: 13 });
+        const c = bounds.getCenter();
+        const feats = geojson.type === "FeatureCollection" ? geojson.features.length : 1;
+        setMeta({ features: feats, center: `${c.lat.toFixed(3)}°, ${c.lng.toFixed(3)}°` });
+      }
+      // Leaflet needs a nudge when rendered in a flex container
+      setTimeout(() => map.invalidateSize(), 100);
+    } catch (e) {
+      console.error("AOI render error", e);
+    }
+  }, [geojson]);
+
+  // Clean up on unmount
+  useEffect(() => () => { if (mapRef.current) { mapRef.current.remove(); mapRef.current = null; } }, []);
+
   return (
-    <div className="aoi" style={{ height: 280, position:"relative" }}>
-      <svg viewBox="0 0 100 100" preserveAspectRatio="xMidYMid meet" width="100%" height="100%">
-        <defs>
-          <radialGradient id="terrain2" cx="40%" cy="35%" r="80%">
-            <stop offset="0%" stopColor="#13384a" /><stop offset="55%" stopColor="#0e2735" /><stop offset="100%" stopColor="#0a1822" />
-          </radialGradient>
-          <linearGradient id="aoifill2" x1="0" y1="0" x2="1" y2="1">
-            <stop offset="0%" stopColor="#0EA5B7" stopOpacity="0.34" /><stop offset="100%" stopColor="#2FB67A" stopOpacity="0.2" />
-          </linearGradient>
-        </defs>
-        <rect width="100" height="100" fill="url(#terrain2)" />
-        {[...Array(9)].map((_, i) => <line key={"v"+i} x1={i*12.5} y1="0" x2={i*12.5} y2="100" stroke="#5e8aa3" strokeWidth="0.2" opacity="0.22" />)}
-        {[...Array(9)].map((_, i) => <line key={"h"+i} x1="0" y1={i*12.5} x2="100" y2={i*12.5} stroke="#5e8aa3" strokeWidth="0.2" opacity="0.22" />)}
-        {paths.map((d, i) => <path key={i} d={d} fill="url(#aoifill2)" stroke="#3fe0ee" strokeWidth="0.6" strokeLinejoin="round" />)}
-      </svg>
-      <div className="badge"><Layers size={11} /> AOI · GeoJSON</div>
-      <div className="cap">{featCount} feature{featCount!==1?"s":""}<br />◎ {centerLabel}</div>
+    <div style={{ position: "relative", borderRadius: 12, overflow: "hidden", border: "1px solid var(--line)" }}>
+      <div ref={containerRef} style={{ height: 300, width: "100%", background: "#0a1822" }} />
+      <div style={{ position:"absolute", bottom:8, left:8, zIndex:500, background:"rgba(11,18,32,0.78)", color:"#cdd6e3", fontSize:11, padding:"4px 9px", borderRadius:6, fontFamily:"var(--font-mono)", pointerEvents:"none" }}>
+        {meta.features} feature{meta.features !== 1 ? "s" : ""} · ◎ {meta.center}
+      </div>
       {canEdit && onClear && (
         <button onClick={onClear} title="Remove AOI"
-          style={{ position:"absolute", top:8, right:8, background:"rgba(0,0,0,0.5)", border:"none", borderRadius:6, color:"#fff", padding:"4px 8px", fontSize:11, cursor:"pointer", display:"flex", alignItems:"center", gap:4 }}>
+          style={{ position:"absolute", top:8, right:8, zIndex:500, background:"rgba(11,18,32,0.78)", border:"none", borderRadius:6, color:"#fff", padding:"5px 9px", fontSize:11, cursor:"pointer", display:"flex", alignItems:"center", gap:4 }}>
           <Trash2 size={11} /> Remove
         </button>
       )}
@@ -1714,6 +1737,115 @@ function LinkOrUpload({ label, icon: Icon, canEdit, currentUrl, accept, onSetLin
   );
 }
 
+// Inline-editable dropdown with optional "Custom" free-text option
+function EditableSelect({ k, value, field, canEdit, onSave, options, customLabel = "Custom" }) {
+  const [editing, setEditing] = useState(false);
+  const [saving, setSaving] = useState(false);
+  // Determine if current value is one of the preset options or a custom string
+  const isPreset = options.includes(value);
+  const [choice, setChoice] = useState(isPreset ? value : (value ? customLabel : ""));
+  const [customText, setCustomText] = useState(isPreset ? "" : (value || ""));
+  useEffect(() => {
+    const preset = options.includes(value);
+    setChoice(preset ? value : (value ? customLabel : ""));
+    setCustomText(preset ? "" : (value || ""));
+  }, [value]);
+
+  const save = async () => {
+    setSaving(true);
+    try {
+      const final = choice === customLabel ? customText.trim() : choice;
+      await onSave(field, final);
+      setEditing(false);
+    } finally { setSaving(false); }
+  };
+
+  if (!canEdit) {
+    return <div><div className="k">{k}</div><div className="v">{value || <span style={{ color:"var(--muted2)" }}>Not captured yet</span>}</div></div>;
+  }
+
+  if (editing) {
+    return (
+      <div>
+        <div className="k">{k}</div>
+        <select autoFocus value={choice} onChange={e => setChoice(e.target.value)}
+          style={{ width:"100%", border:"1px solid var(--accent)", borderRadius:8, padding:"8px 11px", fontSize:13, fontFamily:"inherit", marginTop:4, outline:"none" }}>
+          <option value="">— Select —</option>
+          {options.map(o => <option key={o} value={o}>{o}</option>)}
+          <option value={customLabel}>{customLabel}…</option>
+        </select>
+        {choice === customLabel && (
+          <input autoFocus placeholder="Describe the custom bandset…" value={customText} onChange={e => setCustomText(e.target.value)}
+            style={{ width:"100%", border:"1px solid var(--accent)", borderRadius:8, padding:"8px 11px", fontSize:13, fontFamily:"inherit", marginTop:6, outline:"none" }} />
+        )}
+        <div style={{ display:"flex", gap:8, marginTop:6 }}>
+          <button onClick={save} disabled={saving} style={{ padding:"5px 14px", borderRadius:7, border:"none", background:"var(--accent)", color:"#fff", fontSize:12.5, fontWeight:600, cursor:"pointer" }}>{saving ? "Saving…" : "Save"}</button>
+          <button onClick={() => setEditing(false)} style={{ padding:"5px 14px", borderRadius:7, border:"1px solid var(--line)", background:"transparent", color:"var(--muted)", fontSize:12.5, cursor:"pointer" }}>Cancel</button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      <div className="k">{k}</div>
+      <div className="v" onClick={() => setEditing(true)}
+        style={{ cursor:"pointer", borderRadius:6, padding:"2px 4px", margin:"-2px -4px" }}
+        onMouseEnter={e => e.currentTarget.style.background = "var(--line-soft)"}
+        onMouseLeave={e => e.currentTarget.style.background = "transparent"}
+        title="Click to edit">
+        {value || <span style={{ color:"var(--muted2)" }}>Not captured yet · <span style={{ color:"var(--accent)" }}>click to add</span></span>}
+      </div>
+    </div>
+  );
+}
+
+const BANDSET_OPTIONS = [
+  "Vegetation","Water","Rare Earth Elements","Transitional Metals","Urban",
+  "Unified-1","Unified-2","Unified-3","All Bands","Sentinel-2 MSI","Landsat-9 OLI-2",
+];
+
+// Lightweight rich-text renderer: **bold**, *italic*, line breaks, - bullets
+function renderRichText(text) {
+  if (!text) return null;
+  const lines = String(text).split("\n");
+  const out = [];
+  let bullets = [];
+  const flushBullets = (key) => {
+    if (bullets.length) {
+      out.push(<ul key={"ul"+key} style={{ margin:"4px 0", paddingLeft:18 }}>{bullets.map((b,i) => <li key={i} style={{ marginBottom:2 }}>{b}</li>)}</ul>);
+      bullets = [];
+    }
+  };
+  const inline = (s) => {
+    // Split on **bold** and *italic*
+    const parts = [];
+    let rem = s; let k = 0;
+    const re = /(\*\*[^*]+\*\*|\*[^*]+\*)/g;
+    let last = 0; let m;
+    while ((m = re.exec(s)) !== null) {
+      if (m.index > last) parts.push(s.slice(last, m.index));
+      const tok = m[0];
+      if (tok.startsWith("**")) parts.push(<strong key={k++}>{tok.slice(2,-2)}</strong>);
+      else parts.push(<em key={k++}>{tok.slice(1,-1)}</em>);
+      last = m.index + tok.length;
+    }
+    if (last < s.length) parts.push(s.slice(last));
+    return parts;
+  };
+  lines.forEach((ln, i) => {
+    const trimmed = ln.trim();
+    if (trimmed.startsWith("- ") || trimmed.startsWith("* ")) {
+      bullets.push(inline(trimmed.slice(2)));
+    } else {
+      flushBullets(i);
+      if (trimmed) out.push(<div key={"l"+i} style={{ marginBottom:3 }}>{inline(ln)}</div>);
+    }
+  });
+  flushBullets("end");
+  return <div>{out}</div>;
+}
+
 function Field({ k, children }) {
   return <div><div className="k">{k}</div><div className="v">{children || <span style={{ color: "var(--muted2)" }}>Not captured yet</span>}</div></div>;
 }
@@ -1760,7 +1892,7 @@ function EditableField({ k, value, field, canEdit, onSave, mono, placeholder }) 
             style={{ padding:"5px 14px", borderRadius:7, border:"1px solid var(--line)", background:"transparent", color:"var(--muted)", fontSize:12.5, cursor:"pointer" }}>
             Cancel
           </button>
-          <span style={{ fontSize:11, color:"var(--muted2)", alignSelf:"center" }}>⌘↵ to save · Esc to cancel</span>
+          <span style={{ fontSize:11, color:"var(--muted2)", alignSelf:"center" }}>⌘↵ to save · Esc to cancel · **bold** *italic* · - bullets</span>
         </div>
       </div>
     );
@@ -1777,7 +1909,7 @@ function EditableField({ k, value, field, canEdit, onSave, mono, placeholder }) 
         onMouseLeave={e => e.currentTarget.style.background = "transparent"}
         title="Click to edit"
       >
-        {value || <span style={{ color: "var(--muted2)" }}>Not captured yet · <span style={{ color:"var(--accent)" }}>click to add</span></span>}
+        {value ? renderRichText(value) : <span style={{ color: "var(--muted2)" }}>Not captured yet · <span style={{ color:"var(--accent)" }}>click to add</span></span>}
       </div>
     </div>
   );
@@ -1905,17 +2037,9 @@ function ProfileTab({ d, canEdit, onSaveField, onUpdate }) {
       <Block icon={Radar} title="Technical requirements">
         <div className="kv">
           <EditableTags k="Data sources" values={t.dataSources} field="data_sources" canEdit={canEdit} onSave={onSaveField} cls="spec" />
-          <EditableField k="Bandset" value={t.bandset} field="bandset" canEdit={canEdit} onSave={onSaveField} />
+          <EditableSelect k="Bandset" value={t.bandset} field="bandset" canEdit={canEdit} onSave={onSaveField} options={BANDSET_OPTIONS} customLabel="Custom" />
           <EditableField k="Cadence / revisit" value={t.cadence} field="cadence" canEdit={canEdit} onSave={onSaveField} />
-          <div style={{ display:"flex", gap:18, marginTop:2, flexWrap:"wrap" }}>
-            <LinkOrUpload
-              label="AOI definition" icon={MapPin} canEdit={canEdit}
-              currentUrl={links.aoiLink}
-              accept=".geojson,.json,.kml,.zip"
-              onSetLink={(url) => onUpdate({ _setLink: { field:"aoi_link", url } })}
-              onUploadFile={(file) => onUpdate({ _uploadFile: { file, kind:"attachment" } })}
-              emptyLabel="No AOI link"
-            />
+          <div style={{ display:"flex", gap:18, marginTop:2, flexWrap:"wrap", alignItems:"center" }}>
             <LinkOrUpload
               label="Feasibility study" icon={Gauge} canEdit={canEdit}
               currentUrl={links.feasibilityLink}
@@ -1924,6 +2048,9 @@ function ProfileTab({ d, canEdit, onSaveField, onUpdate }) {
               onUploadFile={(file) => onUpdate({ _uploadFile: { file, kind:"feasibility" } })}
               emptyLabel="No feasibility link"
             />
+            <span style={{ fontSize:11.5, color:"var(--muted2)", display:"inline-flex", alignItems:"center", gap:5 }}>
+              <MapPin size={12} /> Area of interest is managed on the Context tab
+            </span>
           </div>
         </div>
       </Block>
@@ -2207,7 +2334,13 @@ function ExecutionTab({ d, canEdit, onUpdate, onSaveField }) {
   const st = d.sectionStamps || {};
 
   const addCaptureEvent = (entry) => {
-    onUpdate({ ...d, execution: { ...e, captureLog: [...(e.captureLog||[]), entry] } });
+    onUpdate({ _captureEntry: {
+      entry_date: entry.date,
+      status: entry.status,
+      fail_reason: entry.failReason || null,
+      note: entry.note,
+      author: "You",
+    }});
   };
   const toggleAction = (id) => {
     onUpdate({ ...d, execution: { ...e, actionItems: (e.actionItems||[]).map(a => a.id===id ? {...a, done:!a.done} : a) } });
@@ -2308,7 +2441,8 @@ function NotesTab({ d, canEdit, onUpdate, toast }) {
           <Block icon={FileText} title="Meeting notes">
             <MeetingNotesAdder notes={d.notes.meetings} canEdit={canEdit}
               onAdd={(note) => onUpdate({ _addMeetingNote: note })}
-              onDelete={(id) => onUpdate({ _deleteRecord: { table:"meeting_notes", id } })} />
+              onDelete={(id) => onUpdate({ _deleteRecord: { table:"meeting_notes", id } })}
+              onSyncFromHubspot={() => onUpdate({ _syncNotes: true })} />
           </Block>
           <Block icon={Paperclip} title="Attachments">
             <AttachmentsManager attachments={d.notes.attachments} canEdit={canEdit}
@@ -2335,19 +2469,29 @@ function NotesTab({ d, canEdit, onUpdate, toast }) {
   );
 }
 
-function MeetingNotesAdder({ notes, canEdit, onAdd, onDelete }) {
+function MeetingNotesAdder({ notes, canEdit, onAdd, onDelete, onSyncFromHubspot }) {
   const [open, setOpen] = useState(false);
+  const [syncing, setSyncing] = useState(false);
   const [form, setForm] = useState({ note_date: new Date().toISOString().slice(0,10), body:"" });
   const submit = () => { if (!form.body.trim()) return; onAdd({ note_date: form.note_date, author: "You", body: form.body.trim() }); setForm({ note_date: new Date().toISOString().slice(0,10), body:"" }); setOpen(false); };
+  const doSync = async () => { setSyncing(true); try { await onSyncFromHubspot(); } finally { setSyncing(false); } };
   return (
     <>
+      {canEdit && onSyncFromHubspot && (
+        <button onClick={doSync} disabled={syncing}
+          style={{ display:"inline-flex", alignItems:"center", gap:6, marginBottom:10, padding:"6px 12px",
+            borderRadius:8, border:"1px solid var(--line)", background:"transparent", color:"var(--accent-deep)",
+            fontSize:12, fontWeight:500, cursor: syncing?"wait":"pointer" }}>
+          <RefreshCw size={13} className={syncing ? "spin" : ""} /> {syncing ? "Pulling from HubSpot…" : "Sync notes from HubSpot"}
+        </button>
+      )}
       {notes.length ? notes.map((m, i) => (
         <div key={m.id || i} style={{ marginBottom: 14 }}>
           <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center" }}>
             <div style={{ fontSize: 11, fontFamily: "var(--font-mono)", color: "var(--muted2)" }}>{m.date} · {m.author}</div>
             {canEdit && <button onClick={() => onDelete(m.id)} title="Delete" style={{ border:"none", background:"none", color:"var(--muted2)", cursor:"pointer", fontSize:12 }}>✕</button>}
           </div>
-          <div style={{ fontSize: 13.5, color: "var(--ink2)", lineHeight: 1.55, marginTop: 4 }}>{m.text}</div>
+          <div style={{ fontSize: 13.5, color: "var(--ink2)", lineHeight: 1.55, marginTop: 4 }}>{renderRichText(m.text)}</div>
         </div>
       )) : !open && <div className="empty"><FileText size={15} /> No meeting notes yet.</div>}
       {canEdit && (open ? (
@@ -2932,6 +3076,8 @@ function SignInScreen({ loading }) {
 
 const CORE_PIPELINES_LIST = [
   "Global Commercial Pipeline",
+  "Bespoke Analytics (EMEA & APAC)",
+  "Reseller Pipeline",
 ];
 
 async function fetchPassports({ pipeline, stage, ownerFilter, search } = {}) {
@@ -3093,6 +3239,7 @@ const PIPE_COLORS = {
   "Public Sector (USA)": "#E07A2B",
   "Public Sector (India)": "#2FB67A",
   "Global Commercial Pipeline": "#E5564B",
+  "Reseller Pipeline": "#2D7FF9",
   "Other": "#929BAB",
 };
 
@@ -3369,6 +3516,25 @@ function PassportDetail({ data, onBack, canEdit, onRefresh, onAssign, onNotifyAl
       await onRefresh();
       return;
     }
+    // Pull HubSpot notes/meetings for this one deal
+    if (updated._syncNotes) {
+      try {
+        const res = await fetch(`${SUPABASE_URL}/functions/v1/hubspot-sync`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "Authorization": `Bearer ${SUPABASE_ANON_KEY}` },
+          body: JSON.stringify({
+            action: "sync_notes_for_deal",
+            hubspot_deal_id: p.hubspot_deal_id,
+            passport_id: p.id,
+          }),
+        });
+        const data = await res.json();
+        if (data.ok) toast(data.notes_added > 0 ? `Pulled ${data.notes_added} note${data.notes_added!==1?"s":""} from HubSpot` : "No new notes in HubSpot");
+        else toast("Notes sync failed: " + (data.error || "unknown"));
+        await onRefresh();
+      } catch (e) { toast("Notes sync failed: " + e.message); }
+      return;
+    }
     // General single-field update (text, tags, lists) → persist to passport row
     if (updated._fieldUpdate) {
       const { field, value } = updated._fieldUpdate;
@@ -3387,7 +3553,13 @@ function PassportDetail({ data, onBack, canEdit, onRefresh, onAssign, onNotifyAl
     const fields = {};
     if (updated.owners) {
       if (updated.owners.owner !== deal.owners.owner) fields.owner_director = updated.owners.owner;
-      if (updated.owners.se !== deal.owners.se) fields.owner_se = updated.owners.se;
+      if (updated.owners.se !== deal.owners.se) {
+        fields.owner_se = updated.owners.se;
+        // Mark the app as the source so the sync writes this back to HubSpot
+        // and never overwrites it from the PSE field.
+        fields.owner_se_source = updated.owners.se ? "app" : "hubspot";
+        fields.owner_se_updated_at = new Date().toISOString();
+      }
       if (updated.owners.cs !== deal.owners.cs) fields.owner_cs = updated.owners.cs;
       if (updated.owners.analytics !== deal.owners.analytics) fields.owner_analytics = updated.owners.analytics;
     }
