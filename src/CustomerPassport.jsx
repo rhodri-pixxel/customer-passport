@@ -3318,9 +3318,10 @@ function SignInScreen({ loading }) {
         {/* Logo */}
         <div style={{ marginBottom: 32 }}>
           <div style={{
-            display: "flex", flexDirection: "column", alignItems: "center", marginBottom: 8,
+            display: "flex", flexDirection: "column", alignItems: "center", gap: 12, marginBottom: 8,
           }}>
-            <img src={PASSPORT_LOGO_DARK} alt="Pixxel Customer Passport" style={{ width: 210, maxWidth: "72vw", height: "auto" }} />
+            <img src={PASSPORT_LOGO_DARK} alt="Pixxel Customer Passport" style={{ width: 200, maxWidth: "72vw", height: "auto" }} />
+            <div style={{ color: MUTED, fontSize: 11, letterSpacing: 2, textTransform: "uppercase" }}>Customer Passport</div>
           </div>
         </div>
 
