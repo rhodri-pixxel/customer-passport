@@ -1934,7 +1934,28 @@ function EditableField({ k, value, field, canEdit, onSave, mono, placeholder }) 
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(value || "");
   const [saving, setSaving] = useState(false);
+  const taRef = useRef(null);
   useEffect(() => { setDraft(value || ""); }, [value]);
+
+  // Toolbar actions: wrap the current selection in markdown that renderRichText
+  // already understands (**bold**, *italic*, "- " bullets).
+  const applyFormat = (kind) => {
+    const ta = taRef.current; if (!ta) return;
+    const s = ta.selectionStart, e = ta.selectionEnd, v = draft, sel = v.slice(s, e);
+    let next, cs, ce;
+    if (kind === "bold" || kind === "italic") {
+      const mark = kind === "bold" ? "**" : "*";
+      const inner = sel || (kind === "bold" ? "bold text" : "italic text");
+      next = v.slice(0, s) + mark + inner + mark + v.slice(e);
+      cs = s + mark.length; ce = cs + inner.length;
+    } else { // bullet: prefix the current line with "- "
+      const ls = v.lastIndexOf("\n", s - 1) + 1;
+      next = v.slice(0, ls) + "- " + v.slice(ls);
+      cs = ce = s + 2;
+    }
+    setDraft(next);
+    requestAnimationFrame(() => { ta.focus(); ta.setSelectionRange(cs, ce); });
+  };
 
   const save = async () => {
     setSaving(true);
@@ -1950,7 +1971,17 @@ function EditableField({ k, value, field, canEdit, onSave, mono, placeholder }) 
     return (
       <div>
         <div className="k">{k}</div>
+        <div style={{ display:"flex", gap:4, marginTop:4 }}>
+          {[["bold","B",{fontWeight:700}],["italic","I",{fontStyle:"italic"}],["bullet","•",{}]].map(([kind,lbl,st]) => (
+            <button key={kind} type="button" onMouseDown={ev => { ev.preventDefault(); applyFormat(kind); }}
+              title={kind === "bold" ? "Bold (**text**)" : kind === "italic" ? "Italic (*text*)" : "Bullet list (- )"}
+              style={{ width:26, height:26, borderRadius:6, border:"1px solid var(--line)", background:"#fff", color:"var(--ink2)", fontSize:13, cursor:"pointer", lineHeight:1, ...st }}>
+              {lbl}
+            </button>
+          ))}
+        </div>
         <textarea
+          ref={taRef}
           autoFocus
           value={draft}
           onChange={e => setDraft(e.target.value)}
@@ -2164,7 +2195,9 @@ function CaptureLog({ entries, canEdit, onAdd, onUploadShot }) {
   const [uploading, setUploading] = useState(false);
   const toggleReason = (r) => setForm(f => ({ ...f, failReasons: f.failReasons.includes(r) ? f.failReasons.filter(x => x !== r) : [...f.failReasons, r] }));
   const submit = () => {
-    if (!form.note.trim() && form.failReasons.length === 0) { return; }
+    // Only block a completely empty QC-Failed entry; allow status-only events
+    // (Tasked / Captured / Shared, etc.) to be logged even without a note.
+    if (form.status === "QC Failed" && !form.note.trim() && form.failReasons.length === 0) { return; }
     // Build a readable failReason string from the selected reasons + other text
     let reasonStr = "";
     if (form.status === "QC Failed") {
@@ -3298,7 +3331,16 @@ function calcReadiness(passport, contacts) {
 }
 
 async function assignOwner(passportId, role, name) {
-  await sbPatch("handover_passports", passportId, { [`owner_${role}`]: name });
+  const fields = { [`owner_${role}`]: name };
+  // For the SE slot, mark the app as the source of truth (and stamp the time)
+  // so the HubSpot sync writes this back and never overwrites it from the PSE
+  // field. Without this, a scheduled sync wipes the assignment on refresh.
+  // Mirrors the owner_se handling in PassportDetail.handleUpdate.
+  if (role === "se") {
+    fields.owner_se_source = name ? "app" : "hubspot";
+    fields.owner_se_updated_at = new Date().toISOString();
+  }
+  await sbPatch("handover_passports", passportId, fields);
 }
 
 async function addActivityEntry(passportId, author, body, mentions = []) {
@@ -3613,6 +3655,7 @@ function PassportDetail({ data, onBack, canEdit, onRefresh, onAssign, onNotifyAl
 
   // Intercept onUpdate to persist changes
   const handleUpdate = async (updated) => {
+   try {
     // Activity feed post
     if (updated._activityPost) {
       const { author, body, mentions } = updated._activityPost;
@@ -3745,6 +3788,11 @@ function PassportDetail({ data, onBack, canEdit, onRefresh, onAssign, onNotifyAl
       await sbPatch("handover_passports", p.id, fields);
       await onRefresh();
     }
+   } catch (e) {
+     // Surface previously-silent save/delete failures (RLS, schema, network)
+     // so "nothing happened" becomes a visible, diagnosable error.
+     toast("Save failed: " + (e.message || e));
+   }
   };
 
   return (
