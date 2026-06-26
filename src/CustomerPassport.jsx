@@ -3382,8 +3382,12 @@ const CORE_PIPELINES_LIST = [
 
 async function fetchPassports({ pipeline, stage, ownerFilter, search } = {}) {
   const pipes = (pipeline && pipeline !== "all") ? [pipeline] : CORE_PIPELINES_LIST;
-  const pipeQ = pipes.map(p => `pipeline.eq.${encodeURIComponent(p)}`).join(",");
-  let params = `?select=id,hubspot_deal_id,company,deal_id_display,hubspot_stage,hubspot_stage_idx,hubspot_amount,hubspot_last_contacted,hubspot_last_contact_owner,hubspot_synced_at,owner_director,owner_se,owner_cs,owner_analytics,pipeline,last_activity_label,updated_at&or=(${pipeQ})&order=updated_at.desc&limit=300`;
+  // Double-quote each value and use `in.()`: required so pipeline names with
+  // special chars (e.g. "Bespoke Analytics (EMEA & APAC)") are treated literally.
+  // The old `or=(pipeline.eq.…)` form let raw parentheses break the filter parse,
+  // silently dropping every pipeline listed after the one with parens.
+  const pipeQ = pipes.map(p => `"${encodeURIComponent(p)}"`).join(",");
+  let params = `?select=id,hubspot_deal_id,company,deal_id_display,hubspot_stage,hubspot_stage_idx,hubspot_amount,hubspot_last_contacted,hubspot_last_contact_owner,hubspot_synced_at,owner_director,owner_se,owner_cs,owner_analytics,pipeline,last_activity_label,updated_at&pipeline=in.(${pipeQ})&order=updated_at.desc&limit=300`;
   if (stage !== undefined && stage !== "all") params += `&hubspot_stage_idx=eq.${stage}`;
   let data = await sbGet("handover_passports", params);
   if (ownerFilter) {
