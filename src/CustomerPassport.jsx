@@ -493,7 +493,8 @@ const CSS = `
 const STAGES = ["Discovery", "Technical Qualification", "Solution Validation", "Proposal", "Negotiation", "Closed Won"];
 // ── Drop the official Pixxel logo here (host it in Supabase storage or import it
 //    in Lovable, then paste the URL). Empty string falls back to the wordmark. ──
-const PIXXEL_LOGO_URL = "";
+const PIXXEL_LOGO_URL = "/pixxel-logo-light.svg";  // dark-ink logo for the light top bar
+const PIXXEL_LOGO_DARK = "/pixxel-logo-dark.svg";  // white logo for dark surfaces (sign-in)
 
 // ── Real Pixxel roster, grouped by team ──────────────────────
 // Source: HubSpot users export (active only). Each person has a clean
@@ -3311,22 +3312,10 @@ function SignInScreen({ loading }) {
         {/* Logo */}
         <div style={{ marginBottom: 32 }}>
           <div style={{
-            display: "inline-flex", alignItems: "center", gap: 10, marginBottom: 8,
+            display: "flex", flexDirection: "column", alignItems: "center", gap: 12, marginBottom: 8,
           }}>
-            <div style={{
-              width: 40, height: 40, borderRadius: 10, background: ACCENT,
-              display: "flex", alignItems: "center", justifyContent: "center",
-            }}>
-              <svg width="22" height="22" viewBox="0 0 22 22" fill="none">
-                <circle cx="11" cy="11" r="6" stroke="white" strokeWidth="1.5" fill="none"/>
-                <circle cx="11" cy="11" r="2.5" fill="white"/>
-                <path d="M11 2v3M11 17v3M2 11h3M17 11h3" stroke="white" strokeWidth="1.5" strokeLinecap="round"/>
-              </svg>
-            </div>
-            <div style={{ textAlign: "left" }}>
-              <div style={{ color: "white", fontFamily: "'Space Grotesk',sans-serif", fontWeight: 700, fontSize: 18, letterSpacing: -0.5 }}>pixxel</div>
-              <div style={{ color: MUTED, fontSize: 11, letterSpacing: 2, textTransform: "uppercase" }}>Customer Passport</div>
-            </div>
+            <img src={PIXXEL_LOGO_DARK} alt="Pixxel" style={{ height: 44, width: "auto" }} />
+            <div style={{ color: MUTED, fontSize: 11, letterSpacing: 2, textTransform: "uppercase" }}>Customer Passport</div>
           </div>
         </div>
 
