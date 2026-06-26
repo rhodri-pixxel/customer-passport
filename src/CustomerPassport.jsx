@@ -500,7 +500,7 @@ const STAGES = ["Discovery", "Technical Qualification", "Solution Validation", "
 //    in Lovable, then paste the URL). Empty string falls back to the wordmark. ──
 const PIXXEL_LOGO_URL = "/pixxel-logo-light.svg";  // dark-ink logo for the light top bar
 const PIXXEL_LOGO_DARK = "/pixxel-logo-dark.svg";  // white logo for dark surfaces
-const PASSPORT_LOGO_DARK = "/passport_dark.png";   // white sign-in logo (for the dark sign-in screen)
+const PASSPORT_LOGO = "/passport_light.png";       // sign-in logo (chosen variant; sits on the dark sign-in)
 
 // ── Real Pixxel roster, grouped by team ──────────────────────
 // Source: HubSpot users export (active only). Each person has a clean
@@ -3320,7 +3320,7 @@ function SignInScreen({ loading }) {
           <div style={{
             display: "flex", flexDirection: "column", alignItems: "center", gap: 12, marginBottom: 8,
           }}>
-            <img src={PASSPORT_LOGO_DARK} alt="Pixxel Customer Passport" style={{ width: 200, maxWidth: "72vw", height: "auto" }} />
+            <img src={PASSPORT_LOGO} alt="Pixxel Customer Passport" style={{ width: 200, maxWidth: "72vw", height: "auto" }} />
             <div style={{ color: MUTED, fontSize: 11, letterSpacing: 2, textTransform: "uppercase" }}>Customer Passport</div>
           </div>
         </div>
