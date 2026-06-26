@@ -1285,13 +1285,28 @@ async function parseAoiFile(file) {
   throw new Error("Unsupported file. Use GeoJSON, KML, or a zipped Shapefile.");
 }
 
-function AoiUploader({ aoi, canEdit, which, onSetAoi }) {
+// Flatten any GeoJSON value into an array of Features
+function toFeatures(gj) {
+  if (!gj) return [];
+  if (gj.type === "FeatureCollection") return gj.features || [];
+  if (gj.type === "Feature") return [gj];
+  if (gj.coordinates) return [{ type: "Feature", properties: {}, geometry: gj }];
+  return [];
+}
+
+// Combine two GeoJSON values into one FeatureCollection (for multi-AOI maps)
+function mergeGeoJson(existing, added) {
+  return { type: "FeatureCollection", features: [...toFeatures(existing), ...toFeatures(added)] };
+}
+
+function AoiUploader({ aoi, canEdit, which, onSetAoi, multi }) {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
   const inputId = `aoi-up-${which}-${Math.random().toString(36).slice(2,7)}`;
 
   // aoi may be the new GeoJSON (object) or the legacy {poly,...} shape
   const isGeoJson = aoi && (aoi.type === "FeatureCollection" || aoi.type === "Feature" || aoi.type === "Polygon" || aoi.type === "MultiPolygon");
+  const count = isGeoJson ? toFeatures(aoi).length : 0;
 
   const handleFile = async (e) => {
     const file = e.target.files[0];
@@ -1300,7 +1315,8 @@ function AoiUploader({ aoi, canEdit, which, onSetAoi }) {
     try {
       const gj = await parseAoiFile(file);
       if (!gj || (!gj.features && !gj.coordinates)) throw new Error("No geometry found in file.");
-      await onSetAoi(gj);
+      // In multi mode, append to what's already mapped instead of replacing it
+      await onSetAoi(multi && isGeoJson ? mergeGeoJson(aoi, gj) : gj);
     } catch (ex) {
       setErr(ex.message || "Failed to parse file");
     } finally {
@@ -1312,30 +1328,27 @@ function AoiUploader({ aoi, canEdit, which, onSetAoi }) {
   // Legacy mock {poly} shape → keep the old SVG renderer
   if (aoi && aoi.poly && !isGeoJson) return <AoiMap aoi={aoi} />;
 
-  // Always render the basemap. When there's no AOI yet, overlay the upload
-  // control on top so you still get a global map for geographic context.
+  // Always render the basemap. Show the upload control when there's no AOI yet,
+  // and also keep it visible in multi mode so more AOI files can be added.
+  const showUpload = canEdit && (!isGeoJson || multi);
   return (
     <div style={{ position:"relative" }}>
       <GeoJsonMap geojson={isGeoJson ? aoi : null} canEdit={canEdit}
         onClear={isGeoJson ? () => onSetAoi(null) : null} />
-      {!isGeoJson && (
+      {showUpload && (
         <div style={{ position:"absolute", top:8, left:8, zIndex:500, display:"flex", flexDirection:"column", gap:6, alignItems:"flex-start", maxWidth:"calc(100% - 16px)" }}>
           <span style={{ background:"rgba(11,18,32,0.78)", color:"#cdd6e3", fontSize:11, padding:"4px 9px", borderRadius:6, fontFamily:"var(--font-mono)" }}>
-            No area of interest mapped yet
+            {!isGeoJson ? "No area of interest mapped yet" : `${count} AOI${count !== 1 ? "s" : ""} delivered`}
           </span>
-          {canEdit && (
-            <>
-              <label htmlFor={inputId} title="GeoJSON · KML · zipped Shapefile" style={{
-                display:"inline-flex", alignItems:"center", gap:7, cursor: busy?"wait":"pointer",
-                padding:"8px 14px", borderRadius:8, background:"var(--accent)", color:"#fff",
-                fontSize:12.5, fontWeight:600,
-              }}>
-                <Upload size={14} /> {busy ? "Parsing…" : "Upload AOI file"}
-              </label>
-              <input id={inputId} type="file" accept=".geojson,.json,.kml,.zip" onChange={handleFile} style={{ display:"none" }} />
-              {err && <span style={{ background:"rgba(229,86,75,0.96)", color:"#fff", fontSize:11, padding:"3px 8px", borderRadius:6 }}>{err}</span>}
-            </>
-          )}
+          <label htmlFor={inputId} title="GeoJSON · KML · zipped Shapefile" style={{
+            display:"inline-flex", alignItems:"center", gap:7, cursor: busy?"wait":"pointer",
+            padding:"8px 14px", borderRadius:8, background:"var(--accent)", color:"#fff",
+            fontSize:12.5, fontWeight:600,
+          }}>
+            {isGeoJson && multi ? <Plus size={14} /> : <Upload size={14} />} {busy ? "Parsing…" : (isGeoJson && multi ? "Add another AOI" : "Upload AOI file")}
+          </label>
+          <input id={inputId} type="file" accept=".geojson,.json,.kml,.zip" onChange={handleFile} style={{ display:"none" }} />
+          {err && <span style={{ background:"rgba(229,86,75,0.96)", color:"#fff", fontSize:11, padding:"3px 8px", borderRadius:6 }}>{err}</span>}
         </div>
       )}
     </div>
@@ -1627,6 +1640,18 @@ function Passport({ deal, onBack, canEdit, onUpdate, onAssign, onNotifyAll, onPo
   const { score, items } = readiness(deal);
   const missing = items.filter(i => !i.done);
 
+  // Let the assign dropdown be dismissed without picking anyone (so an
+  // accidental click can't force you to notify someone). Click-outside / Esc.
+  const assignRef = useRef(null);
+  useEffect(() => {
+    if (assignOpen === null) return;
+    const onDoc = (e) => { if (assignRef.current && !assignRef.current.contains(e.target)) setAssignOpen(null); };
+    const onKey = (e) => { if (e.key === "Escape") setAssignOpen(null); };
+    document.addEventListener("mousedown", onDoc);
+    document.addEventListener("keydown", onKey);
+    return () => { document.removeEventListener("mousedown", onDoc); document.removeEventListener("keydown", onKey); };
+  }, [assignOpen]);
+
   const assign = (role, name) => {
     onAssign(role, name);
     setAssignOpen(null);
@@ -1714,7 +1739,7 @@ function Passport({ deal, onBack, canEdit, onUpdate, onAssign, onNotifyAll, onPo
             const isOwnerRole = role === "owner";
             const editable = canEdit && !isOwnerRole;
             return (
-              <div className="owner-slot" key={role}>
+              <div className="owner-slot" key={role} ref={assignOpen === role ? assignRef : null}>
                 <OwnerAvatar name={name} role={short} />
                 <div className="meta">
                   <div className="role-tag">{label}{isOwnerRole && <span style={{fontSize:10,color:"var(--muted2)",marginLeft:4}}>via HubSpot</span>}</div>
@@ -1736,6 +1761,10 @@ function Passport({ deal, onBack, canEdit, onUpdate, onAssign, onNotifyAll, onPo
                 </div>
                 {assignOpen === role && editable && (
                   <div className="assign-menu">
+                    <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", padding:"4px 8px 6px", borderBottom:"1px solid var(--line-soft)", marginBottom:4 }}>
+                      <span style={{ fontSize:10.5, color:"var(--muted2)", fontWeight:600, textTransform:"uppercase", letterSpacing:0.5 }}>Assign {label}</span>
+                      <button onClick={() => setAssignOpen(null)} title="Cancel" style={{ border:"none", background:"none", color:"var(--muted2)", cursor:"pointer", fontSize:13, lineHeight:1 }}>✕</button>
+                    </div>
                     {TEAM[role].map(p => (
                       <button key={p} onClick={() => assign(role, p)} style={p === name ? {fontWeight:600,color:"var(--accent)"} : {}}>{p}{p === name ? " ✓" : ""}</button>
                     ))}
@@ -2614,7 +2643,7 @@ function ExecutionTab({ d, canEdit, onUpdate, onSaveField }) {
             onDelete={(id) => onUpdate({ _deleteRecord: { table:"deal_sample_data", id } })} />
         </Block>
         <Block icon={MapPin} title="Sample delivery AOI">
-          <AoiUploader aoi={e.sampleAoi} canEdit={canEdit} which="sample"
+          <AoiUploader aoi={e.sampleAoi} canEdit={canEdit} which="sample" multi
             onSetAoi={(geojson) => onUpdate({ _setAoi: { geojson, which:"sample" } })} />
         </Block>
       </div>
@@ -2685,6 +2714,7 @@ function NotesTab({ d, canEdit, onUpdate, toast }) {
           <Block icon={Paperclip} title="Attachments">
             <AttachmentsManager attachments={d.notes.attachments} canEdit={canEdit}
               onUpload={(file) => onUpdate({ _uploadFile: { file, kind:"attachment" } })}
+              onAddLink={(name, url) => onUpdate({ _addAttachmentLink: { name, url } })}
               onDelete={(id) => onUpdate({ _deleteRecord: { table:"attachments", id } })} />
           </Block>
         </div>
@@ -2750,28 +2780,57 @@ function MeetingNotesAdder({ notes, canEdit, onAdd, onDelete, onSyncFromHubspot 
   );
 }
 
-function AttachmentsManager({ attachments, canEdit, onUpload, onDelete }) {
+function AttachmentsManager({ attachments, canEdit, onUpload, onAddLink, onDelete }) {
   const [busy, setBusy] = useState(false);
+  const [linkOpen, setLinkOpen] = useState(false);
+  const [linkName, setLinkName] = useState("");
+  const [linkUrl, setLinkUrl] = useState("");
   const inputId = `att-${Math.random().toString(36).slice(2,7)}`;
+  const isLink = (a) => (a.type || "").toLowerCase() === "link" || /^https?:\/\//.test(a.path || "");
+  const hrefFor = (a) => isLink(a) ? a.path : `${SUPABASE_URL}/storage/v1/object/public/${STORAGE_BUCKET}/${a.path}`;
+  const submitLink = () => {
+    const url = linkUrl.trim();
+    if (!url) return;
+    onAddLink(linkName.trim() || url, /^https?:\/\//.test(url) ? url : `https://${url}`);
+    setLinkName(""); setLinkUrl(""); setLinkOpen(false);
+  };
   return (
     <>
       {attachments.length ? attachments.map((a, i) => (
         <div className="attach" key={a.id || i}>
-          <div className="ai"><FileText size={16} /></div>
-          <div><div className="an2">{a.name}</div><div className="as">{(a.type||"file").toUpperCase()} · {a.size}</div></div>
+          <div className="ai">{isLink(a) ? <Link2 size={16} /> : <FileText size={16} />}</div>
+          <div><div className="an2">{a.name}</div><div className="as">{isLink(a) ? "LINK" : (a.type||"file").toUpperCase() + " · " + a.size}</div></div>
           <div style={{ marginLeft:"auto", display:"flex", gap:8, alignItems:"center" }}>
-            {a.path && <a href={`${SUPABASE_URL}/storage/v1/object/public/${STORAGE_BUCKET}/${a.path}`} target="_blank" rel="noreferrer" title="Download"><Download size={15} color="var(--muted2)" /></a>}
+            {a.path && <a href={hrefFor(a)} target="_blank" rel="noreferrer" title={isLink(a) ? "Open link" : "Download"}>{isLink(a) ? <ExternalLink size={15} color="var(--muted2)" /> : <Download size={15} color="var(--muted2)" />}</a>}
             {canEdit && <button onClick={() => onDelete(a.id)} title="Delete" style={{ border:"none", background:"none", color:"var(--muted2)", cursor:"pointer", fontSize:13 }}>✕</button>}
           </div>
         </div>
-      )) : <div className="empty"><Paperclip size={15} /> No attachments.</div>}
+      )) : !linkOpen && <div className="empty"><Paperclip size={15} /> No attachments.</div>}
       {canEdit && (
         <>
-          <label htmlFor={inputId} className="add-row" style={{ cursor: busy?"wait":"pointer", marginTop:8 }}>
-            <Upload size={14} /> {busy ? "Uploading…" : "Upload attachment"}
-          </label>
+          <div style={{ display:"flex", gap:8, marginTop:8, flexWrap:"wrap" }}>
+            <label htmlFor={inputId} className="add-row" style={{ cursor: busy?"wait":"pointer", margin:0, flex:1, minWidth:140 }}>
+              <Upload size={14} /> {busy ? "Uploading…" : "Upload file"}
+            </label>
+            <button onClick={() => setLinkOpen(o => !o)} className="add-row" style={{ margin:0, flex:1, minWidth:140 }}>
+              <Link2 size={14} /> Add link
+            </button>
+          </div>
           <input id={inputId} type="file" style={{ display:"none" }}
             onChange={async (e) => { const f = e.target.files[0]; if (!f) return; setBusy(true); try { await onUpload(f); } finally { setBusy(false); e.target.value=""; } }} />
+          {linkOpen && (
+            <div style={{ display:"flex", flexDirection:"column", gap:8, marginTop:8 }}>
+              <input autoFocus placeholder="Label (e.g. Delivery folder — Google Drive)" value={linkName} onChange={e => setLinkName(e.target.value)}
+                style={{ border:"1px solid var(--line)", borderRadius:8, padding:"8px 11px", fontSize:13, fontFamily:"inherit", outline:"none" }} />
+              <input placeholder="Paste URL (https://…)" value={linkUrl} onChange={e => setLinkUrl(e.target.value)}
+                onKeyDown={e => { if (e.key === "Enter") submitLink(); if (e.key === "Escape") setLinkOpen(false); }}
+                style={{ border:"1px solid var(--accent)", borderRadius:8, padding:"8px 11px", fontSize:13, fontFamily:"inherit", outline:"none" }} />
+              <div style={{ display:"flex", gap:8 }}>
+                <button onClick={submitLink} style={{ padding:"6px 14px", borderRadius:7, border:"none", background:"var(--accent)", color:"#fff", fontSize:12.5, fontWeight:600, cursor:"pointer" }}>Add link</button>
+                <button onClick={() => setLinkOpen(false)} style={{ padding:"6px 14px", borderRadius:7, border:"1px solid var(--line)", background:"transparent", color:"var(--muted)", fontSize:12.5, cursor:"pointer" }}>Cancel</button>
+              </div>
+            </div>
+          )}
         </>
       )}
     </>
@@ -3783,6 +3842,15 @@ function PassportDetail({ data, onBack, canEdit, onRefresh, onAssign, onNotifyAl
     if (updated._addSample) { await addSampleData(p.id, updated._addSample); await onRefresh(); return; }
     if (updated._addMeetingNote) { await addMeetingNote(p.id, updated._addMeetingNote); await onRefresh(); return; }
     if (updated._addCollaborator) { await addCollaborator(p.id, updated._addCollaborator); await onRefresh(); return; }
+    // Attachment that's a link (e.g. Google Drive) rather than an uploaded file
+    if (updated._addAttachmentLink) {
+      const { name, url } = updated._addAttachmentLink;
+      await addAttachmentRecord(p.id, {
+        file_name: name || url, file_type: "link", file_size: "link", storage_path: url,
+      });
+      await onRefresh();
+      return;
+    }
     if (updated._deleteRecord) {
       await sbDelete(updated._deleteRecord.table, updated._deleteRecord.id);
       await onRefresh();
