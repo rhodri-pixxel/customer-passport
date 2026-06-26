@@ -1186,21 +1186,37 @@ function GeoJsonMap({ geojson, onClear, canEdit }) {
   const mapRef = useRef(null);
   const containerRef = useRef(null);
   const [meta, setMeta] = useState({ features: 0, center: "" });
+  const WORLD = { center: [20, 0], zoom: 2 };
 
+  // Init the basemap once — independent of whether an AOI exists yet — so the
+  // Context tab always shows a global map / geographic context.
   useEffect(() => {
-    if (!containerRef.current || !geojson) return;
-    // Init map once
-    if (!mapRef.current) {
-      mapRef.current = L.map(containerRef.current, {
-        zoomControl: true, attributionControl: false, scrollWheelZoom: false,
-      });
-      L.tileLayer("https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png", {
-        maxZoom: 19, subdomains: "abcd",
-      }).addTo(mapRef.current);
-    }
+    if (!containerRef.current || mapRef.current) return;
+    const map = L.map(containerRef.current, {
+      zoomControl: true, attributionControl: false, scrollWheelZoom: false, worldCopyJump: true,
+    });
+    map.setView(WORLD.center, WORLD.zoom);
+    L.tileLayer("https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png", {
+      maxZoom: 19, subdomains: "abcd",
+    }).addTo(map);
+    mapRef.current = map;
+
+    // Leaflet paints a blank/grey map until it re-measures its container.
+    // Nudge it a few times + on any resize so tiles reliably render.
+    const nudge = () => map.invalidateSize();
+    requestAnimationFrame(nudge);
+    const timers = [setTimeout(nudge, 150), setTimeout(nudge, 450)];
+    const ro = typeof ResizeObserver !== "undefined" ? new ResizeObserver(nudge) : null;
+    if (ro) ro.observe(containerRef.current);
+    map.__cleanupExtra = () => { timers.forEach(clearTimeout); if (ro) ro.disconnect(); };
+  }, []);
+
+  // Draw / update / clear the AOI overlay whenever the geojson changes.
+  useEffect(() => {
     const map = mapRef.current;
-    // Clear previous overlay
-    if (map._aoiLayer) { map.removeLayer(map._aoiLayer); }
+    if (!map) return;
+    if (map._aoiLayer) { map.removeLayer(map._aoiLayer); map._aoiLayer = null; }
+    if (!geojson) { map.setView(WORLD.center, WORLD.zoom); setMeta({ features: 0, center: "" }); return; }
     try {
       const layer = L.geoJSON(geojson, {
         style: { color: "#0B7E8C", weight: 2.5, fillColor: "#0EA5B7", fillOpacity: 0.35 },
@@ -1215,7 +1231,6 @@ function GeoJsonMap({ geojson, onClear, canEdit }) {
         const feats = geojson.type === "FeatureCollection" ? geojson.features.length : 1;
         setMeta({ features: feats, center: `${c.lat.toFixed(3)}°, ${c.lng.toFixed(3)}°` });
       }
-      // Leaflet needs a nudge when rendered in a flex container
       setTimeout(() => map.invalidateSize(), 100);
     } catch (e) {
       console.error("AOI render error", e);
@@ -1223,15 +1238,21 @@ function GeoJsonMap({ geojson, onClear, canEdit }) {
   }, [geojson]);
 
   // Clean up on unmount
-  useEffect(() => () => { if (mapRef.current) { mapRef.current.remove(); mapRef.current = null; } }, []);
+  useEffect(() => () => {
+    if (mapRef.current) {
+      if (mapRef.current.__cleanupExtra) mapRef.current.__cleanupExtra();
+      mapRef.current.remove();
+      mapRef.current = null;
+    }
+  }, []);
 
   return (
     <div style={{ position: "relative", borderRadius: 12, overflow: "hidden", border: "1px solid var(--line)" }}>
       <div ref={containerRef} style={{ height: 300, width: "100%", background: "#e8eef2" }} />
       <div style={{ position:"absolute", bottom:8, left:8, zIndex:500, background:"rgba(11,18,32,0.78)", color:"#cdd6e3", fontSize:11, padding:"4px 9px", borderRadius:6, fontFamily:"var(--font-mono)", pointerEvents:"none" }}>
-        {meta.features} feature{meta.features !== 1 ? "s" : ""} · ◎ {meta.center}
+        {meta.center ? `${meta.features} feature${meta.features !== 1 ? "s" : ""} · ◎ ${meta.center}` : "No AOI set"}
       </div>
-      {canEdit && onClear && (
+      {canEdit && onClear && geojson && (
         <button onClick={onClear} title="Remove AOI"
           style={{ position:"absolute", top:8, right:8, zIndex:500, background:"rgba(11,18,32,0.78)", border:"none", borderRadius:6, color:"#fff", padding:"5px 9px", fontSize:11, cursor:"pointer", display:"flex", alignItems:"center", gap:4 }}>
           <Trash2 size={11} /> Remove
@@ -1288,34 +1309,35 @@ function AoiUploader({ aoi, canEdit, which, onSetAoi }) {
     }
   };
 
-  if (isGeoJson) {
-    return <GeoJsonMap geojson={aoi} canEdit={canEdit} onClear={() => onSetAoi(null)} />;
-  }
-  if (aoi && aoi.poly) {
-    // legacy mock shape — show old renderer
-    return <AoiMap aoi={aoi} />;
-  }
+  // Legacy mock {poly} shape → keep the old SVG renderer
+  if (aoi && aoi.poly && !isGeoJson) return <AoiMap aoi={aoi} />;
 
+  // Always render the basemap. When there's no AOI yet, overlay the upload
+  // control on top so you still get a global map for geographic context.
   return (
-    <div>
-      <div className="empty" style={{ flexDirection:"column", gap:10, padding:"24px 16px" }}>
-        <MapPin size={20} />
-        <span>No area of interest mapped yet.</span>
-        {canEdit && (
-          <>
-            <label htmlFor={inputId} style={{
-              display:"inline-flex", alignItems:"center", gap:7, cursor: busy?"wait":"pointer",
-              padding:"8px 16px", borderRadius:8, background:"var(--accent)", color:"#fff",
-              fontSize:12.5, fontWeight:600,
-            }}>
-              <Upload size={14} /> {busy ? "Parsing…" : "Upload AOI file"}
-            </label>
-            <input id={inputId} type="file" accept=".geojson,.json,.kml,.zip" onChange={handleFile} style={{ display:"none" }} />
-            <span style={{ fontSize:11, color:"var(--muted2)" }}>GeoJSON · KML · zipped Shapefile</span>
-            {err && <span style={{ fontSize:11.5, color:"var(--bad)" }}>{err}</span>}
-          </>
-        )}
-      </div>
+    <div style={{ position:"relative" }}>
+      <GeoJsonMap geojson={isGeoJson ? aoi : null} canEdit={canEdit}
+        onClear={isGeoJson ? () => onSetAoi(null) : null} />
+      {!isGeoJson && (
+        <div style={{ position:"absolute", top:8, left:8, zIndex:500, display:"flex", flexDirection:"column", gap:6, alignItems:"flex-start", maxWidth:"calc(100% - 16px)" }}>
+          <span style={{ background:"rgba(11,18,32,0.78)", color:"#cdd6e3", fontSize:11, padding:"4px 9px", borderRadius:6, fontFamily:"var(--font-mono)" }}>
+            No area of interest mapped yet
+          </span>
+          {canEdit && (
+            <>
+              <label htmlFor={inputId} title="GeoJSON · KML · zipped Shapefile" style={{
+                display:"inline-flex", alignItems:"center", gap:7, cursor: busy?"wait":"pointer",
+                padding:"8px 14px", borderRadius:8, background:"var(--accent)", color:"#fff",
+                fontSize:12.5, fontWeight:600,
+              }}>
+                <Upload size={14} /> {busy ? "Parsing…" : "Upload AOI file"}
+              </label>
+              <input id={inputId} type="file" accept=".geojson,.json,.kml,.zip" onChange={handleFile} style={{ display:"none" }} />
+              {err && <span style={{ background:"rgba(229,86,75,0.96)", color:"#fff", fontSize:11, padding:"3px 8px", borderRadius:6 }}>{err}</span>}
+            </>
+          )}
+        </div>
+      )}
     </div>
   );
 }
