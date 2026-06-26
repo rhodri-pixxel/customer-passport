@@ -10,7 +10,7 @@ How to make changes safely and ship them to production.
 
 **1. Start on the staging branch**
 ```bash
-cd c:\Users\amyzmt\customer-passport
+cd path/to/customer-passport   # wherever you cloned the repo
 git checkout staging
 ```
 
