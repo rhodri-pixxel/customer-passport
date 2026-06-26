@@ -1560,6 +1560,16 @@ function CollaboratorsRow({ collaborators, canEdit, onAdd, onDelete }) {
   // Everyone in the roster, flat, for picking
   const allPeople = Object.values(TEAM_MEMBERS).flat();
   const alreadyEmails = collaborators.map(c => c.email);
+  // Let the picker be dismissed without choosing anyone (click outside / Esc)
+  const menuRef = useRef(null);
+  useEffect(() => {
+    if (!open) return;
+    const onDoc = (e) => { if (menuRef.current && !menuRef.current.contains(e.target)) setOpen(false); };
+    const onKey = (e) => { if (e.key === "Escape") setOpen(false); };
+    document.addEventListener("mousedown", onDoc);
+    document.addEventListener("keydown", onKey);
+    return () => { document.removeEventListener("mousedown", onDoc); document.removeEventListener("keydown", onKey); };
+  }, [open]);
 
   return (
     <div style={{
@@ -1581,7 +1591,7 @@ function CollaboratorsRow({ collaborators, canEdit, onAdd, onDelete }) {
       ))}
       {collaborators.length === 0 && <span style={{ fontSize:12.5, color:"var(--muted2)" }}>None added</span>}
       {canEdit && !atMax && (
-        <div style={{ position:"relative" }}>
+        <div style={{ position:"relative" }} ref={menuRef}>
           <button onClick={() => setOpen(o => !o)} style={{
             display:"inline-flex", alignItems:"center", gap:5, padding:"4px 12px",
             borderRadius:20, border:"1px dashed var(--accent)", background:"transparent",
@@ -1589,11 +1599,18 @@ function CollaboratorsRow({ collaborators, canEdit, onAdd, onDelete }) {
           }}><UserPlus size={13} /> Add person</button>
           {open && (
             <div className="assign-menu" style={{ top:34, maxHeight:280, overflowY:"auto", minWidth:220 }}>
+              <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", padding:"4px 8px 6px", borderBottom:"1px solid var(--line-soft)", marginBottom:4 }}>
+                <span style={{ fontSize:10.5, color:"var(--muted2)", fontWeight:600, textTransform:"uppercase", letterSpacing:0.5 }}>Add a person</span>
+                <button onClick={() => setOpen(false)} title="Cancel" style={{ border:"none", background:"none", color:"var(--muted2)", cursor:"pointer", fontSize:13, lineHeight:1 }}>✕</button>
+              </div>
               {allPeople.filter(p => !alreadyEmails.includes(p.email)).map(p => (
                 <button key={p.email} onClick={() => { onAdd({ name:p.name, email:p.email }); setOpen(false); }}>
                   {p.name}
                 </button>
               ))}
+              {allPeople.filter(p => !alreadyEmails.includes(p.email)).length === 0 && (
+                <div style={{ padding:"8px 10px", fontSize:12, color:"var(--muted2)" }}>Everyone's already added.</div>
+              )}
             </div>
           )}
         </div>
@@ -1668,6 +1685,11 @@ function Passport({ deal, onBack, canEdit, onUpdate, onAssign, onNotifyAll, onPo
         <div className="hs-writeback">
           <span className="hs-dot" /> Stage, amount &amp; deal owner sync live with HubSpot · {deal.hubspotId}
         </div>
+        {deal.sectionStamps && deal.sectionStamps.profile && deal.sectionStamps.profile.by && (
+          <div className="hs-writeback" style={{ marginTop:6 }}>
+            <Clock size={11} /> Last updated by {deal.sectionStamps.profile.by} · {deal.sectionStamps.profile.at}
+          </div>
+        )}
         {deal.lastContact && (() => {
           const lc = deal.lastContact;
           const warmthLabel = lc.daysAgo <= 3 ? "Warm" : lc.daysAgo <= 14 ? "Cooling" : "Cold";
@@ -2142,7 +2164,7 @@ function ProfileTab({ d, canEdit, onSaveField, onUpdate }) {
   return (
     <>
       <div className="cols">
-        <Block icon={Building2} title="Company & contacts" stamp={st.profile}>
+        <Block icon={Building2} title="Company & contacts">
           <ContactsEditor contacts={d.profile.contacts} canEdit={canEdit}
             onAdd={(c) => onUpdate({ _addContact: c })}
             onDelete={(id) => onUpdate({ _deleteRecord: { table:"deal_contacts", id } })} />
@@ -2569,7 +2591,7 @@ function ExecutionTab({ d, canEdit, onUpdate, onSaveField }) {
   return (
     <>
       <div className="cols">
-        <Block icon={CheckCircle2} title="Success criteria" stamp={st.execution}>
+        <Block icon={CheckCircle2} title="Success criteria">
           <EditableList items={e.successCriteria} field="success_criteria" canEdit={canEdit} onSave={onSaveField} emptyIcon={CheckCircle2} emptyText="No success criteria yet — needed before handover." />
         </Block>
         <Block icon={Activity} title="Proofs of concept">
@@ -3458,6 +3480,32 @@ async function sendSlackNotification(event, payload, passportId, channelId) {
   return r.json();
 }
 
+// "Now" stamp matching the seed format, e.g. "Jun 26 · 14:30"
+function stampNow() {
+  const d = new Date();
+  const md = d.toLocaleDateString("en-US", { month: "short", day: "2-digit" });
+  const hm = d.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
+  return `${md} · ${hm}`;
+}
+
+// Best-effort Slack ping to a set of passport owners. Reuses the "mention"
+// event the slack-notify function already handles (one message per owner so
+// each is @-tagged). Never throws — notifications must not block a save.
+async function notifyOwnersOnSlack(owners, { company, dealId, text, by, channelId, passportId }) {
+  const recipients = [...new Set((owners || []).filter(Boolean))];
+  let sent = 0;
+  for (const name of recipients) {
+    try {
+      const r = await sendSlackNotification("mention", {
+        mentionedPerson: name, mentioned_slack: slackFor(name),
+        mentionedBy: by, company, dealId, noteText: text,
+      }, passportId, channelId);
+      if (r && r.ok) sent++;
+    } catch (_) { /* best-effort */ }
+  }
+  return sent;
+}
+
 /* ================================================================
    LIVE DEAL LIST  (replaces mock DealList)
    ================================================================ */
@@ -3597,7 +3645,7 @@ function DealListLive({ deals, loading, onOpen, pipelineFilter, setPipelineFilte
    Maps Supabase shape → existing Passport component props
    ================================================================ */
 
-function PassportDetail({ data, onBack, canEdit, onRefresh, onAssign, onNotifyAll, onPostToSlack, slackChannel, slackSending, slackStatus, toast }) {
+function PassportDetail({ data, onBack, canEdit, onRefresh, onAssign, onNotifyAll, onPostToSlack, slackChannel, slackSending, slackStatus, toast, currentUserName }) {
   const { passport: p, contacts, pocs, risks, sampleData, captureLog, actionItems, meetingNotes, activityFeed, attachments, feedback, collaborators } = data;
   const { score, items: readinessItems } = calcReadiness(p, contacts);
 
@@ -3689,6 +3737,15 @@ function PassportDetail({ data, onBack, canEdit, onRefresh, onAssign, onNotifyAl
     if (updated._captureEntry) {
       await addCaptureLogEntry(p.id, updated._captureEntry);
       await onRefresh();
+      // Notify the passport owners in Slack about the new capture event
+      const ce = updated._captureEntry;
+      const reason = ce.fail_reason ? ` — ${ce.fail_reason}` : "";
+      const sent = await notifyOwnersOnSlack(
+        [p.owner_director, p.owner_se, p.owner_cs, p.owner_analytics],
+        { company: p.company, dealId: p.deal_id_display,
+          text: `:satellite: Capture log update on *${p.company}*: *${ce.status}*${reason}. ${ce.note || ""}`.trim(),
+          by: currentUserName, channelId: slackChannel ? slackChannel.id : undefined, passportId: p.id });
+      if (sent) toast(`Capture logged · notified ${sent} owner${sent !== 1 ? "s" : ""} in Slack`);
       return;
     }
     // Action item toggle
@@ -3701,6 +3758,16 @@ function PassportDetail({ data, onBack, canEdit, onRefresh, onAssign, onNotifyAl
     if (updated._addAction) {
       await addActionItem(p.id, updated._addAction);
       await onRefresh();
+      // Notify the assigned owner in Slack of their new action item
+      const ai = updated._addAction;
+      if (ai.owner) {
+        const due = ai.due_date ? ` (due ${ai.due_date})` : "";
+        const sent = await notifyOwnersOnSlack([ai.owner], {
+          company: p.company, dealId: p.deal_id_display,
+          text: `:ballot_box_with_check: New action item for you on *${p.company}*: "${ai.task}"${due}`,
+          by: currentUserName, channelId: slackChannel ? slackChannel.id : undefined, passportId: p.id });
+        if (sent) toast(`Action added · ${ai.owner} notified in Slack`);
+      }
       return;
     }
     // Feedback entry
@@ -3787,7 +3854,10 @@ function PassportDetail({ data, onBack, canEdit, onRefresh, onAssign, onNotifyAl
         // Record this field as app-edited so the HubSpot sync won't overwrite it
         const prevEdited = Array.isArray(p.app_edited_fields) ? p.app_edited_fields : [];
         const nextEdited = prevEdited.includes(field) ? prevEdited : [...prevEdited, field];
-        await sbPatch("handover_passports", p.id, { [field]: value, app_edited_fields: nextEdited });
+        const patch = { [field]: value, app_edited_fields: nextEdited };
+        // Single passport-wide "last updated by / when" stamp (stored in stamp_profile)
+        if (currentUserName) patch.stamp_profile = { by: currentUserName, at: stampNow() };
+        await sbPatch("handover_passports", p.id, patch);
         await onRefresh();
       }
       return;
@@ -4339,6 +4409,7 @@ function AppMain({ currentUser, canEdit, onSignOut }) {
                   slackSending={slackSending}
                   slackStatus={slackStatus}
                   toast={toast}
+                  currentUserName={currentUser.name}
                 />
               )
           : view === "dashboard"
