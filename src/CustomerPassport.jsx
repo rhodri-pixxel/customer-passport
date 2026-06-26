@@ -302,6 +302,11 @@ const CSS = `
 .cp-root{--dir:#0B6E7A;}
 .av.dir{background:var(--dir);}
 .cp-logo-img{height:22px;width:auto;display:block;}
+/* Keep the dark-ink top-bar logo readable when the OS/browser forces a dark or
+   high-contrast ("contrast theme") view: sit it on a light plate that opts out
+   of forced-colors and browser auto-darkening. */
+.cp-logo-plate{display:inline-flex;align-items:center;padding:3px 7px;border-radius:7px;
+  background:#fff;color-scheme:light;forced-color-adjust:none;}
 .cp-wordmark{font-family:var(--font-display);font-weight:700;font-size:21px;letter-spacing:-.045em;
   color:var(--ink);line-height:1;}
 .cp-wordmark .x{color:var(--accent);}
@@ -494,7 +499,8 @@ const STAGES = ["Discovery", "Technical Qualification", "Solution Validation", "
 // ── Drop the official Pixxel logo here (host it in Supabase storage or import it
 //    in Lovable, then paste the URL). Empty string falls back to the wordmark. ──
 const PIXXEL_LOGO_URL = "/pixxel-logo-light.svg";  // dark-ink logo for the light top bar
-const PIXXEL_LOGO_DARK = "/pixxel-logo-dark.svg";  // white logo for dark surfaces (sign-in)
+const PIXXEL_LOGO_DARK = "/pixxel-logo-dark.svg";  // white logo for dark surfaces
+const PASSPORT_LOGO_DARK = "/passport_dark.png";   // white sign-in logo (for the dark sign-in screen)
 
 // ── Real Pixxel roster, grouped by team ──────────────────────
 // Source: HubSpot users export (active only). Each person has a clean
@@ -3312,10 +3318,9 @@ function SignInScreen({ loading }) {
         {/* Logo */}
         <div style={{ marginBottom: 32 }}>
           <div style={{
-            display: "flex", flexDirection: "column", alignItems: "center", gap: 12, marginBottom: 8,
+            display: "flex", flexDirection: "column", alignItems: "center", marginBottom: 8,
           }}>
-            <img src={PIXXEL_LOGO_DARK} alt="Pixxel" style={{ height: 44, width: "auto" }} />
-            <div style={{ color: MUTED, fontSize: 11, letterSpacing: 2, textTransform: "uppercase" }}>Customer Passport</div>
+            <img src={PASSPORT_LOGO_DARK} alt="Pixxel Customer Passport" style={{ width: 210, maxWidth: "72vw", height: "auto" }} />
           </div>
         </div>
 
@@ -4325,7 +4330,7 @@ function AppMain({ currentUser, canEdit, onSignOut }) {
       <div className="cp-top">
         <div className="cp-brand">
           {PIXXEL_LOGO_URL
-            ? <img className="cp-logo-img" src={PIXXEL_LOGO_URL} alt="Pixxel" onError={e => { e.currentTarget.style.display = "none"; }} />
+            ? <span className="cp-logo-plate"><img className="cp-logo-img" src={PIXXEL_LOGO_URL} alt="Pixxel" onError={e => { e.currentTarget.style.display = "none"; }} /></span>
             : <span className="cp-wordmark">pi<span className="x">xx</span>el</span>}
           <span className="cp-brand-div" />
           <span>Customer Passport<small>SE → CS → Analytics</small></span>
