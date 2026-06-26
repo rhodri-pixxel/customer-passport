@@ -2637,6 +2637,11 @@ function ExecutionTab({ d, canEdit, onUpdate, onSaveField }) {
         </Block>
       </div>
 
+      {/* Tasked AOIs — the order/AOI names this client has tasked */}
+      <Block icon={MapPin} title="Tasked AOIs">
+        <EditableList items={e.taskedAois} field="tasked_aois" canEdit={canEdit} onSave={onSaveField} emptyIcon={MapPin} emptyText="No tasked AOIs yet — add the order / AOI names." />
+      </Block>
+
       {/* Capture / image progress log */}
       <Block icon={Camera} title="Capture & image progress log">
         <CaptureLog entries={e.captureLog||[]} canEdit={canEdit} onAdd={addCaptureEvent}
@@ -3753,6 +3758,7 @@ function PassportDetail({ data, onBack, canEdit, onRefresh, onAssign, onNotifyAl
         ts: new Date(e.created_at).toLocaleString("en-GB", { month:"short", day:"2-digit", hour:"2-digit", minute:"2-digit" }),
       })),
       sampleAoi: p.sample_aoi_geojson || null,
+      taskedAois: p.tasked_aois || [],
       actionItems: actionItems.map(a => ({
         id: a.id, task: a.task, owner: a.owner, due: a.due_date, done: a.done,
       })),
@@ -3911,7 +3917,7 @@ function PassportDetail({ data, onBack, canEdit, onRefresh, onAssign, onNotifyAl
       const ALLOWED = [
         "customer_team","use_case","pain_points","support_needs","data_sources",
         "bandset","cadence","problem_statement","objectives","success_criteria",
-        "next_steps","commercial_model","expertise_level",
+        "next_steps","commercial_model","expertise_level","tasked_aois",
       ];
       if (ALLOWED.includes(field)) {
         // Record this field as app-edited so the HubSpot sync won't overwrite it
