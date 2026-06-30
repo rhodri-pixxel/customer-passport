@@ -4,7 +4,7 @@ import {
   AlertTriangle, CheckCircle2, Circle, Clock, Paperclip, Send, BarChart3,
   LayoutGrid, Eye, Pencil, ExternalLink, Building2, Mail, Satellite, Layers,
   Activity, TrendingUp, X, Lock, Gauge, AtSign, Plus, Radar, ChevronDown,
-  MessageSquare, Hash, Zap, RefreshCw, CheckCheck, Camera, ListChecks, CalendarClock, Upload, Trash2, UserPlus, Link2
+  MessageSquare, Hash, Zap, RefreshCw, CheckCheck, Camera, ListChecks, CalendarClock, Upload, Trash2, UserPlus, Link2, Star
 } from "lucide-react";
 import shp from "shpjs";
 import { kml as kmlToGeoJson } from "@tmcw/togeojson";
@@ -312,6 +312,11 @@ const CSS = `
 .cp-root{--dir:#0B6E7A;}
 .av.dir{background:var(--dir);}
 .cp-logo-img{height:22px;width:auto;display:block;}
+/* Keep the dark-ink top-bar logo readable when the OS/browser forces a dark or
+   high-contrast ("contrast theme") view: sit it on a light plate that opts out
+   of forced-colors and browser auto-darkening. */
+.cp-logo-plate{display:inline-flex;align-items:center;padding:3px 7px;border-radius:7px;
+  background:#fff;color-scheme:light;forced-color-adjust:none;}
 .cp-wordmark{font-family:var(--font-display);font-weight:700;font-size:21px;letter-spacing:-.045em;
   color:var(--ink);line-height:1;}
 .cp-wordmark .x{color:var(--accent);}
@@ -501,9 +506,12 @@ const CSS = `
 /*  Constants + mock data                                             */
 /* ------------------------------------------------------------------ */
 const STAGES = ["Discovery", "Technical Qualification", "Solution Validation", "Proposal", "Negotiation", "Closed Won"];
-// ── Drop the official Pixxel logo here (host it in Supabase storage or import it
-//    in Lovable, then paste the URL). Empty string falls back to the wordmark. ──
-const PIXXEL_LOGO_URL = "";
+// ── Official Pixxel logo. Files live in /public so Vercel serves them at
+//    these root paths. If a file is missing, the <img> onError handler
+//    falls back to the text wordmark / falls back gracefully. ──
+const PIXXEL_LOGO_URL = "/pixxel-logo-light.svg";  // dark-ink logo for the light top bar
+const PIXXEL_LOGO_DARK = "/pixxel-logo-dark.svg";  // white logo for dark surfaces
+const PASSPORT_LOGO = "/passport_light.png";       // sign-in screen logo
 
 // ── Real Pixxel roster, grouped by team ──────────────────────
 // Source: HubSpot users export (active only). Each person has a clean
@@ -1610,10 +1618,71 @@ async function fetchAllQc() {
   return sbGet("quality_checks", "?order=created_at.desc&limit=500");
 }
 async function addQcEntry(entry) {
-  return sbPost("quality_checks", entry);
+  const result = await sbPost("quality_checks", entry);
+  // Notify the assignee in Slack when a QC entry is assigned to them
+  if (entry.assignee && entry.assignee_email) {
+    const slackId = slackFor(entry.assignee);
+    if (slackId) {
+      const resultText = entry.qc_result === "Fail" ? ":x: *Failed*" : ":white_check_mark: *Passed*";
+      fetch(`${SUPABASE_URL}/functions/v1/slack-notify`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "Authorization": `Bearer ${SUPABASE_ANON_KEY}` },
+        body: JSON.stringify({
+          event: "qc_assignment",
+          mentioned_slack: slackId,
+          assignee: entry.assignee,
+          organization: entry.organization,
+          usecase: entry.usecase || "",
+          image_id: entry.image_id || "",
+          qc_result: entry.qc_result,
+          qc_notes: entry.qc_notes || "",
+        }),
+      }).catch(() => {});
+    }
+  }
+  return result;
 }
 async function deleteQcEntry(id) {
   return sbDelete("quality_checks", id);
+}
+
+// Searchable deal picker — type to filter instead of scrolling a long dropdown
+function DealSearchPicker({ deals, value, onChange }) {
+  const [open, setOpen] = useState(false);
+  const [q, setQ] = useState("");
+  const selected = deals.find(d => d.id === value);
+  const matches = q.trim()
+    ? deals.filter(d => d.company.toLowerCase().includes(q.toLowerCase())).slice(0, 8)
+    : deals.slice(0, 8);
+  return (
+    <div style={{ position: "relative" }}>
+      <div onClick={() => setOpen(o => !o)} className="cp-select" style={{ cursor: "pointer" }}>
+        <div style={{ padding: "8px 11px", fontSize: 13, color: selected ? "var(--ink)" : "var(--muted2)" }}>
+          {selected ? selected.company : "— none · click to search —"}
+        </div>
+        <ChevronDown size={13} className="chev" />
+      </div>
+      {open && (
+        <div style={{ position:"absolute", top:"100%", left:0, right:0, zIndex:40, marginTop:4, background:"#fff", border:"1px solid var(--line)", borderRadius:10, boxShadow:"0 14px 40px -16px rgba(11,18,32,.35)", padding:6 }}>
+          <input autoFocus placeholder="Search deals…" value={q} onChange={e => setQ(e.target.value)}
+            style={{ width:"100%", border:"1px solid var(--line)", borderRadius:7, padding:"7px 10px", fontSize:13, fontFamily:"inherit", outline:"none", marginBottom:4 }} />
+          <div style={{ maxHeight: 220, overflowY: "auto" }}>
+            <button onClick={() => { onChange(""); setOpen(false); setQ(""); }}
+              style={{ display:"block", width:"100%", textAlign:"left", padding:"7px 10px", borderRadius:6, border:"none", background:"transparent", cursor:"pointer", fontSize:12.5, color:"var(--muted2)" }}>— none —</button>
+            {matches.map(d => (
+              <button key={d.id} onClick={() => { onChange(d.id); setOpen(false); setQ(""); }}
+                onMouseEnter={e => e.currentTarget.style.background = "var(--accent-soft)"}
+                onMouseLeave={e => e.currentTarget.style.background = "transparent"}
+                style={{ display:"block", width:"100%", textAlign:"left", padding:"7px 10px", borderRadius:6, border:"none", background:"transparent", cursor:"pointer", fontSize:12.5, color:"var(--ink)" }}>
+                {d.company}
+              </button>
+            ))}
+            {matches.length === 0 && <div style={{ padding:"8px 10px", fontSize:12, color:"var(--muted2)" }}>No matching deals</div>}
+          </div>
+        </div>
+      )}
+    </div>
+  );
 }
 
 function QcForm({ onSubmit, onCancel, defaultOrg, defaultPassportId, deals }) {
@@ -1653,13 +1722,7 @@ function QcForm({ onSubmit, onCancel, defaultOrg, defaultPassportId, deals }) {
         </div>
         <div>
           <div className="k" style={{ fontFamily:"var(--font-mono)", fontSize:"9.5px", letterSpacing:".1em", textTransform:"uppercase", color:"var(--muted2)", marginBottom:4 }}>Linked deal (optional)</div>
-          <div className="cp-select">
-            <select value={form.passport_id} onChange={e => set("passport_id", e.target.value)}>
-              <option value="">— none —</option>
-              {deals.map(d => <option key={d.id} value={d.id}>{d.company}</option>)}
-            </select>
-            <ChevronDown size={13} className="chev" />
-          </div>
+          <DealSearchPicker deals={deals} value={form.passport_id} onChange={(id) => set("passport_id", id)} />
         </div>
       </div>
       <div className="clog-form-row">
@@ -1881,6 +1944,80 @@ function QcTab({ d, canEdit, toast }) {
   );
 }
 
+// MVP Images — QC entries flagged as MVP for this deal, with Notion push
+function MvpImagesTab({ d, canEdit, toast }) {
+  const [rows, setRows] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [pushing, setPushing] = useState(null); // id being pushed
+
+  const load = async () => {
+    setLoading(true);
+    try { setRows(await sbGet("quality_checks", `?passport_id=eq.${d.id}&mvp_image=eq.true&order=created_at.desc`)); }
+    finally { setLoading(false); }
+  };
+  useEffect(() => { load(); }, [d.id]);
+
+  const pushToNotion = async (row) => {
+    setPushing(row.id);
+    try {
+      const res = await fetch(`${SUPABASE_URL}/functions/v1/hubspot-sync`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "Authorization": `Bearer ${SUPABASE_ANON_KEY}` },
+        body: JSON.stringify({ action: "push_mvp_to_notion", qc_id: row.id }),
+      });
+      const data = await res.json();
+      if (data.ok) { toast("✓ Added to FF Sample Image Ammo in Notion"); await load(); }
+      else toast("Notion: " + (data.error || "not configured yet"));
+    } catch (e) { toast("Notion push failed: " + e.message); }
+    finally { setPushing(null); }
+  };
+
+  return (
+    <Block icon={Star} title="MVP Images">
+      <div style={{ fontSize: 12.5, color: "var(--muted)", marginBottom: 14 }}>
+        Images flagged as MVP in the Quality Checks tab show here. Push the best ones to the <strong>FF Sample Image Ammo</strong> database in Notion to share with the wider team.
+      </div>
+      {loading ? <div className="empty"><RefreshCw size={15} className="spin" /> Loading…</div> : (
+        rows.length ? (
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))", gap: 14 }}>
+            {rows.map(r => (
+              <div key={r.id} style={{ border: "1px solid var(--line)", borderRadius: 12, overflow: "hidden", background: "#fff" }}>
+                {r.photo_evidence_path ? (
+                  <a href={`${SUPABASE_URL}/storage/v1/object/public/${STORAGE_BUCKET}/${r.photo_evidence_path}`} target="_blank" rel="noreferrer">
+                    <img src={`${SUPABASE_URL}/storage/v1/object/public/${STORAGE_BUCKET}/${r.photo_evidence_path}`}
+                      alt={r.image_id || r.organization} style={{ width: "100%", height: 150, objectFit: "cover", display: "block", background: "var(--line-soft)" }} />
+                  </a>
+                ) : (
+                  <div style={{ width: "100%", height: 150, display: "flex", alignItems: "center", justifyContent: "center", background: "var(--line-soft)", color: "var(--muted2)" }}>
+                    <Camera size={28} />
+                  </div>
+                )}
+                <div style={{ padding: "11px 13px" }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 7, marginBottom: 5 }}>
+                    <Star size={13} color="#F0A429" fill="#F0A429" />
+                    <span style={{ fontSize: 13, fontWeight: 600 }}>{r.image_id || "—"}</span>
+                    <span className="tag" style={{ marginLeft: "auto", background: r.qc_result === "Pass" ? "#E3F7EC" : "#FCE9E7", color: r.qc_result === "Pass" ? "#1f8a57" : "#c0392b", fontSize: 11 }}>{r.qc_result}</span>
+                  </div>
+                  <div style={{ fontSize: 12, color: "var(--muted)" }}>{r.usecase || "—"}</div>
+                  {r.location && <div style={{ fontSize: 11.5, color: "var(--muted2)", marginTop: 2 }}><MapPin size={10} style={{ display: "inline", marginRight: 3 }} />{r.location}</div>}
+                  {canEdit && (
+                    <button onClick={() => pushToNotion(r)} disabled={pushing === r.id}
+                      style={{ marginTop: 10, width: "100%", display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 6, padding: "7px 0", borderRadius: 8, border: "1px solid var(--line)", background: r.notion_page_id ? "var(--line-soft)" : "#fff", color: r.notion_page_id ? "var(--muted)" : "var(--accent-deep)", fontSize: 12, fontWeight: 500, cursor: pushing === r.id ? "wait" : "pointer" }}>
+                      {pushing === r.id ? <><RefreshCw size={12} className="spin" /> Pushing…</>
+                        : r.notion_page_id ? <><CheckCircle2 size={12} /> In Notion</>
+                        : <><ExternalLink size={12} /> Push to Notion</>}
+                    </button>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : <div className="empty"><Star size={15} /> No MVP images yet. Tick "MVP image" on a Quality Check entry to add one here.</div>
+      )}
+    </Block>
+  );
+}
+
 function Passport({ deal, onBack, canEdit, onUpdate, onAssign, onNotifyAll, onPostToSlack, onPushPlanhat, slackChannel, slackSending, slackStatus, toast }) {
   const [tab, setTab] = useState("profile");
   const [showChecklist, setShowChecklist] = useState(false);
@@ -2044,7 +2181,7 @@ function Passport({ deal, onBack, canEdit, onUpdate, onAssign, onNotifyAll, onPo
 
       {/* tabs */}
       <div className="cp-tabs">
-        {[["profile", Building2, "Profile"], ["context", Target, "Context"], ["execution", Activity, "Execution"], ["qc", Camera, "Quality Checks"], ["notes", FileText, "Notes"], ["feedback", MessageSquare, "Customer Feedback"]].map(([k, Ic, lbl]) => (
+        {[["profile", Building2, "Profile"], ["context", Target, "Context"], ["execution", Activity, "Execution"], ["qc", Camera, "Quality Checks"], ["mvp", Star, "MVP Images"], ["notes", FileText, "Notes"], ["feedback", MessageSquare, "Customer Feedback"]].map(([k, Ic, lbl]) => (
           <button key={k} className={tab === k ? "on" : ""} onClick={() => setTab(k)}><Ic size={15} />{lbl}</button>
         ))}
       </div>
@@ -2054,6 +2191,7 @@ function Passport({ deal, onBack, canEdit, onUpdate, onAssign, onNotifyAll, onPo
       {tab === "execution" && <ExecutionTab d={deal} canEdit={canEdit} onUpdate={onUpdate} onSaveField={(f,v) => onUpdate({ _fieldUpdate: { field: f, value: v } })} />}
       {tab === "notes" && <NotesTab d={deal} canEdit={canEdit} onUpdate={onUpdate} toast={toast} />}
       {tab === "qc" && <QcTab d={deal} canEdit={canEdit} toast={toast} />}
+      {tab === "mvp" && <MvpImagesTab d={deal} canEdit={canEdit} toast={toast} />}
       {tab === "feedback" && <FeedbackTab d={deal} canEdit={canEdit} onUpdate={onUpdate} toast={toast} />}
     </>
   );
@@ -2080,6 +2218,73 @@ function Block({ icon: Ic, title, children, action, stamp }) {
   );
 }
 // Link-or-upload control: paste a URL or upload a file
+// Up to 10 feasibility / supporting files — each either an uploaded file or a link
+function FeasibilityFiles({ files, canEdit, onUpload, onAddLink, onRemove }) {
+  const [busy, setBusy] = useState(false);
+  const [linkOpen, setLinkOpen] = useState(false);
+  const [linkName, setLinkName] = useState("");
+  const [linkUrl, setLinkUrl] = useState("");
+  const list = files || [];
+  const atLimit = list.length >= 10;
+  const inputId = `feas-${Math.random().toString(36).slice(2,7)}`;
+  const isLink = (f) => f.type === "link";
+  const submitLink = () => {
+    const url = linkUrl.trim();
+    if (!url) return;
+    onAddLink(linkName.trim() || url, /^https?:\/\//.test(url) ? url : `https://${url}`);
+    setLinkName(""); setLinkUrl(""); setLinkOpen(false);
+  };
+  return (
+    <div>
+      <div className="k" style={{ marginBottom: 6 }}>Feasibility &amp; supporting files <span style={{ color:"var(--muted2)", fontWeight:400 }}>({list.length}/10)</span></div>
+      {list.length > 0 && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 6, marginBottom: 8 }}>
+          {list.map((f, i) => (
+            <div key={i} className="attach" style={{ margin: 0 }}>
+              <div className="ai">{isLink(f) ? <Link2 size={15} /> : <FileText size={15} />}</div>
+              <div><div className="an2">{f.name}</div><div className="as">{isLink(f) ? "LINK" : "FILE"}</div></div>
+              <div style={{ marginLeft: "auto", display: "flex", gap: 8, alignItems: "center" }}>
+                <a href={isLink(f) ? f.url : `${SUPABASE_URL}/storage/v1/object/public/${STORAGE_BUCKET}/${f.url}`} target="_blank" rel="noreferrer">
+                  {isLink(f) ? <ExternalLink size={14} color="var(--muted2)" /> : <Download size={14} color="var(--muted2)" />}
+                </a>
+                {canEdit && <button onClick={() => onRemove(i)} title="Remove" style={{ border:"none", background:"none", color:"var(--muted2)", cursor:"pointer", fontSize:13 }}>✕</button>}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+      {canEdit && !atLimit && (
+        <>
+          <div style={{ display:"flex", gap:8, flexWrap:"wrap" }}>
+            <label htmlFor={inputId} className="add-row" style={{ cursor: busy?"wait":"pointer", margin:0, flex:1, minWidth:120 }}>
+              <Upload size={13} /> {busy ? "Uploading…" : "Upload file"}
+            </label>
+            <button onClick={() => setLinkOpen(o => !o)} className="add-row" style={{ margin:0, flex:1, minWidth:120 }}>
+              <Link2 size={13} /> Add link
+            </button>
+          </div>
+          <input id={inputId} type="file" style={{ display:"none" }}
+            onChange={async (e) => { const f = e.target.files[0]; if (!f) return; setBusy(true); try { await onUpload(f); } finally { setBusy(false); e.target.value=""; } }} />
+          {linkOpen && (
+            <div style={{ display:"flex", flexDirection:"column", gap:8, marginTop:8 }}>
+              <input autoFocus placeholder="Label (e.g. Feasibility report Q1)" value={linkName} onChange={e => setLinkName(e.target.value)}
+                style={{ border:"1px solid var(--line)", borderRadius:8, padding:"8px 11px", fontSize:13, fontFamily:"inherit", outline:"none" }} />
+              <input placeholder="Paste URL (https://…)" value={linkUrl} onChange={e => setLinkUrl(e.target.value)}
+                onKeyDown={e => { if (e.key === "Enter") submitLink(); if (e.key === "Escape") setLinkOpen(false); }}
+                style={{ border:"1px solid var(--accent)", borderRadius:8, padding:"8px 11px", fontSize:13, fontFamily:"inherit", outline:"none" }} />
+              <div style={{ display:"flex", gap:8 }}>
+                <button onClick={submitLink} style={{ padding:"6px 14px", borderRadius:7, border:"none", background:"var(--accent)", color:"#fff", fontSize:12.5, fontWeight:600, cursor:"pointer" }}>Add link</button>
+                <button onClick={() => setLinkOpen(false)} style={{ padding:"6px 14px", borderRadius:7, border:"1px solid var(--line)", background:"transparent", color:"var(--muted)", fontSize:12.5, cursor:"pointer" }}>Cancel</button>
+              </div>
+            </div>
+          )}
+        </>
+      )}
+      {atLimit && <div style={{ fontSize: 11.5, color: "var(--muted2)" }}>Maximum of 10 files reached.</div>}
+    </div>
+  );
+}
+
 function LinkOrUpload({ label, icon: Icon, canEdit, currentUrl, accept, onSetLink, onUploadFile, emptyLabel }) {
   const [mode, setMode] = useState(null); // null | 'link'
   const [url, setUrl] = useState("");
@@ -2424,19 +2629,15 @@ function ProfileTab({ d, canEdit, onSaveField, onUpdate }) {
           <EditableTags k="Data sources" values={t.dataSources} field="data_sources" canEdit={canEdit} onSave={onSaveField} cls="spec" />
           <EditableSelect k="Bandset" value={t.bandset} field="bandset" canEdit={canEdit} onSave={onSaveField} options={BANDSET_OPTIONS} customLabel="Custom" />
           <EditableField k="Cadence / revisit" value={t.cadence} field="cadence" canEdit={canEdit} onSave={onSaveField} />
-          <div style={{ display:"flex", gap:18, marginTop:2, flexWrap:"wrap", alignItems:"center" }}>
-            <LinkOrUpload
-              label="Feasibility study" icon={Gauge} canEdit={canEdit}
-              currentUrl={links.feasibilityLink}
-              accept=".pdf"
-              onSetLink={(url) => onUpdate({ _setLink: { field:"feasibility_link", url } })}
-              onUploadFile={(file) => onUpdate({ _uploadFile: { file, kind:"feasibility" } })}
-              emptyLabel="No feasibility link"
-            />
-            <span style={{ fontSize:11.5, color:"var(--muted2)", display:"inline-flex", alignItems:"center", gap:5 }}>
-              <MapPin size={12} /> Area of interest is managed on the Context tab
-            </span>
-          </div>
+          <FeasibilityFiles
+            files={t.feasibilityFiles} canEdit={canEdit}
+            onUpload={(file) => onUpdate({ _uploadFeasibilityFile: { file } })}
+            onAddLink={(name, url) => onUpdate({ _addFeasibilityLink: { name, url } })}
+            onRemove={(idx) => onUpdate({ _removeFeasibilityFile: { idx } })}
+          />
+          <span style={{ fontSize:11.5, color:"var(--muted2)", display:"inline-flex", alignItems:"center", gap:5, marginTop:4 }}>
+            <MapPin size={12} /> Area of interest is managed on the Context tab
+          </span>
         </div>
       </Block>
     </>
@@ -3618,6 +3819,35 @@ async function sbPatch(table, id, body) {
 }
 
 // ── Sign-in screen ────────────────────────────────────────────
+function PassportSignInLogo() {
+  const [failed, setFailed] = useState(false);
+  if (!failed) {
+    return (
+      <img src={PASSPORT_LOGO} alt="Pixxel Customer Passport"
+        style={{ width: 200, maxWidth: "72vw", height: "auto" }}
+        onError={() => setFailed(true)} />
+    );
+  }
+  // Fallback placeholder mark if the logo file isn't deployed yet
+  const ACCENT = "#0EA5B7";
+  const MUTED = "#7C8595";
+  return (
+    <div style={{ display: "inline-flex", alignItems: "center", gap: 10 }}>
+      <div style={{ width: 40, height: 40, borderRadius: 10, background: ACCENT, display: "flex", alignItems: "center", justifyContent: "center" }}>
+        <svg width="22" height="22" viewBox="0 0 22 22" fill="none">
+          <circle cx="11" cy="11" r="6" stroke="white" strokeWidth="1.5" fill="none"/>
+          <circle cx="11" cy="11" r="2.5" fill="white"/>
+          <path d="M11 2v3M11 17v3M2 11h3M17 11h3" stroke="white" strokeWidth="1.5" strokeLinecap="round"/>
+        </svg>
+      </div>
+      <div style={{ textAlign: "left" }}>
+        <div style={{ color: "white", fontFamily: "'Space Grotesk',sans-serif", fontWeight: 700, fontSize: 18, letterSpacing: -0.5 }}>pixxel</div>
+        <div style={{ color: MUTED, fontSize: 11, letterSpacing: 2, textTransform: "uppercase" }}>Customer Passport</div>
+      </div>
+    </div>
+  );
+}
+
 function SignInScreen({ loading }) {
   const INK = "#0B1220";
   const MUTED = "#7C8595";
@@ -3636,24 +3866,7 @@ function SignInScreen({ loading }) {
       <div style={{ textAlign: "center", maxWidth: 400, padding: "0 24px" }}>
         {/* Logo */}
         <div style={{ marginBottom: 32 }}>
-          <div style={{
-            display: "inline-flex", alignItems: "center", gap: 10, marginBottom: 8,
-          }}>
-            <div style={{
-              width: 40, height: 40, borderRadius: 10, background: ACCENT,
-              display: "flex", alignItems: "center", justifyContent: "center",
-            }}>
-              <svg width="22" height="22" viewBox="0 0 22 22" fill="none">
-                <circle cx="11" cy="11" r="6" stroke="white" strokeWidth="1.5" fill="none"/>
-                <circle cx="11" cy="11" r="2.5" fill="white"/>
-                <path d="M11 2v3M11 17v3M2 11h3M17 11h3" stroke="white" strokeWidth="1.5" strokeLinecap="round"/>
-              </svg>
-            </div>
-            <div style={{ textAlign: "left" }}>
-              <div style={{ color: "white", fontFamily: "'Space Grotesk',sans-serif", fontWeight: 700, fontSize: 18, letterSpacing: -0.5 }}>pixxel</div>
-              <div style={{ color: MUTED, fontSize: 11, letterSpacing: 2, textTransform: "uppercase" }}>Customer Passport</div>
-            </div>
-          </div>
+          <PassportSignInLogo />
         </div>
 
         <h1 style={{ color: "white", fontFamily: "'Space Grotesk',sans-serif", fontSize: 28, fontWeight: 700, marginBottom: 8, letterSpacing: -0.5 }}>
@@ -4057,6 +4270,7 @@ function PassportDetail({ data, onBack, canEdit, onRefresh, onAssign, onNotifyAl
         cadence: p.cadence || "",
         aoiLink: !!p.aoi_link,
         feasibilityLink: !!p.feasibility_link,
+        feasibilityFiles: p.feasibility_files || [],
       },
     },
     context: {
@@ -4091,8 +4305,7 @@ function PassportDetail({ data, onBack, canEdit, onRefresh, onAssign, onNotifyAl
       attachments: attachments.map(a => ({ id: a.id, name: a.file_name, type: a.file_type, size: a.file_size, path: a.storage_path })),
     },
     collaborators: (collaborators || []).map(c => ({ id: c.id, name: c.name, email: c.email, note: c.note })),
-    links: { aoiLink: p.aoi_link || "", feasibilityLink: p.feasibility_link || "" },
-    feedback: feedback.map(f => ({
+    links: { aoiLink: p.aoi_link || "", feasibilityLink: p.feasibility_link || "" },    feedback: feedback.map(f => ({
       id: f.id, date: f.feedback_date, type: f.feedback_type,
       satisfaction: f.satisfaction, keyInsights: f.key_insights || "",
       imageBandsets: f.image_bandsets || [], imageIds: f.image_ids || [],
@@ -4205,6 +4418,36 @@ function PassportDetail({ data, onBack, canEdit, onRefresh, onAssign, onNotifyAl
       } else if (kind === "feasibility") {
         await sbPatch("handover_passports", p.id, { feasibility_link: publicFileUrl(path) });
       }
+      await onRefresh();
+      return;
+    }
+    // ── Feasibility / supporting files (up to 10, JSONB array) ──
+    if (updated._uploadFeasibilityFile) {
+      const { file } = updated._uploadFeasibilityFile;
+      const path = await uploadFile(p.id, file);
+      const current = Array.isArray(p.feasibility_files) ? p.feasibility_files : [];
+      if (current.length < 10) {
+        const next = [...current, { name: file.name, url: path, type: "file" }];
+        await sbPatch("handover_passports", p.id, { feasibility_files: next });
+      }
+      await onRefresh();
+      return;
+    }
+    if (updated._addFeasibilityLink) {
+      const { name, url } = updated._addFeasibilityLink;
+      const current = Array.isArray(p.feasibility_files) ? p.feasibility_files : [];
+      if (current.length < 10) {
+        const next = [...current, { name, url, type: "link" }];
+        await sbPatch("handover_passports", p.id, { feasibility_files: next });
+      }
+      await onRefresh();
+      return;
+    }
+    if (updated._removeFeasibilityFile) {
+      const { idx } = updated._removeFeasibilityFile;
+      const current = Array.isArray(p.feasibility_files) ? p.feasibility_files : [];
+      const next = current.filter((_, i) => i !== idx);
+      await sbPatch("handover_passports", p.id, { feasibility_files: next });
       await onRefresh();
       return;
     }
@@ -4799,7 +5042,7 @@ function AppMain({ currentUser, canEdit, onSignOut }) {
       <div className="cp-top">
         <div className="cp-brand">
           {PIXXEL_LOGO_URL
-            ? <img className="cp-logo-img" src={PIXXEL_LOGO_URL} alt="Pixxel" onError={e => { e.currentTarget.style.display = "none"; }} />
+            ? <span className="cp-logo-plate"><img className="cp-logo-img" src={PIXXEL_LOGO_URL} alt="Pixxel" onError={e => { e.currentTarget.style.display = "none"; }} /></span>
             : <span className="cp-wordmark">pi<span className="x">xx</span>el</span>}
           <span className="cp-brand-div" />
           <span>Customer Passport<small>SE → CS → Analytics</small></span>
