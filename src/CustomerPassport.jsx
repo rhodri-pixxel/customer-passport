@@ -171,6 +171,16 @@ const CSS = `
   border-radius:9px;background:transparent;color:var(--accent-deep);font-size:12.5px;font-weight:500;
   cursor:pointer;margin-top:6px;width:100%;justify-content:center;}
 .add-row:hover{border-color:var(--accent);background:var(--accent-soft);}
+.qc-table{width:100%;border-collapse:collapse;font-size:12.5px;}
+.qc-table th{text-align:left;padding:10px 12px;font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;
+  color:var(--muted2);border-bottom:1px solid var(--line);white-space:nowrap;}
+.qc-table td{padding:9px 12px;border-bottom:1px solid var(--line-soft);vertical-align:middle;white-space:nowrap;}
+.qc-table tr:last-child td{border-bottom:none;}
+.qc-table tr:hover td{background:var(--line-soft);}
+.seg{display:inline-flex;border:1px solid var(--line);border-radius:9px;padding:2px;background:#fff;}
+.seg button{padding:6px 13px;border-radius:7px;border:none;background:transparent;font-size:12.5px;
+  color:var(--muted);cursor:pointer;font-weight:500;}
+.seg button.on{background:var(--accent);color:#fff;}
 @keyframes spin{to{transform:rotate(360deg);}}
 .spin{animation:spin 0.9s linear infinite;}
 
@@ -302,11 +312,6 @@ const CSS = `
 .cp-root{--dir:#0B6E7A;}
 .av.dir{background:var(--dir);}
 .cp-logo-img{height:22px;width:auto;display:block;}
-/* Keep the dark-ink top-bar logo readable when the OS/browser forces a dark or
-   high-contrast ("contrast theme") view: sit it on a light plate that opts out
-   of forced-colors and browser auto-darkening. */
-.cp-logo-plate{display:inline-flex;align-items:center;padding:3px 7px;border-radius:7px;
-  background:#fff;color-scheme:light;forced-color-adjust:none;}
 .cp-wordmark{font-family:var(--font-display);font-weight:700;font-size:21px;letter-spacing:-.045em;
   color:var(--ink);line-height:1;}
 .cp-wordmark .x{color:var(--accent);}
@@ -498,9 +503,7 @@ const CSS = `
 const STAGES = ["Discovery", "Technical Qualification", "Solution Validation", "Proposal", "Negotiation", "Closed Won"];
 // ── Drop the official Pixxel logo here (host it in Supabase storage or import it
 //    in Lovable, then paste the URL). Empty string falls back to the wordmark. ──
-const PIXXEL_LOGO_URL = "/pixxel-logo-light.svg";  // dark-ink logo for the light top bar
-const PIXXEL_LOGO_DARK = "/pixxel-logo-dark.svg";  // white logo for dark surfaces
-const PASSPORT_LOGO = "/passport_light.png";       // sign-in logo (chosen variant; sits on the dark sign-in)
+const PIXXEL_LOGO_URL = "";
 
 // ── Real Pixxel roster, grouped by team ──────────────────────
 // Source: HubSpot users export (active only). Each person has a clean
@@ -1193,37 +1196,21 @@ function GeoJsonMap({ geojson, onClear, canEdit }) {
   const mapRef = useRef(null);
   const containerRef = useRef(null);
   const [meta, setMeta] = useState({ features: 0, center: "" });
-  const WORLD = { center: [20, 0], zoom: 2 };
 
-  // Init the basemap once — independent of whether an AOI exists yet — so the
-  // Context tab always shows a global map / geographic context.
   useEffect(() => {
-    if (!containerRef.current || mapRef.current) return;
-    const map = L.map(containerRef.current, {
-      zoomControl: true, attributionControl: false, scrollWheelZoom: false, worldCopyJump: true,
-    });
-    map.setView(WORLD.center, WORLD.zoom);
-    L.tileLayer("https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png", {
-      maxZoom: 19, subdomains: "abcd",
-    }).addTo(map);
-    mapRef.current = map;
-
-    // Leaflet paints a blank/grey map until it re-measures its container.
-    // Nudge it a few times + on any resize so tiles reliably render.
-    const nudge = () => map.invalidateSize();
-    requestAnimationFrame(nudge);
-    const timers = [setTimeout(nudge, 150), setTimeout(nudge, 450)];
-    const ro = typeof ResizeObserver !== "undefined" ? new ResizeObserver(nudge) : null;
-    if (ro) ro.observe(containerRef.current);
-    map.__cleanupExtra = () => { timers.forEach(clearTimeout); if (ro) ro.disconnect(); };
-  }, []);
-
-  // Draw / update / clear the AOI overlay whenever the geojson changes.
-  useEffect(() => {
+    if (!containerRef.current || !geojson) return;
+    // Init map once
+    if (!mapRef.current) {
+      mapRef.current = L.map(containerRef.current, {
+        zoomControl: true, attributionControl: false, scrollWheelZoom: false,
+      });
+      L.tileLayer("https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png", {
+        maxZoom: 19, subdomains: "abcd",
+      }).addTo(mapRef.current);
+    }
     const map = mapRef.current;
-    if (!map) return;
-    if (map._aoiLayer) { map.removeLayer(map._aoiLayer); map._aoiLayer = null; }
-    if (!geojson) { map.setView(WORLD.center, WORLD.zoom); setMeta({ features: 0, center: "" }); return; }
+    // Clear previous overlay
+    if (map._aoiLayer) { map.removeLayer(map._aoiLayer); }
     try {
       const layer = L.geoJSON(geojson, {
         style: { color: "#0B7E8C", weight: 2.5, fillColor: "#0EA5B7", fillOpacity: 0.35 },
@@ -1238,6 +1225,7 @@ function GeoJsonMap({ geojson, onClear, canEdit }) {
         const feats = geojson.type === "FeatureCollection" ? geojson.features.length : 1;
         setMeta({ features: feats, center: `${c.lat.toFixed(3)}°, ${c.lng.toFixed(3)}°` });
       }
+      // Leaflet needs a nudge when rendered in a flex container
       setTimeout(() => map.invalidateSize(), 100);
     } catch (e) {
       console.error("AOI render error", e);
@@ -1245,21 +1233,15 @@ function GeoJsonMap({ geojson, onClear, canEdit }) {
   }, [geojson]);
 
   // Clean up on unmount
-  useEffect(() => () => {
-    if (mapRef.current) {
-      if (mapRef.current.__cleanupExtra) mapRef.current.__cleanupExtra();
-      mapRef.current.remove();
-      mapRef.current = null;
-    }
-  }, []);
+  useEffect(() => () => { if (mapRef.current) { mapRef.current.remove(); mapRef.current = null; } }, []);
 
   return (
     <div style={{ position: "relative", borderRadius: 12, overflow: "hidden", border: "1px solid var(--line)" }}>
       <div ref={containerRef} style={{ height: 300, width: "100%", background: "#e8eef2" }} />
       <div style={{ position:"absolute", bottom:8, left:8, zIndex:500, background:"rgba(11,18,32,0.78)", color:"#cdd6e3", fontSize:11, padding:"4px 9px", borderRadius:6, fontFamily:"var(--font-mono)", pointerEvents:"none" }}>
-        {meta.center ? `${meta.features} feature${meta.features !== 1 ? "s" : ""} · ◎ ${meta.center}` : "No AOI set"}
+        {meta.features} feature{meta.features !== 1 ? "s" : ""} · ◎ {meta.center}
       </div>
-      {canEdit && onClear && geojson && (
+      {canEdit && onClear && (
         <button onClick={onClear} title="Remove AOI"
           style={{ position:"absolute", top:8, right:8, zIndex:500, background:"rgba(11,18,32,0.78)", border:"none", borderRadius:6, color:"#fff", padding:"5px 9px", fontSize:11, cursor:"pointer", display:"flex", alignItems:"center", gap:4 }}>
           <Trash2 size={11} /> Remove
@@ -1292,7 +1274,7 @@ async function parseAoiFile(file) {
   throw new Error("Unsupported file. Use GeoJSON, KML, or a zipped Shapefile.");
 }
 
-// Flatten any GeoJSON value into an array of Features
+// Normalize any GeoJSON value (Feature, FeatureCollection, or bare geometry) into a Feature[] array
 function toFeatures(gj) {
   if (!gj) return [];
   if (gj.type === "FeatureCollection") return gj.features || [];
@@ -1580,16 +1562,6 @@ function CollaboratorsRow({ collaborators, canEdit, onAdd, onDelete }) {
   // Everyone in the roster, flat, for picking
   const allPeople = Object.values(TEAM_MEMBERS).flat();
   const alreadyEmails = collaborators.map(c => c.email);
-  // Let the picker be dismissed without choosing anyone (click outside / Esc)
-  const menuRef = useRef(null);
-  useEffect(() => {
-    if (!open) return;
-    const onDoc = (e) => { if (menuRef.current && !menuRef.current.contains(e.target)) setOpen(false); };
-    const onKey = (e) => { if (e.key === "Escape") setOpen(false); };
-    document.addEventListener("mousedown", onDoc);
-    document.addEventListener("keydown", onKey);
-    return () => { document.removeEventListener("mousedown", onDoc); document.removeEventListener("keydown", onKey); };
-  }, [open]);
 
   return (
     <div style={{
@@ -1611,7 +1583,7 @@ function CollaboratorsRow({ collaborators, canEdit, onAdd, onDelete }) {
       ))}
       {collaborators.length === 0 && <span style={{ fontSize:12.5, color:"var(--muted2)" }}>None added</span>}
       {canEdit && !atMax && (
-        <div style={{ position:"relative" }} ref={menuRef}>
+        <div style={{ position:"relative" }}>
           <button onClick={() => setOpen(o => !o)} style={{
             display:"inline-flex", alignItems:"center", gap:5, padding:"4px 12px",
             borderRadius:20, border:"1px dashed var(--accent)", background:"transparent",
@@ -1619,18 +1591,11 @@ function CollaboratorsRow({ collaborators, canEdit, onAdd, onDelete }) {
           }}><UserPlus size={13} /> Add person</button>
           {open && (
             <div className="assign-menu" style={{ top:34, maxHeight:280, overflowY:"auto", minWidth:220 }}>
-              <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", padding:"4px 8px 6px", borderBottom:"1px solid var(--line-soft)", marginBottom:4 }}>
-                <span style={{ fontSize:10.5, color:"var(--muted2)", fontWeight:600, textTransform:"uppercase", letterSpacing:0.5 }}>Add a person</span>
-                <button onClick={() => setOpen(false)} title="Cancel" style={{ border:"none", background:"none", color:"var(--muted2)", cursor:"pointer", fontSize:13, lineHeight:1 }}>✕</button>
-              </div>
               {allPeople.filter(p => !alreadyEmails.includes(p.email)).map(p => (
                 <button key={p.email} onClick={() => { onAdd({ name:p.name, email:p.email }); setOpen(false); }}>
                   {p.name}
                 </button>
               ))}
-              {allPeople.filter(p => !alreadyEmails.includes(p.email)).length === 0 && (
-                <div style={{ padding:"8px 10px", fontSize:12, color:"var(--muted2)" }}>Everyone's already added.</div>
-              )}
             </div>
           )}
         </div>
@@ -1640,24 +1605,288 @@ function CollaboratorsRow({ collaborators, canEdit, onAdd, onDelete }) {
   );
 }
 
-function Passport({ deal, onBack, canEdit, onUpdate, onAssign, onNotifyAll, onPostToSlack, slackChannel, slackSending, slackStatus, toast }) {
+// ── Quality Checks (global table across all deals) ─────────────
+async function fetchAllQc() {
+  return sbGet("quality_checks", "?order=created_at.desc&limit=500");
+}
+async function addQcEntry(entry) {
+  return sbPost("quality_checks", entry);
+}
+async function deleteQcEntry(id) {
+  return sbDelete("quality_checks", id);
+}
+
+function QcForm({ onSubmit, onCancel, defaultOrg, defaultPassportId, deals }) {
+  const [form, setForm] = useState({
+    organization: defaultOrg || "", usecase: "", priority: "Medium", qc_result: "Pass",
+    image_id: "", type: "Sample", assignee: "", qc_notes: "", location: "",
+    mvp_image: false, feedback_milestone: "", passport_id: defaultPassportId || "",
+  });
+  const [uploading, setUploading] = useState(false);
+  const [shotPath, setShotPath] = useState("");
+  const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
+  const submit = () => {
+    if (!form.organization.trim()) return;
+    const assigneePerson = Object.values(TEAM_MEMBERS).flat().find(p => p.name === form.assignee);
+    onSubmit({
+      ...form,
+      assignee_email: assigneePerson ? assigneePerson.email : null,
+      feedback_milestone: form.feedback_milestone || null,
+      photo_evidence_path: shotPath || null,
+      created_by: "You",
+    });
+  };
+  const handleShot = async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    setUploading(true);
+    try { const path = await uploadFile(form.passport_id || "general", file); setShotPath(path); }
+    finally { setUploading(false); e.target.value = ""; }
+  };
+  return (
+    <div className="clog-form" style={{ marginBottom: 16 }}>
+      <div className="clog-form-row">
+        <div>
+          <div className="k" style={{ fontFamily:"var(--font-mono)", fontSize:"9.5px", letterSpacing:".1em", textTransform:"uppercase", color:"var(--muted2)", marginBottom:4 }}>Organization</div>
+          <input value={form.organization} onChange={e => set("organization", e.target.value)} placeholder="Customer / org name"
+            style={{ width:"100%", border:"1px solid var(--accent)", borderRadius:8, padding:"7px 10px", fontFamily:"inherit", fontSize:13, outline:"none" }} />
+        </div>
+        <div>
+          <div className="k" style={{ fontFamily:"var(--font-mono)", fontSize:"9.5px", letterSpacing:".1em", textTransform:"uppercase", color:"var(--muted2)", marginBottom:4 }}>Linked deal (optional)</div>
+          <div className="cp-select">
+            <select value={form.passport_id} onChange={e => set("passport_id", e.target.value)}>
+              <option value="">— none —</option>
+              {deals.map(d => <option key={d.id} value={d.id}>{d.company}</option>)}
+            </select>
+            <ChevronDown size={13} className="chev" />
+          </div>
+        </div>
+      </div>
+      <div className="clog-form-row">
+        <div>
+          <div className="k" style={{ fontFamily:"var(--font-mono)", fontSize:"9.5px", letterSpacing:".1em", textTransform:"uppercase", color:"var(--muted2)", marginBottom:4 }}>Usecase</div>
+          <input value={form.usecase} onChange={e => set("usecase", e.target.value)} placeholder="e.g. Forest Monitoring"
+            style={{ width:"100%", border:"1px solid var(--line)", borderRadius:8, padding:"7px 10px", fontFamily:"inherit", fontSize:13, outline:"none" }} />
+        </div>
+        <div>
+          <div className="k" style={{ fontFamily:"var(--font-mono)", fontSize:"9.5px", letterSpacing:".1em", textTransform:"uppercase", color:"var(--muted2)", marginBottom:4 }}>Image ID</div>
+          <input value={form.image_id} onChange={e => set("image_id", e.target.value)} placeholder="e.g. FF03 2790"
+            style={{ width:"100%", border:"1px solid var(--line)", borderRadius:8, padding:"7px 10px", fontFamily:"inherit", fontSize:13, outline:"none" }} />
+        </div>
+      </div>
+      <div className="clog-form-row">
+        <div>
+          <div className="k" style={{ fontFamily:"var(--font-mono)", fontSize:"9.5px", letterSpacing:".1em", textTransform:"uppercase", color:"var(--muted2)", marginBottom:4 }}>Quality Check</div>
+          <div style={{ display:"flex", gap:8 }}>
+            {["Pass","Fail"].map(r => (
+              <button key={r} onClick={() => set("qc_result", r)} type="button"
+                style={{ flex:1, padding:"7px 0", borderRadius:8, border:"1px solid "+(form.qc_result===r ? (r==="Pass"?"var(--ok)":"var(--bad)") : "var(--line)"),
+                  background: form.qc_result===r ? (r==="Pass"?"#E3F7EC":"#FCE9E7") : "transparent",
+                  color: form.qc_result===r ? (r==="Pass"?"#1f8a57":"#c0392b") : "var(--muted)", fontSize:13, fontWeight:600, cursor:"pointer" }}>{r}</button>
+            ))}
+          </div>
+        </div>
+        <div>
+          <div className="k" style={{ fontFamily:"var(--font-mono)", fontSize:"9.5px", letterSpacing:".1em", textTransform:"uppercase", color:"var(--muted2)", marginBottom:4 }}>Type</div>
+          <div className="cp-select">
+            <select value={form.type} onChange={e => set("type", e.target.value)}>
+              <option>Sample</option><option>Paid</option>
+            </select>
+            <ChevronDown size={13} className="chev" />
+          </div>
+        </div>
+      </div>
+      <div className="clog-form-row">
+        <div>
+          <div className="k" style={{ fontFamily:"var(--font-mono)", fontSize:"9.5px", letterSpacing:".1em", textTransform:"uppercase", color:"var(--muted2)", marginBottom:4 }}>Assignee</div>
+          <div className="cp-select">
+            <select value={form.assignee} onChange={e => set("assignee", e.target.value)}>
+              <option value="">— unassigned —</option>
+              {Object.values(TEAM_MEMBERS).flat().map(p => <option key={p.email} value={p.name}>{p.name}</option>)}
+            </select>
+            <ChevronDown size={13} className="chev" />
+          </div>
+        </div>
+        <div>
+          <div className="k" style={{ fontFamily:"var(--font-mono)", fontSize:"9.5px", letterSpacing:".1em", textTransform:"uppercase", color:"var(--muted2)", marginBottom:4 }}>Location</div>
+          <input value={form.location} onChange={e => set("location", e.target.value)} placeholder="e.g. Mae Taen — Thailand"
+            style={{ width:"100%", border:"1px solid var(--line)", borderRadius:8, padding:"7px 10px", fontFamily:"inherit", fontSize:13, outline:"none" }} />
+        </div>
+      </div>
+      <div style={{ marginBottom:10 }}>
+        <div className="k" style={{ fontFamily:"var(--font-mono)", fontSize:"9.5px", letterSpacing:".1em", textTransform:"uppercase", color:"var(--muted2)", marginBottom:4 }}>QC Notes</div>
+        <textarea value={form.qc_notes} onChange={e => set("qc_notes", e.target.value)} placeholder="What did the QC reviewer find?"
+          style={{ width:"100%", border:"1px solid var(--line)", borderRadius:9, padding:"9px 12px", fontFamily:"inherit", fontSize:13, resize:"vertical", minHeight:64, outline:"none" }} />
+      </div>
+      <div className="clog-form-row">
+        <label style={{ display:"flex", alignItems:"center", gap:7, fontSize:12.5, cursor:"pointer" }}>
+          <input type="checkbox" checked={form.mvp_image} onChange={e => set("mvp_image", e.target.checked)} style={{ accentColor:"var(--accent)" }} />
+          MVP image
+        </label>
+        <div>
+          <div className="k" style={{ fontFamily:"var(--font-mono)", fontSize:"9.5px", letterSpacing:".1em", textTransform:"uppercase", color:"var(--muted2)", marginBottom:4 }}>Feedback milestone</div>
+          <input type="date" value={form.feedback_milestone} onChange={e => set("feedback_milestone", e.target.value)}
+            style={{ width:"100%", border:"1px solid var(--line)", borderRadius:8, padding:"7px 10px", fontFamily:"inherit", fontSize:13, outline:"none" }} />
+        </div>
+      </div>
+      <div style={{ marginBottom:10 }}>
+        <div className="k" style={{ fontFamily:"var(--font-mono)", fontSize:"9.5px", letterSpacing:".1em", textTransform:"uppercase", color:"var(--muted2)", marginBottom:4 }}>Photo evidence</div>
+        {shotPath ? (
+          <div style={{ display:"flex", alignItems:"center", gap:8, fontSize:12.5, color:"var(--ok)" }}>
+            <CheckCircle2 size={14} /> Image attached
+            <button onClick={() => setShotPath("")} style={{ border:"none", background:"none", color:"var(--muted2)", cursor:"pointer" }}>✕</button>
+          </div>
+        ) : (
+          <>
+            <label htmlFor="qc-shot" style={{ display:"inline-flex", alignItems:"center", gap:7, cursor: uploading?"wait":"pointer", padding:"7px 13px", borderRadius:8, border:"1px solid var(--line)", fontSize:12.5, color:"var(--accent-deep)" }}>
+              <Upload size={13} /> {uploading ? "Uploading…" : "Attach or drop a file"}
+            </label>
+            <input id="qc-shot" type="file" accept=".jpg,.jpeg,.png" style={{ display:"none" }} onChange={handleShot} />
+          </>
+        )}
+      </div>
+      <div style={{ display:"flex", gap:8, justifyContent:"flex-end" }}>
+        <button className="btn ghost" style={{ color:"var(--muted)", border:"1px solid var(--line)", background:"#fff" }} onClick={onCancel}>Cancel</button>
+        <button className="btn solid" onClick={submit}><Camera size={13} /> Save QC entry</button>
+      </div>
+    </div>
+  );
+}
+
+function QcRow({ row, canEdit, onDelete, showOrg }) {
+  return (
+    <tr>
+      {showOrg && <td style={{ fontWeight:600 }}>{row.organization}</td>}
+      <td>{row.usecase || "—"}</td>
+      <td><span className={`tag ${row.qc_result === "Pass" ? "" : ""}`} style={{ background: row.qc_result === "Pass" ? "#E3F7EC" : "#FCE9E7", color: row.qc_result === "Pass" ? "#1f8a57" : "#c0392b", fontWeight:600 }}>{row.qc_result}</span></td>
+      <td style={{ fontFamily:"var(--font-mono)", fontSize:12 }}>{row.image_id || "—"}</td>
+      <td><span className="tag" style={{ background: row.type === "Paid" ? "var(--accent-soft)" : "var(--line-soft)", color: row.type === "Paid" ? "var(--accent-deep)" : "var(--muted)" }}>{row.type}</span></td>
+      <td>{row.assignee || "—"}</td>
+      <td style={{ maxWidth: 240, fontSize: 12.5, color: "var(--muted)" }}>{row.qc_notes ? (row.qc_notes.length > 60 ? row.qc_notes.slice(0,60)+"…" : row.qc_notes) : "—"}</td>
+      <td style={{ fontSize: 12, color: "var(--muted2)" }}>{row.location || "—"}</td>
+      <td>{row.mvp_image ? <CheckCircle2 size={14} color="var(--ok)" /> : "—"}</td>
+      <td>{row.photo_evidence_path ? <a href={`${SUPABASE_URL}/storage/v1/object/public/${STORAGE_BUCKET}/${row.photo_evidence_path}`} target="_blank" rel="noreferrer"><Camera size={14} color="var(--accent-deep)" /></a> : "—"}</td>
+      <td style={{ fontSize: 12, fontFamily: "var(--font-mono)", color: "var(--muted2)" }}>{row.feedback_milestone || "—"}</td>
+      {canEdit && <td><button onClick={() => onDelete(row.id)} style={{ border:"none", background:"none", color:"var(--muted2)", cursor:"pointer", fontSize:13 }}>✕</button></td>}
+    </tr>
+  );
+}
+
+function QualityChecksGlobal({ deals, canEdit, onOpen, toast }) {
+  const [rows, setRows] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [showForm, setShowForm] = useState(false);
+  const [filter, setFilter] = useState("all"); // all | Pass | Fail
+
+  const load = async () => {
+    setLoading(true);
+    try { setRows(await fetchAllQc()); } finally { setLoading(false); }
+  };
+  useEffect(() => { load(); }, []);
+
+  const submit = async (entry) => {
+    try { await addQcEntry(entry); setShowForm(false); toast("QC entry saved"); await load(); }
+    catch (e) { toast("Save failed: " + e.message); }
+  };
+  const remove = async (id) => {
+    try { await deleteQcEntry(id); toast("QC entry deleted"); await load(); }
+    catch (e) { toast("Delete failed: " + e.message); }
+  };
+
+  const filtered = filter === "all" ? rows : rows.filter(r => r.qc_result === filter);
+  const passCount = rows.filter(r => r.qc_result === "Pass").length;
+  const failCount = rows.filter(r => r.qc_result === "Fail").length;
+
+  return (
+    <div className="cp-page-inner">
+      <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom: 18, flexWrap:"wrap", gap:10 }}>
+        <div>
+          <h2 className="section-title" style={{ marginBottom: 2 }}>Quality Checks</h2>
+          <div style={{ fontSize:13, color:"var(--muted)" }}>{rows.length} entries · {passCount} pass · {failCount} fail</div>
+        </div>
+        <div style={{ display:"flex", gap:8, alignItems:"center" }}>
+          <div className="seg">
+            <button className={filter==="all"?"on":""} onClick={() => setFilter("all")}>All</button>
+            <button className={filter==="Pass"?"on":""} onClick={() => setFilter("Pass")}>Pass</button>
+            <button className={filter==="Fail"?"on":""} onClick={() => setFilter("Fail")}>Fail</button>
+          </div>
+          {canEdit && !showForm && (
+            <button className="btn solid" onClick={() => setShowForm(true)}><Plus size={14} /> New QC entry</button>
+          )}
+        </div>
+      </div>
+
+      {showForm && <QcForm deals={deals} onSubmit={submit} onCancel={() => setShowForm(false)} />}
+
+      {loading ? <div className="empty"><RefreshCw size={15} className="spin" /> Loading…</div> : (
+        <div style={{ overflowX: "auto", background:"#fff", border:"1px solid var(--line)", borderRadius: 14 }}>
+          <table className="qc-table">
+            <thead>
+              <tr>
+                <th>Organization</th><th>Usecase</th><th>QC</th><th>Image ID</th><th>Type</th>
+                <th>Assignee</th><th>Notes</th><th>Location</th><th>MVP</th><th>Evidence</th><th>Milestone</th>
+                {canEdit && <th></th>}
+              </tr>
+            </thead>
+            <tbody>
+              {filtered.length ? filtered.map(r => <QcRow key={r.id} row={r} canEdit={canEdit} onDelete={remove} showOrg />)
+                : <tr><td colSpan={canEdit ? 11 : 10} style={{ textAlign:"center", padding:30, color:"var(--muted2)" }}>No QC entries yet.</td></tr>}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Per-deal QC tab (filtered to this passport)
+function QcTab({ d, canEdit, toast }) {
+  const [rows, setRows] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [showForm, setShowForm] = useState(false);
+
+  const load = async () => {
+    setLoading(true);
+    try { setRows(await sbGet("quality_checks", `?passport_id=eq.${d.id}&order=created_at.desc`)); }
+    finally { setLoading(false); }
+  };
+  useEffect(() => { load(); }, [d.id]);
+
+  const submit = async (entry) => {
+    try { await addQcEntry(entry); setShowForm(false); toast("QC entry saved"); await load(); }
+    catch (e) { toast("Save failed: " + e.message); }
+  };
+  const remove = async (id) => {
+    try { await deleteQcEntry(id); toast("QC entry deleted"); await load(); }
+    catch (e) { toast("Delete failed: " + e.message); }
+  };
+
+  return (
+    <Block icon={Camera} title="Quality Checks">
+      {canEdit && !showForm && (
+        <button onClick={() => setShowForm(true)} className="add-row"><Plus size={14} /> Log QC entry</button>
+      )}
+      {showForm && <QcForm deals={[]} defaultOrg={d.company} defaultPassportId={d.id} onSubmit={submit} onCancel={() => setShowForm(false)} />}
+      {loading ? <div className="empty"><RefreshCw size={15} className="spin" /> Loading…</div> : (
+        rows.length ? (
+          <div style={{ overflowX: "auto" }}>
+            <table className="qc-table">
+              <thead><tr><th>Usecase</th><th>QC</th><th>Image ID</th><th>Type</th><th>Assignee</th><th>Notes</th><th>Location</th><th>MVP</th><th>Evidence</th><th>Milestone</th>{canEdit && <th></th>}</tr></thead>
+              <tbody>{rows.map(r => <QcRow key={r.id} row={r} canEdit={canEdit} onDelete={remove} />)}</tbody>
+            </table>
+          </div>
+        ) : !showForm && <div className="empty"><Camera size={15} /> No QC entries for this deal yet.</div>
+      )}
+    </Block>
+  );
+}
+
+function Passport({ deal, onBack, canEdit, onUpdate, onAssign, onNotifyAll, onPostToSlack, onPushPlanhat, slackChannel, slackSending, slackStatus, toast }) {
   const [tab, setTab] = useState("profile");
   const [showChecklist, setShowChecklist] = useState(false);
   const [assignOpen, setAssignOpen] = useState(null);
   const { score, items } = readiness(deal);
   const missing = items.filter(i => !i.done);
-
-  // Let the assign dropdown be dismissed without picking anyone (so an
-  // accidental click can't force you to notify someone). Click-outside / Esc.
-  const assignRef = useRef(null);
-  useEffect(() => {
-    if (assignOpen === null) return;
-    const onDoc = (e) => { if (assignRef.current && !assignRef.current.contains(e.target)) setAssignOpen(null); };
-    const onKey = (e) => { if (e.key === "Escape") setAssignOpen(null); };
-    document.addEventListener("mousedown", onDoc);
-    document.addEventListener("keydown", onKey);
-    return () => { document.removeEventListener("mousedown", onDoc); document.removeEventListener("keydown", onKey); };
-  }, [assignOpen]);
 
   const assign = (role, name) => {
     onAssign(role, name);
@@ -1683,10 +1912,18 @@ function Passport({ deal, onBack, canEdit, onUpdate, onAssign, onNotifyAll, onPo
             </div>
           </div>
           <div className="h-actions">
+            <button className="btn ghost" onClick={() => {
+              const url = new URL(window.location.origin + window.location.pathname);
+              url.searchParams.set("deal", deal.id);
+              navigator.clipboard.writeText(url.toString());
+              toast("Link copied — share it with anyone on the team");
+            }}>
+              <Link2 size={14} /> Copy link
+            </button>
             <button className="btn ghost" onClick={() => exportPassportPdf(deal)}>
               <Download size={14} /> Export PDF
             </button>
-            <button className="btn ghost" disabled title="Needs PlanHat token + tenant ID (with CS team)">
+            <button className="btn ghost" onClick={onPushPlanhat}>
               <ExternalLink size={14} /> Push to PlanHat
             </button>
             <button className={`btn slack${slackSending ? " sending" : ""}`} onClick={onPostToSlack}>
@@ -1717,11 +1954,6 @@ function Passport({ deal, onBack, canEdit, onUpdate, onAssign, onNotifyAll, onPo
         <div className="hs-writeback">
           <span className="hs-dot" /> Stage, amount &amp; deal owner sync live with HubSpot · {deal.hubspotId}
         </div>
-        {deal.sectionStamps && deal.sectionStamps.profile && deal.sectionStamps.profile.by && (
-          <div className="hs-writeback" style={{ marginTop:6 }}>
-            <Clock size={11} /> Last updated by {deal.sectionStamps.profile.by} · {deal.sectionStamps.profile.at}
-          </div>
-        )}
         {deal.lastContact && (() => {
           const lc = deal.lastContact;
           const warmthLabel = lc.daysAgo <= 3 ? "Warm" : lc.daysAgo <= 14 ? "Cooling" : "Cold";
@@ -1746,7 +1978,7 @@ function Passport({ deal, onBack, canEdit, onUpdate, onAssign, onNotifyAll, onPo
             const isOwnerRole = role === "owner";
             const editable = canEdit && !isOwnerRole;
             return (
-              <div className="owner-slot" key={role} ref={assignOpen === role ? assignRef : null}>
+              <div className="owner-slot" key={role}>
                 <OwnerAvatar name={name} role={short} />
                 <div className="meta">
                   <div className="role-tag">{label}{isOwnerRole && <span style={{fontSize:10,color:"var(--muted2)",marginLeft:4}}>via HubSpot</span>}</div>
@@ -1768,10 +2000,6 @@ function Passport({ deal, onBack, canEdit, onUpdate, onAssign, onNotifyAll, onPo
                 </div>
                 {assignOpen === role && editable && (
                   <div className="assign-menu">
-                    <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", padding:"4px 8px 6px", borderBottom:"1px solid var(--line-soft)", marginBottom:4 }}>
-                      <span style={{ fontSize:10.5, color:"var(--muted2)", fontWeight:600, textTransform:"uppercase", letterSpacing:0.5 }}>Assign {label}</span>
-                      <button onClick={() => setAssignOpen(null)} title="Cancel" style={{ border:"none", background:"none", color:"var(--muted2)", cursor:"pointer", fontSize:13, lineHeight:1 }}>✕</button>
-                    </div>
                     {TEAM[role].map(p => (
                       <button key={p} onClick={() => assign(role, p)} style={p === name ? {fontWeight:600,color:"var(--accent)"} : {}}>{p}{p === name ? " ✓" : ""}</button>
                     ))}
@@ -1816,7 +2044,7 @@ function Passport({ deal, onBack, canEdit, onUpdate, onAssign, onNotifyAll, onPo
 
       {/* tabs */}
       <div className="cp-tabs">
-        {[["profile", Building2, "Profile"], ["context", Target, "Context"], ["execution", Activity, "Execution"], ["notes", FileText, "Notes"], ["feedback", MessageSquare, "Customer Feedback"]].map(([k, Ic, lbl]) => (
+        {[["profile", Building2, "Profile"], ["context", Target, "Context"], ["execution", Activity, "Execution"], ["qc", Camera, "Quality Checks"], ["notes", FileText, "Notes"], ["feedback", MessageSquare, "Customer Feedback"]].map(([k, Ic, lbl]) => (
           <button key={k} className={tab === k ? "on" : ""} onClick={() => setTab(k)}><Ic size={15} />{lbl}</button>
         ))}
       </div>
@@ -1825,6 +2053,7 @@ function Passport({ deal, onBack, canEdit, onUpdate, onAssign, onNotifyAll, onPo
       {tab === "context" && <ContextTab d={deal} canEdit={canEdit} onSaveField={(f,v) => onUpdate({ _fieldUpdate: { field: f, value: v } })} onUpdate={onUpdate} />}
       {tab === "execution" && <ExecutionTab d={deal} canEdit={canEdit} onUpdate={onUpdate} onSaveField={(f,v) => onUpdate({ _fieldUpdate: { field: f, value: v } })} />}
       {tab === "notes" && <NotesTab d={deal} canEdit={canEdit} onUpdate={onUpdate} toast={toast} />}
+      {tab === "qc" && <QcTab d={deal} canEdit={canEdit} toast={toast} />}
       {tab === "feedback" && <FeedbackTab d={deal} canEdit={canEdit} onUpdate={onUpdate} toast={toast} />}
     </>
   );
@@ -2014,28 +2243,7 @@ function EditableField({ k, value, field, canEdit, onSave, mono, placeholder }) 
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(value || "");
   const [saving, setSaving] = useState(false);
-  const taRef = useRef(null);
   useEffect(() => { setDraft(value || ""); }, [value]);
-
-  // Toolbar actions: wrap the current selection in markdown that renderRichText
-  // already understands (**bold**, *italic*, "- " bullets).
-  const applyFormat = (kind) => {
-    const ta = taRef.current; if (!ta) return;
-    const s = ta.selectionStart, e = ta.selectionEnd, v = draft, sel = v.slice(s, e);
-    let next, cs, ce;
-    if (kind === "bold" || kind === "italic") {
-      const mark = kind === "bold" ? "**" : "*";
-      const inner = sel || (kind === "bold" ? "bold text" : "italic text");
-      next = v.slice(0, s) + mark + inner + mark + v.slice(e);
-      cs = s + mark.length; ce = cs + inner.length;
-    } else { // bullet: prefix the current line with "- "
-      const ls = v.lastIndexOf("\n", s - 1) + 1;
-      next = v.slice(0, ls) + "- " + v.slice(ls);
-      cs = ce = s + 2;
-    }
-    setDraft(next);
-    requestAnimationFrame(() => { ta.focus(); ta.setSelectionRange(cs, ce); });
-  };
 
   const save = async () => {
     setSaving(true);
@@ -2051,17 +2259,7 @@ function EditableField({ k, value, field, canEdit, onSave, mono, placeholder }) 
     return (
       <div>
         <div className="k">{k}</div>
-        <div style={{ display:"flex", gap:4, marginTop:4 }}>
-          {[["bold","B",{fontWeight:700}],["italic","I",{fontStyle:"italic"}],["bullet","•",{}]].map(([kind,lbl,st]) => (
-            <button key={kind} type="button" onMouseDown={ev => { ev.preventDefault(); applyFormat(kind); }}
-              title={kind === "bold" ? "Bold (**text**)" : kind === "italic" ? "Italic (*text*)" : "Bullet list (- )"}
-              style={{ width:26, height:26, borderRadius:6, border:"1px solid var(--line)", background:"#fff", color:"var(--ink2)", fontSize:13, cursor:"pointer", lineHeight:1, ...st }}>
-              {lbl}
-            </button>
-          ))}
-        </div>
         <textarea
-          ref={taRef}
           autoFocus
           value={draft}
           onChange={e => setDraft(e.target.value)}
@@ -2200,7 +2398,7 @@ function ProfileTab({ d, canEdit, onSaveField, onUpdate }) {
   return (
     <>
       <div className="cols">
-        <Block icon={Building2} title="Company & contacts">
+        <Block icon={Building2} title="Company & contacts" stamp={st.profile}>
           <ContactsEditor contacts={d.profile.contacts} canEdit={canEdit}
             onAdd={(c) => onUpdate({ _addContact: c })}
             onDelete={(id) => onUpdate({ _deleteRecord: { table:"deal_contacts", id } })} />
@@ -2275,9 +2473,7 @@ function CaptureLog({ entries, canEdit, onAdd, onUploadShot }) {
   const [uploading, setUploading] = useState(false);
   const toggleReason = (r) => setForm(f => ({ ...f, failReasons: f.failReasons.includes(r) ? f.failReasons.filter(x => x !== r) : [...f.failReasons, r] }));
   const submit = () => {
-    // Only block a completely empty QC-Failed entry; allow status-only events
-    // (Tasked / Captured / Shared, etc.) to be logged even without a note.
-    if (form.status === "QC Failed" && !form.note.trim() && form.failReasons.length === 0) { return; }
+    if (!form.note.trim() && form.failReasons.length === 0) { return; }
     // Build a readable failReason string from the selected reasons + other text
     let reasonStr = "";
     if (form.status === "QC Failed") {
@@ -2627,7 +2823,7 @@ function ExecutionTab({ d, canEdit, onUpdate, onSaveField }) {
   return (
     <>
       <div className="cols">
-        <Block icon={CheckCircle2} title="Success criteria">
+        <Block icon={CheckCircle2} title="Success criteria" stamp={st.execution}>
           <EditableList items={e.successCriteria} field="success_criteria" canEdit={canEdit} onSave={onSaveField} emptyIcon={CheckCircle2} emptyText="No success criteria yet — needed before handover." />
         </Block>
         <Block icon={Activity} title="Proofs of concept">
@@ -2684,13 +2880,68 @@ function ExecutionTab({ d, canEdit, onUpdate, onSaveField }) {
 
 function NotesTab({ d, canEdit, onUpdate, toast }) {
   const [draft, setDraft] = useState("");
+  const [mentionQuery, setMentionQuery] = useState(null); // null = no active mention
+  const [mentionPos, setMentionPos] = useState(0);
+  const [selIdx, setSelIdx] = useState(0);
+  const taRef = useRef(null);
+
+  // Flat roster for matching
+  const ALL_PEOPLE = Object.values(TEAM_MEMBERS).flat();
+
+  const matches = mentionQuery !== null
+    ? ALL_PEOPLE.filter(p => p.name.toLowerCase().includes(mentionQuery.toLowerCase())).slice(0, 6)
+    : [];
+
+  const onDraftChange = (e) => {
+    const val = e.target.value;
+    setDraft(val);
+    // Detect an active @mention being typed (the @ token right before the cursor)
+    const cursor = e.target.selectionStart;
+    const textToCursor = val.slice(0, cursor);
+    const m = textToCursor.match(/@([\w]*)$/);
+    if (m) {
+      setMentionQuery(m[1]);
+      setMentionPos(cursor - m[1].length - 1); // position of the @
+      setSelIdx(0);
+    } else {
+      setMentionQuery(null);
+    }
+  };
+
+  const pickMention = (person) => {
+    // Replace the @query with @Full Name + trailing space
+    const before = draft.slice(0, mentionPos);
+    const after = draft.slice(mentionPos + 1 + (mentionQuery ? mentionQuery.length : 0));
+    const next = `${before}@${person.name} ${after}`;
+    setDraft(next);
+    setMentionQuery(null);
+    setTimeout(() => taRef.current && taRef.current.focus(), 0);
+  };
+
+  const onKeyDown = (e) => {
+    if (mentionQuery !== null && matches.length) {
+      if (e.key === "ArrowDown") { e.preventDefault(); setSelIdx(i => (i + 1) % matches.length); return; }
+      if (e.key === "ArrowUp") { e.preventDefault(); setSelIdx(i => (i - 1 + matches.length) % matches.length); return; }
+      if (e.key === "Enter" || e.key === "Tab") { e.preventDefault(); pickMention(matches[selIdx]); return; }
+      if (e.key === "Escape") { setMentionQuery(null); return; }
+    }
+  };
+
   const post = () => {
     if (!draft.trim()) return;
-    const mentions = (draft.match(/@([\w ]+?)(?=[,.!?]|$)/g) || []).map(m => m.slice(1).trim());
-    onUpdate({ _activityPost: { author: "You", body: draft.trim(), mentions } });
+    // Match mentions against known roster names (longest first to avoid partial overlap)
+    const names = ALL_PEOPLE.map(p => p.name).sort((a,b) => b.length - a.length);
+    const mentions = [];
+    names.forEach(n => { if (draft.includes("@" + n)) mentions.push(n); });
+    const mentionEmails = mentions.map(n => {
+      const person = ALL_PEOPLE.find(p => p.name === n);
+      return person ? person.email : null;
+    }).filter(Boolean);
+    onUpdate({ _activityPost: { author: "You", body: draft.trim(), mentions, mentionEmails } });
     setDraft("");
     toast(mentions.length ? `Update posted · notified ${mentions.join(", ")}` : "Update posted to the activity feed");
   };
+
   const renderText = (t, mentions) => {
     if (!mentions || !mentions.length) return t;
     let parts = [t];
@@ -2706,8 +2957,30 @@ function NotesTab({ d, canEdit, onUpdate, toast }) {
     <>
       {canEdit && (
         <div className="composer">
-          <textarea placeholder="Post an update… use @ to mention a teammate (e.g. @Priya Shah)"
-            value={draft} onChange={e => setDraft(e.target.value)} />
+          <div style={{ position: "relative" }}>
+            <textarea ref={taRef} placeholder="Post an update… type @ to mention a teammate"
+              value={draft} onChange={onDraftChange} onKeyDown={onKeyDown} />
+            {mentionQuery !== null && matches.length > 0 && (
+              <div style={{
+                position: "absolute", top: "100%", left: 0, zIndex: 30, marginTop: 4,
+                background: "#fff", border: "1px solid var(--line)", borderRadius: 10,
+                boxShadow: "0 14px 40px -16px rgba(11,18,32,.35)", padding: 6, minWidth: 240,
+              }}>
+                {matches.map((p, i) => (
+                  <button key={p.email} onClick={() => pickMention(p)}
+                    style={{
+                      display: "flex", flexDirection: "column", alignItems: "flex-start", width: "100%",
+                      textAlign: "left", padding: "7px 10px", borderRadius: 7, border: "none",
+                      background: i === selIdx ? "var(--accent-soft)" : "transparent", cursor: "pointer",
+                    }}
+                    onMouseEnter={() => setSelIdx(i)}>
+                    <span style={{ fontSize: 13, fontWeight: 500, color: "var(--ink)" }}>{p.name}</span>
+                    <span style={{ fontSize: 11, color: "var(--muted2)" }}>{p.email}</span>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
           <div className="crow">
             <span className="hint"><AtSign size={13} /> Mentions notify that person by email</span>
             <button className="btn solid" onClick={post}><Send size={13} /> Post update</button>
@@ -3190,8 +3463,9 @@ function getHeaders(extra = {}) {
 const AUTH_URL = `${SUPABASE_URL}/auth/v1`;
 
 async function signInWithGoogle() {
-  // Redirect to Supabase Google OAuth — comes back to current URL
-  const redirectTo = encodeURIComponent(window.location.origin + window.location.pathname);
+  // Redirect to Supabase Google OAuth — comes back to current URL, including
+  // any ?deal=<id> so a shared link still opens the right passport after sign-in.
+  const redirectTo = encodeURIComponent(window.location.origin + window.location.pathname + window.location.search);
   window.location.href = `${AUTH_URL}/authorize?provider=google&redirect_to=${redirectTo}`;
 }
 
@@ -3217,7 +3491,7 @@ async function getSession() {
       sessionStorage.setItem("sb_access_token", accessToken);
       if (refreshToken) sessionStorage.setItem("sb_refresh_token", refreshToken);
       // Clean up URL
-      window.history.replaceState(null, "", window.location.pathname);
+      window.history.replaceState(null, "", window.location.pathname + window.location.search);
       return accessToken;
     }
   }
@@ -3279,28 +3553,68 @@ function resolveNameFromEmail(email) {
   return match ? match.name : null;
 }
 
+// Wraps a fetch call: on a 401 (expired JWT), tries to refresh the session
+// once and retries the original request before giving up.
+async function sbFetchWithRefresh(doFetch) {
+  let r = await doFetch();
+  if (r.status === 401) {
+    const refreshed = await tryRefreshSession();
+    if (refreshed) {
+      r = await doFetch();
+    }
+  }
+  return r;
+}
+
+async function tryRefreshSession() {
+  const refresh = sessionStorage.getItem("sb_refresh_token");
+  if (!refresh) return false;
+  try {
+    const r = await fetch(`${SUPABASE_URL}/auth/v1/token?grant_type=refresh_token`, {
+      method: "POST",
+      headers: { "apikey": SUPABASE_ANON_KEY, "Content-Type": "application/json" },
+      body: JSON.stringify({ refresh_token: refresh }),
+    });
+    if (!r.ok) return false;
+    const data = await r.json();
+    sessionStorage.setItem("sb_access_token", data.access_token);
+    if (data.refresh_token) sessionStorage.setItem("sb_refresh_token", data.refresh_token);
+    setAuthToken(data.access_token);
+    return true;
+  } catch (e) { return false; }
+}
+
 async function sbGet(table, params = "") {
-  const r = await fetch(`${SUPABASE_URL}/rest/v1/${table}${params}`, { headers: getHeaders() });
-  if (!r.ok) throw new Error(`${r.status}: ${await r.text()}`);
+  const r = await sbFetchWithRefresh(() => fetch(`${SUPABASE_URL}/rest/v1/${table}${params}`, { headers: getHeaders() }));
+  if (!r.ok) {
+    if (r.status === 401) throw new Error("Your session has expired — please sign in again.");
+    throw new Error(`${r.status}: ${await r.text()}`);
+  }
   return r.json();
 }
 
 async function sbPost(table, body) {
-  const r = await fetch(`${SUPABASE_URL}/rest/v1/${table}`, {
+  const r = await sbFetchWithRefresh(() => fetch(`${SUPABASE_URL}/rest/v1/${table}`, {
     method: "POST", headers: getHeaders(), body: JSON.stringify(body),
-  });
-  if (!r.ok) throw new Error(`${r.status}: ${await r.text()}`);
+  }));
+  if (!r.ok) {
+    if (r.status === 401) throw new Error("Your session has expired — please sign in again.");
+    throw new Error(`${r.status}: ${await r.text()}`);
+  }
   const text = await r.text();
   return text ? JSON.parse(text) : {};
 }
 
 async function sbPatch(table, id, body) {
-  const r = await fetch(`${SUPABASE_URL}/rest/v1/${table}?id=eq.${id}`, {
+  const r = await sbFetchWithRefresh(() => fetch(`${SUPABASE_URL}/rest/v1/${table}?id=eq.${id}`, {
     method: "PATCH",
     headers: getHeaders({ "Prefer": "return=minimal" }),
     body: JSON.stringify(body),
-  });
-  if (!r.ok) throw new Error(`${r.status}: ${await r.text()}`);
+  }));
+  if (!r.ok) {
+    if (r.status === 401) throw new Error("Your session has expired — please sign in again.");
+    throw new Error(`${r.status}: ${await r.text()}`);
+  }
 }
 
 // ── Sign-in screen ────────────────────────────────────────────
@@ -3323,10 +3637,22 @@ function SignInScreen({ loading }) {
         {/* Logo */}
         <div style={{ marginBottom: 32 }}>
           <div style={{
-            display: "flex", flexDirection: "column", alignItems: "center", gap: 12, marginBottom: 8,
+            display: "inline-flex", alignItems: "center", gap: 10, marginBottom: 8,
           }}>
-            <img src={PASSPORT_LOGO} alt="Pixxel Customer Passport" style={{ width: 200, maxWidth: "72vw", height: "auto" }} />
-            <div style={{ color: MUTED, fontSize: 11, letterSpacing: 2, textTransform: "uppercase" }}>Customer Passport</div>
+            <div style={{
+              width: 40, height: 40, borderRadius: 10, background: ACCENT,
+              display: "flex", alignItems: "center", justifyContent: "center",
+            }}>
+              <svg width="22" height="22" viewBox="0 0 22 22" fill="none">
+                <circle cx="11" cy="11" r="6" stroke="white" strokeWidth="1.5" fill="none"/>
+                <circle cx="11" cy="11" r="2.5" fill="white"/>
+                <path d="M11 2v3M11 17v3M2 11h3M17 11h3" stroke="white" strokeWidth="1.5" strokeLinecap="round"/>
+              </svg>
+            </div>
+            <div style={{ textAlign: "left" }}>
+              <div style={{ color: "white", fontFamily: "'Space Grotesk',sans-serif", fontWeight: 700, fontSize: 18, letterSpacing: -0.5 }}>pixxel</div>
+              <div style={{ color: MUTED, fontSize: 11, letterSpacing: 2, textTransform: "uppercase" }}>Customer Passport</div>
+            </div>
           </div>
         </div>
 
@@ -3382,12 +3708,8 @@ const CORE_PIPELINES_LIST = [
 
 async function fetchPassports({ pipeline, stage, ownerFilter, search } = {}) {
   const pipes = (pipeline && pipeline !== "all") ? [pipeline] : CORE_PIPELINES_LIST;
-  // Double-quote each value and use `in.()`: required so pipeline names with
-  // special chars (e.g. "Bespoke Analytics (EMEA & APAC)") are treated literally.
-  // The old `or=(pipeline.eq.…)` form let raw parentheses break the filter parse,
-  // silently dropping every pipeline listed after the one with parens.
-  const pipeQ = pipes.map(p => `"${encodeURIComponent(p)}"`).join(",");
-  let params = `?select=id,hubspot_deal_id,company,deal_id_display,hubspot_stage,hubspot_stage_idx,hubspot_amount,hubspot_last_contacted,hubspot_last_contact_owner,hubspot_synced_at,owner_director,owner_se,owner_cs,owner_analytics,pipeline,last_activity_label,updated_at&pipeline=in.(${pipeQ})&order=updated_at.desc&limit=300`;
+  const pipeQ = pipes.map(p => `pipeline.eq.${encodeURIComponent(p)}`).join(",");
+  let params = `?select=id,hubspot_deal_id,company,deal_id_display,hubspot_stage,hubspot_stage_idx,hubspot_amount,hubspot_last_contacted,hubspot_last_contact_owner,hubspot_synced_at,owner_director,owner_se,owner_cs,owner_analytics,pipeline,last_activity_label,updated_at&or=(${pipeQ})&order=updated_at.desc&limit=300`;
   if (stage !== undefined && stage !== "all") params += `&hubspot_stage_idx=eq.${stage}`;
   let data = await sbGet("handover_passports", params);
   if (ownerFilter) {
@@ -3438,16 +3760,7 @@ function calcReadiness(passport, contacts) {
 }
 
 async function assignOwner(passportId, role, name) {
-  const fields = { [`owner_${role}`]: name };
-  // For the SE slot, mark the app as the source of truth (and stamp the time)
-  // so the HubSpot sync writes this back and never overwrites it from the PSE
-  // field. Without this, a scheduled sync wipes the assignment on refresh.
-  // Mirrors the owner_se handling in PassportDetail.handleUpdate.
-  if (role === "se") {
-    fields.owner_se_source = name ? "app" : "hubspot";
-    fields.owner_se_updated_at = new Date().toISOString();
-  }
-  await sbPatch("handover_passports", passportId, fields);
+  await sbPatch("handover_passports", passportId, { [`owner_${role}`]: name });
 }
 
 async function addActivityEntry(passportId, author, body, mentions = []) {
@@ -3472,10 +3785,13 @@ async function addFeedbackEntry(passportId, entry) {
 
 // ── New child-record helpers ──────────────────────────────────
 async function sbDelete(table, id) {
-  const r = await fetch(`${SUPABASE_URL}/rest/v1/${table}?id=eq.${id}`, {
+  const r = await sbFetchWithRefresh(() => fetch(`${SUPABASE_URL}/rest/v1/${table}?id=eq.${id}`, {
     method: "DELETE", headers: getHeaders({ "Prefer": "return=minimal" }),
-  });
-  if (!r.ok) throw new Error(`${r.status}: ${await r.text()}`);
+  }));
+  if (!r.ok) {
+    if (r.status === 401) throw new Error("Your session has expired — please sign in again.");
+    throw new Error(`${r.status}: ${await r.text()}`);
+  }
 }
 
 async function addPoc(passportId, poc) {
@@ -3543,7 +3859,6 @@ async function sendSlackNotification(event, payload, passportId, channelId) {
   return r.json();
 }
 
-// "Now" stamp matching the seed format, e.g. "Jun 26 · 14:30"
 function stampNow() {
   const d = new Date();
   const md = d.toLocaleDateString("en-US", { month: "short", day: "2-digit" });
@@ -3553,7 +3868,7 @@ function stampNow() {
 
 // Best-effort Slack ping to a set of passport owners. Reuses the "mention"
 // event the slack-notify function already handles (one message per owner so
-// each is @-tagged). Never throws — notifications must not block a save.
+// each gets a direct, attributable notification).
 async function notifyOwnersOnSlack(owners, { company, dealId, text, by, channelId, passportId }) {
   const recipients = [...new Set((owners || []).filter(Boolean))];
   let sent = 0;
@@ -3792,8 +4107,25 @@ function PassportDetail({ data, onBack, canEdit, onRefresh, onAssign, onNotifyAl
    try {
     // Activity feed post
     if (updated._activityPost) {
-      const { author, body, mentions } = updated._activityPost;
+      const { author, body, mentions, mentionEmails } = updated._activityPost;
       await addActivityEntry(p.id, author, body, mentions);
+      // Notify each mentioned person by email
+      if (mentionEmails && mentionEmails.length) {
+        for (const email of mentionEmails) {
+          fetch(`${SUPABASE_URL}/functions/v1/slack-notify`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json", "Authorization": `Bearer ${SUPABASE_ANON_KEY}` },
+            body: JSON.stringify({
+              event: "mention_email",
+              to_email: email,
+              company: p.company,
+              dealId: p.deal_id_display,
+              noteText: body,
+              mentionedBy: author,
+            }),
+          }).catch(() => {});
+        }
+      }
       await onRefresh();
       return;
     }
@@ -3969,6 +4301,19 @@ function PassportDetail({ data, onBack, canEdit, onRefresh, onAssign, onNotifyAl
       onAssign={(r, name) => onAssign(r, name)}
       onNotifyAll={onNotifyAll}
       onPostToSlack={onPostToSlack}
+      onPushPlanhat={async () => {
+        toast("Pushing to PlanHat…");
+        try {
+          const res = await fetch(`${SUPABASE_URL}/functions/v1/hubspot-sync`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json", "Authorization": `Bearer ${SUPABASE_ANON_KEY}` },
+            body: JSON.stringify({ action: "push_to_planhat", passport_id: p.id }),
+          });
+          const data = await res.json();
+          if (data.ok) toast("✓ Pushed to PlanHat");
+          else toast("PlanHat: " + (data.error || "failed"));
+        } catch (e) { toast("PlanHat push failed: " + e.message); }
+      }}
       slackChannel={slackChannel}
       slackSending={slackSending}
       slackStatus={slackStatus}
@@ -3981,11 +4326,44 @@ function PassportDetail({ data, onBack, canEdit, onRefresh, onAssign, onNotifyAl
    LIVE DASHBOARD  (replaces mock Dashboard)
    ================================================================ */
 
+// Maps a Sales Owner name to their region. Anyone not listed falls into "Other".
+const REGION_BY_OWNER = {
+  "Alex Koh Hock Poh": "APAC",
+  "Caio Miranda": "EMEA",
+  "Jimmy Greco": "Americas",
+  "Mauricio Meira": "Americas",
+  "Gp Capt Debashish Sengupta (Retd)": "India",
+};
+const REGION_ORDER = ["EMEA", "APAC", "Americas", "India", "Other"];
+const REGION_COLORS = { EMEA: "#7A5AF5", APAC: "#0EA5B7", Americas: "#E07A2B", India: "#2FB67A", Other: "#929BAB" };
+
+function StatSource({ children }) {
+  return <span style={{ fontSize: 10.5, color: "var(--muted2)", fontStyle: "italic" }}>{children}</span>;
+}
+
 function DashboardLive({ deals, onOpen }) {
+  const [feedbackCounts, setFeedbackCounts] = useState({}); // passport_id -> count
+  const [feedbackLoading, setFeedbackLoading] = useState(true);
+
+  useEffect(() => {
+    (async () => {
+      setFeedbackLoading(true);
+      try {
+        const rows = await sbGet("customer_feedback", "?select=passport_id");
+        const counts = {};
+        (rows || []).forEach(r => { counts[r.passport_id] = (counts[r.passport_id] || 0) + 1; });
+        setFeedbackCounts(counts);
+      } catch (e) { /* non-fatal — feedback stat just won't show */ }
+      finally { setFeedbackLoading(false); }
+    })();
+  }, [deals.length]);
+
   const active = deals.filter(d => d.hubspot_stage_idx < 6);
   const pipeline = active.reduce((a, d) => a + (d.hubspot_amount || 0), 0);
   const closedWon = deals.filter(d => d.hubspot_stage_idx === 5).length;
   const noOwner = deals.filter(d => !d.owner_cs || !d.owner_se).length;
+  const withFeedback = deals.filter(d => feedbackCounts[d.id] > 0);
+  const totalFeedbackEntries = Object.values(feedbackCounts).reduce((a, c) => a + c, 0);
 
   const byStage = ["Discovery","Technical Validation","Quote / Solution Scoping","Proposal","Contracting & Negotiation","Closed Won"]
     .map((s, i) => ({ name: s, count: deals.filter(d => d.hubspot_stage_idx === i).length }));
@@ -3996,6 +4374,21 @@ function DashboardLive({ deals, onOpen }) {
   }));
   const maxPipe = Math.max(...byPipeline.map(b => b.count), 1);
 
+  // Region breakdown — grouped by Sales Owner's mapped region
+  const byRegion = REGION_ORDER.map(region => {
+    const regionDeals = deals.filter(d => (REGION_BY_OWNER[d.owner_director] || "Other") === region);
+    const regionActive = regionDeals.filter(d => d.hubspot_stage_idx < 6);
+    return {
+      region,
+      count: regionDeals.length,
+      activeCount: regionActive.length,
+      acv: regionActive.reduce((a, d) => a + (d.hubspot_amount || 0), 0),
+      closedWon: regionDeals.filter(d => d.hubspot_stage_idx === 5).length,
+      color: REGION_COLORS[region],
+    };
+  }).filter(r => r.count > 0);
+  const maxRegion = Math.max(...byRegion.map(r => r.count), 1);
+
   const needsAttention = deals.filter(d => {
     const { score } = calcReadiness(d, []);
     return score < 50 && d.hubspot_stage_idx >= 1 && d.hubspot_stage_idx < 5;
@@ -4005,27 +4398,46 @@ function DashboardLive({ deals, onOpen }) {
     <>
       <h2 className="section-title">Leadership view</h2>
       <p className="section-sub">Live pipeline health across core Pixxel deals</p>
+      <div style={{
+        display: "flex", gap: 16, flexWrap: "wrap", fontSize: 11.5, color: "var(--muted)",
+        background: "var(--line-soft)", border: "1px solid var(--line)", borderRadius: 10,
+        padding: "8px 14px", marginBottom: 18,
+      }}>
+        <span><strong>Where these numbers come from:</strong></span>
+        <span><span style={{ color:"var(--accent-deep)", fontWeight:600 }}>●</span> HubSpot — stage, amount, owner, close date</span>
+        <span><span style={{ color:"#7A5AF5", fontWeight:600 }}>●</span> App — readiness, feedback entries, SE/CS assignment</span>
+      </div>
 
       <div className="dash-grid">
         <div className="stat">
           <div className="k">Active deals</div>
           <div className="v">{active.length}</div>
           <div className="d"><Activity size={13} /> across core pipelines</div>
+          <StatSource>HubSpot · stage</StatSource>
         </div>
         <div className="stat">
           <div className="k">Pipeline ACV</div>
           <div className="v">${(pipeline/1000000).toFixed(1)}M</div>
           <div className="d"><TrendingUp size={13} /> live from HubSpot</div>
+          <StatSource>HubSpot · amount</StatSource>
         </div>
         <div className="stat">
           <div className="k">Closed Won</div>
           <div className="v">{closedWon}</div>
           <div className="d"><CheckCircle2 size={13} color="var(--ok)" /> active customers</div>
+          <StatSource>HubSpot · stage</StatSource>
         </div>
         <div className="stat">
           <div className="k">Needs SE/CS</div>
           <div className="v">{noOwner}</div>
           <div className="d"><AlertTriangle size={13} color="var(--warn)" /> unassigned owners</div>
+          <StatSource>App · owner fields</StatSource>
+        </div>
+        <div className="stat">
+          <div className="k">Deals with feedback</div>
+          <div className="v">{feedbackLoading ? "…" : withFeedback.length}</div>
+          <div className="d"><MessageSquare size={13} color="var(--accent-deep)" /> {totalFeedbackEntries} entries logged</div>
+          <StatSource>App · Customer Feedback tab</StatSource>
         </div>
       </div>
 
@@ -4040,6 +4452,7 @@ function DashboardLive({ deals, onOpen }) {
               </div>
             ))}
           </div>
+          <StatSource>HubSpot · deal stage, synced live</StatSource>
         </Block>
 
         <Block icon={Satellite} title="Deals by pipeline">
@@ -4052,8 +4465,38 @@ function DashboardLive({ deals, onOpen }) {
               </div>
             ))}
           </div>
+          <StatSource>HubSpot · pipeline field</StatSource>
         </Block>
       </div>
+
+      <Block icon={MapPin} title="Deals by region">
+        <div style={{ fontSize: 11, color: "var(--muted2)", marginBottom: 10 }}>
+          Region is derived from the Sales Owner: Alex Koh Hock Poh → APAC, Caio Miranda → EMEA, Jimmy Greco / Mauricio Meira → Americas, Gp Capt Debashish Sengupta → India. Anyone else falls under Other.
+        </div>
+        <div className="cols">
+          <div className="barlist">
+            {byRegion.map((r, i) => (
+              <div className="br" key={i}>
+                <span style={{ color:"var(--muted)", fontSize:12.5 }}>{r.region}</span>
+                <div className="track"><div className="fill" style={{ width:`${(r.count/maxRegion)*100}%`, background:`linear-gradient(90deg, ${r.color}, ${r.color}88)` }} /></div>
+                <span className="mono" style={{ textAlign:"right", fontSize:12 }}>{r.count}</span>
+              </div>
+            ))}
+          </div>
+          <div className="kv" style={{ fontSize: 12.5 }}>
+            {byRegion.map((r, i) => (
+              <div key={i} style={{ display:"flex", justifyContent:"space-between", alignItems:"center", padding:"6px 0", borderBottom: i < byRegion.length-1 ? "1px solid var(--line-soft)" : "none" }}>
+                <span style={{ display:"flex", alignItems:"center", gap:7 }}>
+                  <span style={{ width:8, height:8, borderRadius:99, background:r.color, display:"inline-block" }} />
+                  {r.region}
+                </span>
+                <span style={{ color:"var(--muted)" }}>{r.activeCount} active · ${(r.acv/1000).toFixed(0)}k ACV · {r.closedWon} won</span>
+              </div>
+            ))}
+          </div>
+        </div>
+        <StatSource>HubSpot (owner) + manual region mapping in app</StatSource>
+      </Block>
 
       <Block icon={AlertTriangle} title="Active deals missing SE or CS owner">
         {needsAttention.length ? needsAttention.map(d => {
@@ -4071,6 +4514,7 @@ function DashboardLive({ deals, onOpen }) {
             </div>
           );
         }) : <div className="empty"><CheckCircle2 size={15} /> All active deals have SE and CS assigned.</div>}
+        <StatSource>App · readiness checklist</StatSource>
       </Block>
     </>
   );
@@ -4184,6 +4628,13 @@ function AppMain({ currentUser, canEdit, onSignOut }) {
   // Reload when filters change
   useEffect(() => { loadDeals(); }, [pipelineFilter, stageFilter, ownerFilter]);
 
+  // On first load, if the URL has ?deal=<id>, open that passport directly
+  // (enables sharing a direct link to a specific deal).
+  useEffect(() => {
+    const dealParam = new URLSearchParams(window.location.search).get("deal");
+    if (dealParam) openPassport(dealParam);
+  }, []);
+
   // Debounced search
   useEffect(() => {
     const t = setTimeout(loadDeals, 300);
@@ -4197,6 +4648,10 @@ function AppMain({ currentUser, canEdit, onSignOut }) {
     setSlackStatus(null);
     setDetailLoading(true);
     window.scrollTo(0, 0);
+    // Reflect the open deal in the URL so it can be shared/bookmarked
+    const url = new URL(window.location.href);
+    url.searchParams.set("deal", id);
+    window.history.pushState({}, "", url);
     try {
       const data = await fetchPassportDetail(id);
       setPassportData(data);
@@ -4210,6 +4665,9 @@ function AppMain({ currentUser, canEdit, onSignOut }) {
   const closePassport = () => {
     setOpenId(null);
     setPassportData(null);
+    const url = new URL(window.location.href);
+    url.searchParams.delete("deal");
+    window.history.pushState({}, "", url);
     loadDeals(); // refresh list in case something changed
   };
 
@@ -4341,7 +4799,7 @@ function AppMain({ currentUser, canEdit, onSignOut }) {
       <div className="cp-top">
         <div className="cp-brand">
           {PIXXEL_LOGO_URL
-            ? <span className="cp-logo-plate"><img className="cp-logo-img" src={PIXXEL_LOGO_URL} alt="Pixxel" onError={e => { e.currentTarget.style.display = "none"; }} /></span>
+            ? <img className="cp-logo-img" src={PIXXEL_LOGO_URL} alt="Pixxel" onError={e => { e.currentTarget.style.display = "none"; }} />
             : <span className="cp-wordmark">pi<span className="x">xx</span>el</span>}
           <span className="cp-brand-div" />
           <span>Customer Passport<small>SE → CS → Analytics</small></span>
@@ -4352,6 +4810,9 @@ function AppMain({ currentUser, canEdit, onSignOut }) {
           </button>
           <button className={view === "dashboard" ? "on" : ""} onClick={() => { setView("dashboard"); closePassport(); }}>
             <BarChart3 size={15} /> Leadership
+          </button>
+          <button className={view === "qc" ? "on" : ""} onClick={() => { setView("qc"); closePassport(); }}>
+            <Camera size={15} /> Quality Checks
           </button>
         </div>
         <div className="cp-spacer" />
@@ -4487,7 +4948,9 @@ function AppMain({ currentUser, canEdit, onSignOut }) {
               )
           : view === "dashboard"
             ? <DashboardLive deals={deals} onOpen={openPassport} />
-            : <DealListLive
+            : view === "qc"
+              ? <QualityChecksGlobal deals={deals} canEdit={canEdit} onOpen={openPassport} toast={toast} />
+              : <DealListLive
                 deals={deals}
                 loading={loading}
                 onOpen={openPassport}
