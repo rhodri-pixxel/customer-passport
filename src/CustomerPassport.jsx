@@ -1204,9 +1204,11 @@ function GeoJsonMap({ geojson, onClear, canEdit }) {
   const mapRef = useRef(null);
   const containerRef = useRef(null);
   const [meta, setMeta] = useState({ features: 0, center: "" });
+  const [renderError, setRenderError] = useState(false);
 
   useEffect(() => {
     if (!containerRef.current || !geojson) return;
+    setRenderError(false);
     // Init map once
     if (!mapRef.current) {
       mapRef.current = L.map(containerRef.current, {
@@ -1228,33 +1230,84 @@ function GeoJsonMap({ geojson, onClear, canEdit }) {
       map._aoiLayer = layer;
       const bounds = layer.getBounds();
       if (bounds.isValid()) {
-        map.fitBounds(bounds, { padding: [24, 24], maxZoom: 13 });
-        const c = bounds.getCenter();
         const feats = geojson.type === "FeatureCollection" ? geojson.features.length : 1;
+        const c = bounds.getCenter();
         setMeta({ features: feats, center: `${c.lat.toFixed(3)}°, ${c.lng.toFixed(3)}°` });
+        // The container can report 0×0 if it was hidden (e.g. behind an
+        // inactive tab) at the moment the map initialized. invalidateSize
+        // + fitBounds is retried a few times so the AOI reliably ends up
+        // framed correctly rather than stuck at the default zero-size view.
+        let attempts = 0;
+        const tryFit = () => {
+          attempts++;
+          map.invalidateSize();
+          map.fitBounds(bounds, { padding: [24, 24], maxZoom: 13 });
+          if (attempts < 4) setTimeout(tryFit, 150 * attempts);
+        };
+        tryFit();
+      } else {
+        setRenderError(true);
       }
-      // Leaflet needs a nudge when rendered in a flex container
-      setTimeout(() => map.invalidateSize(), 100);
     } catch (e) {
       console.error("AOI render error", e);
+      setRenderError(true);
     }
   }, [geojson]);
+
+  // Re-fit whenever the container is resized (e.g. tab becomes visible,
+  // window resizes) rather than only once on mount.
+  useEffect(() => {
+    if (!containerRef.current || typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(() => {
+      if (mapRef.current && mapRef.current._aoiLayer) {
+        mapRef.current.invalidateSize();
+        const b = mapRef.current._aoiLayer.getBounds();
+        if (b.isValid()) mapRef.current.fitBounds(b, { padding: [24, 24], maxZoom: 13 });
+      }
+    });
+    ro.observe(containerRef.current);
+    return () => ro.disconnect();
+  }, []);
 
   // Clean up on unmount
   useEffect(() => () => { if (mapRef.current) { mapRef.current.remove(); mapRef.current = null; } }, []);
 
+  const downloadAoi = () => {
+    const blob = new Blob([JSON.stringify(geojson, null, 2)], { type: "application/geo+json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "aoi.geojson";
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
+
   return (
     <div style={{ position: "relative", borderRadius: 12, overflow: "hidden", border: "1px solid var(--line)" }}>
       <div ref={containerRef} style={{ height: 300, width: "100%", background: "#e8eef2" }} />
+      {renderError && (
+        <div style={{ position:"absolute", inset:0, display:"flex", alignItems:"center", justifyContent:"center", background:"rgba(232,238,242,0.92)", flexDirection:"column", gap:6, color:"var(--muted)", fontSize:12.5, textAlign:"center", padding:16 }}>
+          <AlertTriangle size={18} color="var(--warn)" />
+          Couldn't render this AOI's geometry. The file may have an unexpected coordinate format — try re-uploading, or download the raw data below to check it.
+        </div>
+      )}
       <div style={{ position:"absolute", bottom:8, left:8, zIndex:500, background:"rgba(11,18,32,0.78)", color:"#cdd6e3", fontSize:11, padding:"4px 9px", borderRadius:6, fontFamily:"var(--font-mono)", pointerEvents:"none" }}>
         {meta.features} feature{meta.features !== 1 ? "s" : ""} · ◎ {meta.center}
       </div>
-      {canEdit && onClear && (
-        <button onClick={onClear} title="Remove AOI"
-          style={{ position:"absolute", top:8, right:8, zIndex:500, background:"rgba(11,18,32,0.78)", border:"none", borderRadius:6, color:"#fff", padding:"5px 9px", fontSize:11, cursor:"pointer", display:"flex", alignItems:"center", gap:4 }}>
-          <Trash2 size={11} /> Remove
+      <div style={{ position:"absolute", top:8, right:8, zIndex:500, display:"flex", gap:6 }}>
+        <button onClick={downloadAoi} title="Download this AOI as GeoJSON"
+          style={{ background:"rgba(11,18,32,0.78)", border:"none", borderRadius:6, color:"#fff", padding:"5px 9px", fontSize:11, cursor:"pointer", display:"flex", alignItems:"center", gap:4 }}>
+          <Download size={11} /> Download
         </button>
-      )}
+        {canEdit && onClear && (
+          <button onClick={onClear} title="Remove AOI"
+            style={{ background:"rgba(11,18,32,0.78)", border:"none", borderRadius:6, color:"#fff", padding:"5px 9px", fontSize:11, cursor:"pointer", display:"flex", alignItems:"center", gap:4 }}>
+            <Trash2 size={11} /> Remove
+          </button>
+        )}
+      </div>
     </div>
   );
 }
@@ -2018,6 +2071,39 @@ function MvpImagesTab({ d, canEdit, toast }) {
   );
 }
 
+// Tracks whether a deal has been formally handed to CS and/or Analytics.
+// Independent toggles since the two handovers often happen at different times.
+function HandoverStatus({ d, canEdit, onUpdate }) {
+  const h = d.handover || {};
+  const toggle = (team) => {
+    const isOn = team === "cs" ? h.cs : h.analytics;
+    onUpdate({ _handoverToggle: { team, value: !isOn } });
+  };
+  const Pill = ({ team, label, on, at, by }) => (
+    <button onClick={() => canEdit && toggle(team)} disabled={!canEdit}
+      style={{
+        display: "flex", alignItems: "center", gap: 8, padding: "8px 14px", borderRadius: 10,
+        border: "1px solid " + (on ? "var(--ok)" : "var(--line)"),
+        background: on ? "#E3F7EC" : "#fff", cursor: canEdit ? "pointer" : "default",
+        fontSize: 12.5, fontFamily: "inherit",
+      }}>
+      {on ? <CheckCircle2 size={15} color="#1f8a57" /> : <Circle size={15} color="var(--muted2)" />}
+      <div style={{ textAlign: "left" }}>
+        <div style={{ fontWeight: 600, color: on ? "#1f8a57" : "var(--ink)" }}>
+          {on ? `Handed to ${label}` : `Not yet handed to ${label}`}
+        </div>
+        {on && at && <div style={{ fontSize: 10.5, color: "var(--muted2)" }}>{new Date(at).toLocaleDateString("en-GB", { day:"2-digit", month:"short", year:"numeric" })}{by ? ` · by ${by}` : ""}</div>}
+      </div>
+    </button>
+  );
+  return (
+    <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 18 }}>
+      <Pill team="cs" label="CS" on={h.cs} at={h.csAt} by={h.csBy} />
+      <Pill team="analytics" label="Analytics" on={h.analytics} at={h.analyticsAt} by={h.analyticsBy} />
+    </div>
+  );
+}
+
 function Passport({ deal, onBack, canEdit, onUpdate, onAssign, onNotifyAll, onPostToSlack, onPushPlanhat, slackChannel, slackSending, slackStatus, toast }) {
   const [tab, setTab] = useState("profile");
   const [showChecklist, setShowChecklist] = useState(false);
@@ -2034,13 +2120,33 @@ function Passport({ deal, onBack, canEdit, onUpdate, onAssign, onNotifyAll, onPo
     <>
       <button className="cp-back" onClick={onBack}><ChevronLeft size={16} /> All deals</button>
 
+      {deal.archived && (
+        <div style={{ display:"flex", alignItems:"center", gap:8, fontSize:12.5, color:"#c0392b", background:"#FCE9E7", border:"1px solid #f0c4bf", borderRadius:10, padding:"10px 14px", marginBottom:14 }}>
+          <AlertTriangle size={15} />
+          <span><strong>Archived</strong> — no longer found in HubSpot{deal.archivedAt ? ` as of ${new Date(deal.archivedAt).toLocaleDateString("en-GB",{day:"2-digit",month:"short",year:"numeric"})}` : ""}. {deal.archivedReason || "Nothing has been deleted; this passport's history is fully preserved."}</span>
+        </div>
+      )}
+
       {/* header */}
       <div className="cp-head">
         <div className="spectral" />
         <div className="grat" />
         <div className="htop">
           <div>
-            <h1>{deal.company}</h1>
+            <h1 style={{ display: "flex", alignItems: "center", gap: 10 }}>
+              {deal.company}
+              <button onClick={() => canEdit && onUpdate({ _toggleEap: { value: !deal.isEap } })} disabled={!canEdit}
+                title={canEdit ? "Toggle Early Access Program" : ""}
+                style={{
+                  fontSize: 10.5, fontWeight: 700, letterSpacing: ".04em", padding: "3px 9px", borderRadius: 20,
+                  border: "1px solid " + (deal.isEap ? "#F0A429" : "var(--line)"),
+                  background: deal.isEap ? "#FEF3E0" : "transparent",
+                  color: deal.isEap ? "#B5720E" : "var(--muted2)",
+                  cursor: canEdit ? "pointer" : "default", textTransform: "uppercase",
+                }}>
+                {deal.isEap ? "★ EAP" : "+ EAP"}
+              </button>
+            </h1>
             <div className="hsub">
               <span>{deal.sector}</span><span className="dot" />
               <span className="mono">{deal.id}</span><span className="dot" />
@@ -2156,6 +2262,8 @@ function Passport({ deal, onBack, canEdit, onUpdate, onAssign, onNotifyAll, onPo
           </div>
         </div>
       </div>
+
+      <HandoverStatus d={deal} canEdit={canEdit} onUpdate={onUpdate} />
 
       {/* Additional collaborators */}
       <CollaboratorsRow
@@ -3919,11 +4027,14 @@ const CORE_PIPELINES_LIST = [
   "Reseller Pipeline",
 ];
 
-async function fetchPassports({ pipeline, stage, ownerFilter, search } = {}) {
+async function fetchPassports({ pipeline, stage, ownerFilter, search, archivedView } = {}) {
   const pipes = (pipeline && pipeline !== "all") ? [pipeline] : CORE_PIPELINES_LIST;
   const pipeQ = pipes.map(p => `pipeline.eq.${encodeURIComponent(p)}`).join(",");
-  let params = `?select=id,hubspot_deal_id,company,deal_id_display,hubspot_stage,hubspot_stage_idx,hubspot_amount,hubspot_last_contacted,hubspot_last_contact_owner,hubspot_synced_at,owner_director,owner_se,owner_cs,owner_analytics,pipeline,last_activity_label,updated_at&or=(${pipeQ})&order=updated_at.desc&limit=300`;
+  let params = `?select=id,hubspot_deal_id,company,deal_id_display,hubspot_stage,hubspot_stage_idx,hubspot_amount,hubspot_last_contacted,hubspot_last_contact_owner,hubspot_synced_at,owner_director,owner_se,owner_cs,owner_analytics,pipeline,last_activity_label,updated_at,handed_to_cs,handed_to_analytics,is_eap,archived,archived_at,archived_reason&or=(${pipeQ})&order=updated_at.desc&limit=300`;
   if (stage !== undefined && stage !== "all") params += `&hubspot_stage_idx=eq.${stage}`;
+  // archivedView: "active" (default, hide archived) | "archived" (only archived) | "all"
+  if (!archivedView || archivedView === "active") params += `&archived=eq.false`;
+  else if (archivedView === "archived") params += `&archived=eq.true`;
   let data = await sbGet("handover_passports", params);
   if (ownerFilter) {
     data = data.filter(d => [d.owner_se, d.owner_cs, d.owner_analytics, d.owner_director].includes(ownerFilter));
@@ -4113,7 +4224,7 @@ const PIPE_COLORS = {
   "Other": "#929BAB",
 };
 
-function DealListLive({ deals, loading, onOpen, pipelineFilter, setPipelineFilter, stageFilter, setStageFilter, ownerFilter, setOwnerFilter, searchQ, setSearchQ }) {
+function DealListLive({ deals, loading, onOpen, pipelineFilter, setPipelineFilter, stageFilter, setStageFilter, ownerFilter, setOwnerFilter, searchQ, setSearchQ, archivedView, setArchivedView }) {
   return (
     <>
       <h2 className="section-title">Deals</h2>
@@ -4172,7 +4283,21 @@ function DealListLive({ deals, loading, onOpen, pipelineFilter, setPipelineFilte
           </select>
           <ChevronDown size={15} className="chev" />
         </div>
+
+        {/* Archived filter */}
+        <div className="seg">
+          <button className={archivedView==="active"?"on":""} onClick={() => setArchivedView("active")}>Active</button>
+          <button className={archivedView==="archived"?"on":""} onClick={() => setArchivedView("archived")}>Archived</button>
+          <button className={archivedView==="all"?"on":""} onClick={() => setArchivedView("all")}>All</button>
+        </div>
       </div>
+
+      {archivedView === "archived" && (
+        <div style={{ display:"flex", alignItems:"center", gap:8, fontSize:12.5, color:"var(--muted)", background:"var(--line-soft)", border:"1px solid var(--line)", borderRadius:10, padding:"9px 14px", marginBottom:16 }}>
+          <AlertTriangle size={14} color="var(--warn)" />
+          These deals are no longer found in HubSpot (deleted, or moved out of a tracked pipeline). Nothing has been deleted here — the full passport history is preserved below.
+        </div>
+      )}
 
       {loading && deals.length === 0 ? (
         <div style={{ textAlign:"center", padding:"60px 0", color:"var(--muted)" }}>
@@ -4190,12 +4315,14 @@ function DealListLive({ deals, loading, onOpen, pipelineFilter, setPipelineFilte
               ? Math.floor((Date.now() - new Date(d.hubspot_last_contacted).getTime()) / 86400000)
               : null;
             return (
-              <div key={d.id} className="cp-card" onClick={() => onOpen(d.id)}>
+              <div key={d.id} className="cp-card" onClick={() => onOpen(d.id)} style={d.archived ? { opacity: 0.72 } : undefined}>
                 <div className="row">
                   <div style={{ flex:1, minWidth:0 }}>
                     <div style={{ display:"flex", alignItems:"center", gap:7, marginBottom:4 }}>
                       <span style={{ width:8, height:8, borderRadius:"50%", background:pipeColor, flex:"none" }} />
                       <span style={{ fontSize:10.5, color:"var(--muted2)", fontFamily:"var(--font-mono)", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{d.pipeline}</span>
+                      {d.archived && <span className="tag" style={{ background:"#FCE9E7", color:"#c0392b", fontSize:10, marginLeft:"auto", flex:"none" }}>Archived</span>}
+                      {d.is_eap && <span style={{ fontSize:10, color:"#B5720E" }}><Star size={10} fill="#F0A429" color="#F0A429" style={{ verticalAlign:-1 }} /></span>}
                     </div>
                     <h3 style={{ margin:0, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{d.company}</h3>
                   </div>
@@ -4257,6 +4384,12 @@ function PassportDetail({ data, onBack, canEdit, onRefresh, onAssign, onNotifyAl
     amount: p.hubspot_amount,
     owners: { owner: p.owner_director, se: p.owner_se, cs: p.owner_cs, analytics: p.owner_analytics },
     sectionStamps: { profile: p.stamp_profile, context: p.stamp_context, execution: p.stamp_execution },
+    handover: {
+      cs: !!p.handed_to_cs, csAt: p.handed_to_cs_at, csBy: p.handed_to_cs_by,
+      analytics: !!p.handed_to_analytics, analyticsAt: p.handed_to_analytics_at, analyticsBy: p.handed_to_analytics_by,
+    },
+    isEap: !!p.is_eap,
+    archived: !!p.archived, archivedAt: p.archived_at, archivedReason: p.archived_reason,
     profile: {
       contacts: contacts.map(c => ({ id: c.id, name: c.name, role: c.role, email: c.email })),
       team: p.customer_team || "",
@@ -4466,6 +4599,30 @@ function PassportDetail({ data, onBack, canEdit, onRefresh, onAssign, onNotifyAl
       await onRefresh();
       return;
     }
+    // Handover status toggle (SE → CS / SE → Analytics)
+    if (updated._handoverToggle) {
+      const { team, value } = updated._handoverToggle; // team: 'cs' | 'analytics'
+      const patch = value
+        ? { [`handed_to_${team}`]: true, [`handed_to_${team}_at`]: new Date().toISOString(), [`handed_to_${team}_by`]: currentUserName || "You" }
+        : { [`handed_to_${team}`]: false, [`handed_to_${team}_at`]: null, [`handed_to_${team}_by`]: null };
+      await sbPatch("handover_passports", p.id, patch);
+      await onRefresh();
+      if (value) {
+        const owner = team === "cs" ? p.owner_cs : p.owner_analytics;
+        const sent = owner ? await notifyOwnersOnSlack([owner], {
+          company: p.company, dealId: p.deal_id_display,
+          text: `:incoming_envelope: *${p.company}* has been handed over to ${team === "cs" ? "Customer Success" : "Analytics"}. It's now on your radar.`,
+          by: currentUserName, channelId: slackChannel ? slackChannel.id : undefined, passportId: p.id }) : 0;
+        toast(`Marked as handed to ${team === "cs" ? "CS" : "Analytics"}` + (sent ? ` · ${owner} notified in Slack` : ""));
+      }
+      return;
+    }
+    // EAP (Early Access Program) flag
+    if (updated._toggleEap) {
+      await sbPatch("handover_passports", p.id, { is_eap: updated._toggleEap.value });
+      await onRefresh();
+      return;
+    }
     // Pull HubSpot notes/meetings for this one deal
     if (updated._syncNotes) {
       try {
@@ -4606,6 +4763,7 @@ function DashboardLive({ deals, onOpen }) {
   const closedWon = deals.filter(d => d.hubspot_stage_idx === 5).length;
   const noOwner = deals.filter(d => !d.owner_cs || !d.owner_se).length;
   const withFeedback = deals.filter(d => feedbackCounts[d.id] > 0);
+  const eapDeals = deals.filter(d => d.is_eap);
   const totalFeedbackEntries = Object.values(feedbackCounts).reduce((a, c) => a + c, 0);
 
   const byStage = ["Discovery","Technical Validation","Quote / Solution Scoping","Proposal","Contracting & Negotiation","Closed Won"]
@@ -4681,6 +4839,12 @@ function DashboardLive({ deals, onOpen }) {
           <div className="v">{feedbackLoading ? "…" : withFeedback.length}</div>
           <div className="d"><MessageSquare size={13} color="var(--accent-deep)" /> {totalFeedbackEntries} entries logged</div>
           <StatSource>App · Customer Feedback tab</StatSource>
+        </div>
+        <div className="stat">
+          <div className="k">EAP customers</div>
+          <div className="v">{eapDeals.length}</div>
+          <div className="d"><Star size={13} color="#F0A429" /> Early Access Program</div>
+          <StatSource>App · EAP flag</StatSource>
         </div>
       </div>
 
@@ -4759,6 +4923,22 @@ function DashboardLive({ deals, onOpen }) {
         }) : <div className="empty"><CheckCircle2 size={15} /> All active deals have SE and CS assigned.</div>}
         <StatSource>App · readiness checklist</StatSource>
       </Block>
+
+      {eapDeals.length > 0 && (
+        <Block icon={Star} title="Early Access Program customers">
+          {eapDeals.map(d => (
+            <div className="alert-row" key={d.id} onClick={() => onOpen(d.id)}>
+              <Star size={20} color="#F0A429" fill="#F0A429" />
+              <div>
+                <div className="anm">{d.company}</div>
+                <div className="as2">{d.hubspot_stage} · {d.pipeline}</div>
+              </div>
+              <ChevronLeft size={16} color="var(--muted2)" style={{ marginLeft:"auto", transform:"rotate(180deg)" }} />
+            </div>
+          ))}
+          <StatSource>App · EAP flag</StatSource>
+        </Block>
+      )}
     </>
   );
 }
@@ -4828,6 +5008,7 @@ function AppMain({ currentUser, canEdit, onSignOut }) {
   const [stageFilter, setStageFilter] = useState("all");
   const [ownerFilter, setOwnerFilter] = useState("");
   const [searchQ, setSearchQ] = useState("");
+  const [archivedView, setArchivedView] = useState("active"); // active | archived | all
 
   // ── Passport detail state ───────────────────────────────────
   const [openId, setOpenId] = useState(null);
@@ -4859,6 +5040,7 @@ function AppMain({ currentUser, canEdit, onSignOut }) {
         stage: stageFilter,
         ownerFilter: ownerFilter || null,
         search: searchQ || null,
+        archivedView,
       });
       setDeals(data);
     } catch (e) {
@@ -4869,7 +5051,7 @@ function AppMain({ currentUser, canEdit, onSignOut }) {
   };
 
   // Reload when filters change
-  useEffect(() => { loadDeals(); }, [pipelineFilter, stageFilter, ownerFilter]);
+  useEffect(() => { loadDeals(); }, [pipelineFilter, stageFilter, ownerFilter, archivedView]);
 
   // On first load, if the URL has ?deal=<id>, open that passport directly
   // (enables sharing a direct link to a specific deal).
@@ -5205,6 +5387,8 @@ function AppMain({ currentUser, canEdit, onSignOut }) {
                 setOwnerFilter={setOwnerFilter}
                 searchQ={searchQ}
                 setSearchQ={setSearchQ}
+                archivedView={archivedView}
+                setArchivedView={setArchivedView}
               />
         }
       </div>

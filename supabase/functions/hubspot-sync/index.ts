@@ -11,15 +11,10 @@ const CORS = {
 
 const HS_BASE = "https://api.hubapi.com";
 
-// GET with basic retry/backoff on rate limits (429) and transient 5xx errors.
-async function hsGet(path, token, attempt = 0) {
+async function hsGet(path, token) {
   const res = await fetch(HS_BASE + path, {
     headers: { Authorization: "Bearer " + token, "Content-Type": "application/json" },
   });
-  if ((res.status === 429 || res.status >= 500) && attempt < 4) {
-    await new Promise((r) => setTimeout(r, 500 * Math.pow(2, attempt))); // 0.5s, 1s, 2s, 4s
-    return hsGet(path, token, attempt + 1);
-  }
   return res.json();
 }
 
@@ -30,97 +25,6 @@ async function hsPatch(path, body, token) {
     body: JSON.stringify(body),
   });
   return res.json();
-}
-
-// ── Shared: per-deal contacts + activities sync ───────────────
-// Pulls a deal's associated contacts into deal_contacts, and the 3 most-recent
-// activities (notes/meetings/emails/calls — from the deal AND its contacts) into
-// meeting_notes. Manual notes (author "You", hs_engagement_id null) are untouched.
-async function syncDealNotes(sb, token, dealId, passportId) {
-  // robust timestamp -> ms (handles ISO strings AND epoch millis/secs strings)
-  const toMillis = (v) => {
-    if (!v) return 0;
-    const s = String(v).trim();
-    if (/^\d+$/.test(s)) { const n = Number(s); return s.length <= 10 ? n * 1000 : n; }
-    const t = Date.parse(s);
-    return isNaN(t) ? 0 : t;
-  };
-
-  // 1) Associated contacts → deal_contacts
-  const contactAssoc = await hsGet("/crm/v3/objects/deals/" + dealId + "/associations/contacts", token).catch(() => ({ results: [] }));
-  const contactIds = (contactAssoc.results || []).map((a) => a.id || a.toObjectId).filter(Boolean).slice(0, 20);
-
-  const existingContactsRes = await sb.from("deal_contacts").select("hs_contact_id").eq("passport_id", passportId).not("hs_contact_id", "is", null);
-  const seenContacts = new Set((existingContactsRes.data || []).map((r) => r.hs_contact_id));
-
-  let contacts_added = 0;
-  for (const cid of contactIds) {
-    if (seenContacts.has(cid)) continue;
-    const c = await hsGet("/crm/v3/objects/contacts/" + cid + "?properties=firstname,lastname,email,jobtitle", token).catch(() => null);
-    if (!c || !c.properties) continue;
-    const nm = ((c.properties.firstname || "") + " " + (c.properties.lastname || "")).trim();
-    if (!nm && !c.properties.email) continue;
-    await sb.from("deal_contacts").insert({
-      passport_id: passportId,
-      name: nm || c.properties.email,
-      role: c.properties.jobtitle || null,
-      email: c.properties.email || null,
-      hs_contact_id: cid,
-    });
-    seenContacts.add(cid);
-    contacts_added++;
-  }
-
-  // 2) Activities (deal + contacts), all types, keep latest 3
-  const ACTIVITY_TYPES = {
-    notes:    { props: "hs_note_body,hs_timestamp,hs_createdate", body: "hs_note_body", title: null, date: "hs_timestamp", label: "note" },
-    meetings: { props: "hs_meeting_title,hs_meeting_body,hs_meeting_start_time,hs_timestamp,hs_createdate", body: "hs_meeting_body", title: "hs_meeting_title", date: "hs_meeting_start_time", label: "meeting" },
-    emails:   { props: "hs_email_subject,hs_email_text,hs_timestamp,hs_createdate", body: "hs_email_text", title: "hs_email_subject", date: "hs_timestamp", label: "email" },
-    calls:    { props: "hs_call_title,hs_call_body,hs_timestamp,hs_createdate", body: "hs_call_body", title: "hs_call_title", date: "hs_timestamp", label: "call" },
-  };
-  const parents = [{ type: "deals", id: dealId }].concat(contactIds.slice(0, 10).map((cid) => ({ type: "contacts", id: cid })));
-
-  const activities = [];
-  const seenEid = new Set();
-  for (const parent of parents) {
-    for (const objType of Object.keys(ACTIVITY_TYPES)) {
-      const cfg = ACTIVITY_TYPES[objType];
-      const assoc = await hsGet("/crm/v3/objects/" + parent.type + "/" + parent.id + "/associations/" + objType, token).catch(() => ({ results: [] }));
-      const ids = (assoc.results || []).map((a) => a.id || a.toObjectId).filter(Boolean).slice(0, 15);
-      for (const eid of ids) {
-        if (seenEid.has(eid)) continue;
-        seenEid.add(eid);
-        const obj = await hsGet("/crm/v3/objects/" + objType + "/" + eid + "?properties=" + cfg.props, token).catch(() => null);
-        if (!obj || !obj.properties) continue;
-        let text = String(obj.properties[cfg.body] || "").replace(/<[^>]+>/g, " ").replace(/&nbsp;/g, " ").replace(/&amp;/g, "&").replace(/\s+/g, " ").trim();
-        const title = cfg.title ? (obj.properties[cfg.title] || "") : "";
-        if (title) text = title + (text ? " — " + text : "");
-        if (!text) continue;
-        const ts = obj.properties[cfg.date] || obj.properties.hs_timestamp || obj.properties.hs_createdate || "";
-        activities.push({ eid, ts, text: text.slice(0, 4000), label: cfg.label });
-      }
-    }
-  }
-
-  activities.sort((a, b) => toMillis(b.ts) - toMillis(a.ts)); // newest first
-  const latest = activities.slice(0, 3);
-
-  // Refresh the synced activities to the latest 3 (leave manual notes alone)
-  await sb.from("meeting_notes").delete().eq("passport_id", passportId).not("hs_engagement_id", "is", null);
-  let notes_added = 0;
-  for (const a of latest) {
-    const ms = toMillis(a.ts);
-    await sb.from("meeting_notes").insert({
-      passport_id: passportId,
-      note_date: ms ? new Date(ms).toISOString().slice(0, 10) : null,
-      author: "HubSpot (" + a.label + ")",
-      body: a.text,
-      hs_engagement_id: a.eid,
-    });
-    notes_added++;
-  }
-
-  return { notes_added, contacts_added };
 }
 
 // ── Stage helpers ─────────────────────────────────────────
@@ -219,7 +123,179 @@ serve(async function(req) {
     });
   }
 
-  // PER-DEAL CONTACTS + ACTIVITIES SYNC (manual "Sync notes & contacts" button)
+  // PER-DEAL NOTES SYNC — pulls HubSpot notes/meetings for one deal on demand
+  // ── Push a passport briefing to PlanHat ───────────────────────
+  // Creates the company if missing (matched by name), then attaches
+  // the briefing as a conversation. Dormant until PLANHAT_TOKEN is set.
+  // ── Push an MVP image (QC entry) to the Notion "FF Sample Image Ammo" DB ──
+  // Dormant until NOTION_TOKEN + NOTION_MVP_DB_ID secrets are set.
+  if (body.action === "push_mvp_to_notion") {
+    const notionToken = Deno.env.get("NOTION_TOKEN");
+    const dbId = Deno.env.get("NOTION_MVP_DB_ID");
+    if (!notionToken || !dbId) {
+      return new Response(JSON.stringify({ ok: false, error: "Notion not configured — NOTION_TOKEN / NOTION_MVP_DB_ID not set yet." }), {
+        status: 400, headers: Object.assign({}, CORS, { "Content-Type": "application/json" }),
+      });
+    }
+    const qcId = body.qc_id;
+    if (!qcId) {
+      return new Response(JSON.stringify({ ok: false, error: "qc_id required" }), {
+        status: 400, headers: Object.assign({}, CORS, { "Content-Type": "application/json" }),
+      });
+    }
+    const { data: qc } = await sb.from("quality_checks").select("*").eq("id", qcId).single();
+    if (!qc) {
+      return new Response(JSON.stringify({ ok: false, error: "QC entry not found" }), {
+        status: 404, headers: Object.assign({}, CORS, { "Content-Type": "application/json" }),
+      });
+    }
+    // Map QC fields → FF Sample Image Ammo properties. Property names must match
+    // the Notion DB exactly; adjust here if the DB columns differ.
+    const props = {
+      "Use Case": { title: [{ text: { content: qc.usecase || qc.organization || "MVP image" } }] },
+      "Location": { rich_text: [{ text: { content: qc.location || "" } }] },
+      "Version": { rich_text: [{ text: { content: qc.image_id || "" } }] },
+    };
+    try {
+      const r = await fetch("https://api.notion.com/v1/pages", {
+        method: "POST",
+        headers: {
+          "Authorization": "Bearer " + notionToken,
+          "Content-Type": "application/json",
+          "Notion-Version": "2022-06-28",
+        },
+        body: JSON.stringify({ parent: { database_id: dbId }, properties: props }),
+      });
+      const data = await r.json();
+      if (!r.ok) {
+        return new Response(JSON.stringify({ ok: false, error: data.message || "Notion API error" }), {
+          status: 502, headers: Object.assign({}, CORS, { "Content-Type": "application/json" }),
+        });
+      }
+      await sb.from("quality_checks").update({ notion_page_id: data.id, synced_to_notion_at: new Date().toISOString() }).eq("id", qcId);
+      return new Response(JSON.stringify({ ok: true, notion_page_id: data.id }), {
+        headers: Object.assign({}, CORS, { "Content-Type": "application/json" }),
+      });
+    } catch (e) {
+      return new Response(JSON.stringify({ ok: false, error: String(e) }), {
+        status: 502, headers: Object.assign({}, CORS, { "Content-Type": "application/json" }),
+      });
+    }
+  }
+
+  if (body.action === "push_to_planhat") {
+    const phToken = Deno.env.get("PLANHAT_TOKEN");
+    const phTenant = Deno.env.get("PLANHAT_TENANT"); // e.g. "api" or a tenant-specific host
+    if (!phToken) {
+      return new Response(JSON.stringify({ ok: false, error: "PlanHat not configured — PLANHAT_TOKEN secret not set. Ask the CS team for an API token." }), {
+        status: 400, headers: Object.assign({}, CORS, { "Content-Type": "application/json" }),
+      });
+    }
+    const passportId = body.passport_id;
+    if (!passportId) {
+      return new Response(JSON.stringify({ ok: false, error: "passport_id required" }), {
+        status: 400, headers: Object.assign({}, CORS, { "Content-Type": "application/json" }),
+      });
+    }
+    const PH_BASE = "https://api.planhat.com";
+    const phHeaders = { "Authorization": "Bearer " + phToken, "Content-Type": "application/json" };
+
+    // Load the full passport + children
+    const { data: pp } = await sb.from("handover_passports").select("*").eq("id", passportId).single();
+    if (!pp) {
+      return new Response(JSON.stringify({ ok: false, error: "Passport not found" }), {
+        status: 404, headers: Object.assign({}, CORS, { "Content-Type": "application/json" }),
+      });
+    }
+    const companyName = pp.company || pp.hubspot_deal_name || "Unknown";
+
+    // 1. Find company by name
+    let companyId = null;
+    try {
+      const findRes = await fetch(PH_BASE + "/companies?" + new URLSearchParams({ name: companyName }), { headers: phHeaders });
+      const found = await findRes.json().catch(() => []);
+      if (Array.isArray(found) && found.length) {
+        // Exact (case-insensitive) name match preferred
+        const exact = found.find(c => (c.name || "").toLowerCase().trim() === companyName.toLowerCase().trim());
+        companyId = (exact || found[0])._id;
+      }
+    } catch (e) { console.error("PlanHat find error", e); }
+
+    // 2. Create company if missing
+    if (!companyId) {
+      try {
+        const createRes = await fetch(PH_BASE + "/companies", {
+          method: "POST", headers: phHeaders,
+          body: JSON.stringify({
+            name: companyName,
+            externalId: pp.hubspot_deal_id ? "hs_" + pp.hubspot_deal_id : undefined,
+          }),
+        });
+        const created = await createRes.json().catch(() => ({}));
+        companyId = created._id;
+      } catch (e) { console.error("PlanHat create error", e); }
+    }
+    if (!companyId) {
+      return new Response(JSON.stringify({ ok: false, error: "Could not find or create the PlanHat company" }), {
+        status: 502, headers: Object.assign({}, CORS, { "Content-Type": "application/json" }),
+      });
+    }
+
+    // 3. Build the briefing text
+    const lines = [];
+    lines.push("CUSTOMER PASSPORT — " + companyName);
+    lines.push("Pipeline: " + (pp.pipeline || "—") + " · Stage: " + (pp.hubspot_stage || "—"));
+    lines.push("Sales Owner: " + (pp.owner_director || "—") + " · SE: " + (pp.owner_se || "—") + " · CS: " + (pp.owner_cs || "—"));
+    lines.push("");
+    if (pp.use_case) lines.push("Use case: " + pp.use_case);
+    if (pp.pain_points) lines.push("Pain points: " + pp.pain_points);
+    if (pp.problem_statement) lines.push("Problem: " + pp.problem_statement);
+    if (pp.objectives && pp.objectives.length) lines.push("Objectives: " + pp.objectives.join("; "));
+    if (pp.success_criteria && pp.success_criteria.length) lines.push("Success criteria: " + pp.success_criteria.join("; "));
+    if (pp.bandset) lines.push("Bandset: " + pp.bandset);
+    if (pp.next_steps) lines.push("Next steps: " + pp.next_steps);
+    if (pp.commercial_model) lines.push("Commercial: " + pp.commercial_model);
+    const briefing = lines.join("\n");
+
+    // 4. Attach as a conversation on the company
+    try {
+      const convRes = await fetch(PH_BASE + "/conversations", {
+        method: "POST", headers: phHeaders,
+        body: JSON.stringify({
+          companyId: companyId,
+          type: "note",
+          subject: "Customer Passport handover — " + companyName,
+          description: briefing,
+          date: new Date().toISOString(),
+        }),
+      });
+      const conv = await convRes.json().catch(() => ({}));
+      return new Response(JSON.stringify({ ok: convRes.ok, company_id: companyId, conversation_id: conv._id || null, created_company: !body._existed }), {
+        headers: Object.assign({}, CORS, { "Content-Type": "application/json" }),
+      });
+    } catch (e) {
+      return new Response(JSON.stringify({ ok: false, error: "Briefing attach failed: " + String(e), company_id: companyId }), {
+        status: 502, headers: Object.assign({}, CORS, { "Content-Type": "application/json" }),
+      });
+    }
+  }
+
+  if (body.action === "debug_assoc") {
+    const dealId = body.hubspot_deal_id;
+    const v3notes = await hsGet("/crm/v3/objects/deals/" + dealId + "/associations/notes", token).catch(e => ({ error: String(e) }));
+    const v4notes = await hsGet("/crm/v4/objects/deals/" + dealId + "/associations/notes", token).catch(e => ({ error: String(e) }));
+    const v4meetings = await hsGet("/crm/v4/objects/deals/" + dealId + "/associations/meetings", token).catch(e => ({ error: String(e) }));
+    const v4contacts = await hsGet("/crm/v4/objects/deals/" + dealId + "/associations/contacts", token).catch(e => ({ error: String(e) }));
+    return new Response(JSON.stringify({
+      v3notes_count: (v3notes.results || []).length,
+      v3notes_sample: (v3notes.results || []).slice(0,2),
+      v4notes_count: (v4notes.results || []).length,
+      v4notes_sample: (v4notes.results || []).slice(0,2),
+      v4meetings_count: (v4meetings.results || []).length,
+      v4contacts_count: (v4contacts.results || []).length,
+    }, null, 2), { headers: Object.assign({}, CORS, { "Content-Type": "application/json" }) });
+  }
+
   if (body.action === "sync_notes_for_deal") {
     const dealId = body.hubspot_deal_id;
     const passportId = body.passport_id;
@@ -228,29 +304,73 @@ serve(async function(req) {
         status: 400, headers: Object.assign({}, CORS, { "Content-Type": "application/json" }),
       });
     }
-    const r = await syncDealNotes(sb, token, dealId, passportId);
-    return new Response(JSON.stringify({ ok: true, notes_added: r.notes_added, contacts_added: r.contacts_added }), {
-      headers: Object.assign({}, CORS, { "Content-Type": "application/json" }),
-    });
-  }
-
-  // BATCH NOTES + CONTACTS SYNC (cron, every :00 / :30) — refreshes every deal.
-  // Runs in the background so the HTTP call returns immediately; each deal is
-  // wrapped in try/catch so one failure doesn't abort the whole run.
-  if (body.action === "sync_all_notes") {
-    const passportsRes = await sb.from("handover_passports").select("id, hubspot_deal_id").not("hubspot_deal_id", "is", null);
-    const list = passportsRes.data || [];
-    const job = (async () => {
-      let ok = 0, failed = 0;
-      for (const p of list) {
-        try { await syncDealNotes(sb, token, p.hubspot_deal_id, p.id); ok++; }
-        catch (e) { failed++; console.error("sync_all_notes: deal " + p.hubspot_deal_id + " failed", e); }
+    // ── Pull HubSpot contacts (sync-safe: never touch app-added ones) ──
+    let contacts_added = 0;
+    try {
+      const existingContactsRes = await sb
+        .from("deal_contacts")
+        .select("hubspot_contact_id")
+        .eq("passport_id", passportId)
+        .not("hubspot_contact_id", "is", null);
+      const seenContacts = new Set((existingContactsRes.data || []).map(r => r.hubspot_contact_id));
+      const cAssoc = await hsGet("/crm/v3/objects/deals/" + dealId + "/associations/contacts", token).catch(() => ({ results: [] }));
+      const contactIds = (cAssoc.results || []).map(a => a.id || a.toObjectId).filter(Boolean).slice(0, 30);
+      for (const cid of contactIds) {
+        if (seenContacts.has(cid)) continue;
+        const contact = await hsGet("/crm/v3/objects/contacts/" + cid + "?properties=firstname,lastname,email,jobtitle", token).catch(() => null);
+        if (!contact || !contact.properties) continue;
+        const pr = contact.properties;
+        const name = ((pr.firstname || "") + " " + (pr.lastname || "")).trim() || pr.email || "Unknown";
+        await sb.from("deal_contacts").insert({
+          passport_id: passportId,
+          name: name,
+          role: pr.jobtitle || null,
+          email: pr.email || null,
+          hubspot_contact_id: cid,
+        });
+        seenContacts.add(cid);
+        contacts_added++;
       }
-      console.log("sync_all_notes complete: " + ok + " ok, " + failed + " failed of " + list.length);
-    })();
-    if (typeof EdgeRuntime !== "undefined" && EdgeRuntime.waitUntil) EdgeRuntime.waitUntil(job);
-    else await job;
-    return new Response(JSON.stringify({ ok: true, started: true, deals: list.length }), {
+    } catch (e) { console.error("Contact pull error", e); }
+
+    // Existing engagement ids for this passport (dedupe)
+    const existingNotesRes = await sb
+      .from("meeting_notes")
+      .select("hs_engagement_id")
+      .eq("passport_id", passportId)
+      .not("hs_engagement_id", "is", null);
+    const seen = new Set((existingNotesRes.data || []).map(r => r.hs_engagement_id));
+
+    let added = 0;
+    // Fetch both notes and meetings associated with the deal
+    for (const objType of ["notes", "meetings"]) {
+      const assoc = await hsGet("/crm/v3/objects/deals/" + dealId + "/associations/" + objType, token).catch(() => ({ results: [] }));
+      const ids = (assoc.results || []).map(a => a.id || a.toObjectId).filter(Boolean).slice(0, 50);
+      for (const eid of ids) {
+        if (seen.has(eid)) continue;
+        let propList, bodyField, dateField;
+        if (objType === "notes") { propList = "hs_note_body,hs_timestamp,hs_createdate"; bodyField = "hs_note_body"; dateField = "hs_timestamp"; }
+        else { propList = "hs_meeting_title,hs_meeting_body,hs_meeting_start_time,hs_timestamp"; bodyField = "hs_meeting_body"; dateField = "hs_meeting_start_time"; }
+        const obj = await hsGet("/crm/v3/objects/" + objType + "/" + eid + "?properties=" + propList, token).catch(() => null);
+        if (!obj || !obj.properties) continue;
+        let raw = obj.properties[bodyField] || "";
+        const title = objType === "meetings" ? (obj.properties.hs_meeting_title || "") : "";
+        let bodyText = String(raw).replace(/<[^>]+>/g, " ").replace(/&nbsp;/g, " ").replace(/&amp;/g, "&").replace(/\s+/g, " ").trim();
+        if (title) bodyText = title + (bodyText ? " — " + bodyText : "");
+        if (!bodyText) continue;
+        const ts = obj.properties[dateField] || obj.properties.hs_timestamp || "";
+        await sb.from("meeting_notes").insert({
+          passport_id: passportId,
+          note_date: ts ? new Date(ts).toISOString().slice(0,10) : null,
+          author: objType === "meetings" ? "HubSpot (meeting)" : "HubSpot (note)",
+          body: bodyText.slice(0, 4000),
+          hs_engagement_id: eid,
+        });
+        seen.add(eid);
+        added++;
+      }
+    }
+    return new Response(JSON.stringify({ ok: true, notes_added: added, contacts_added: contacts_added }), {
       headers: Object.assign({}, CORS, { "Content-Type": "application/json" }),
     });
   }
@@ -434,6 +554,44 @@ serve(async function(req) {
     else synced += chunk.length;
   }
 
+  // ── Archive detection ──────────────────────────────────────────
+  // A passport whose hubspot_deal_id no longer shows up in this sync
+  // (deleted in HubSpot, or moved out of an allowed pipeline) gets
+  // flagged as archived rather than deleted — nothing is ever lost.
+  // If a deal that WAS archived comes back (e.g. pipeline moved back),
+  // it's automatically un-archived on the next sync since it's in `rows`.
+  let archived = 0;
+  let unarchived = 0;
+  try {
+    const liveIds = deals.map(d => d.id);
+    const { data: existingActive } = await sb
+      .from("handover_passports")
+      .select("id,hubspot_deal_id")
+      .eq("archived", false);
+    const toArchive = (existingActive || [])
+      .filter(r => r.hubspot_deal_id && !liveIds.includes(r.hubspot_deal_id))
+      .map(r => r.id);
+    if (toArchive.length) {
+      await sb.from("handover_passports").update({
+        archived: true, archived_at: new Date().toISOString(),
+        archived_reason: "No longer found in HubSpot (deleted or moved out of a tracked pipeline)",
+      }).in("id", toArchive);
+      archived = toArchive.length;
+    }
+    // Un-archive anything that's back in the live set but still flagged
+    const { data: existingArchived } = await sb
+      .from("handover_passports")
+      .select("id,hubspot_deal_id")
+      .eq("archived", true);
+    const toUnarchive = (existingArchived || [])
+      .filter(r => r.hubspot_deal_id && liveIds.includes(r.hubspot_deal_id))
+      .map(r => r.id);
+    if (toUnarchive.length) {
+      await sb.from("handover_passports").update({ archived: false, archived_at: null, archived_reason: null }).in("id", toUnarchive);
+      unarchived = toUnarchive.length;
+    }
+  } catch (e) { console.error("Archive detection error", e); }
+
   // ── Write back app SE assignments to HubSpot PSE field ────────
   let written_back = 0;
   for (const wb of writeBacks) {
@@ -469,6 +627,8 @@ serve(async function(req) {
     ok: true, synced: synced, errors: errors, total: deals.length,
     se_assignments_notified: se_changes.length,
     se_written_back_to_hubspot: written_back,
+    archived: archived,
+    unarchived: unarchived,
     synced_at: new Date().toISOString()
   }), {
     headers: Object.assign({}, CORS, { "Content-Type": "application/json" }),
