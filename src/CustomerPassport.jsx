@@ -4,7 +4,7 @@ import {
   AlertTriangle, CheckCircle2, Circle, Clock, Paperclip, Send, BarChart3,
   LayoutGrid, Eye, Pencil, ExternalLink, Building2, Mail, Satellite, Layers,
   Activity, TrendingUp, X, Lock, Gauge, AtSign, Plus, Radar, ChevronDown,
-  MessageSquare, Hash, Zap, RefreshCw, CheckCheck, Camera, ListChecks, CalendarClock, Upload, Trash2, UserPlus, Link2, Star
+  MessageSquare, Hash, Zap, RefreshCw, CheckCheck, Camera, ListChecks, CalendarClock, Upload, Trash2, UserPlus, Link2, Star, ArrowRightCircle
 } from "lucide-react";
 import shp from "shpjs";
 import { kml as kmlToGeoJson } from "@tmcw/togeojson";
@@ -1740,9 +1740,9 @@ function DealSearchPicker({ deals, value, onChange }) {
 
 function QcForm({ onSubmit, onCancel, defaultOrg, defaultPassportId, deals }) {
   const [form, setForm] = useState({
-    organization: defaultOrg || "", usecase: "", priority: "Medium", qc_result: "Pass",
+    organization: defaultOrg || "", usecase: "", priority: "Medium", qc_result: "Awaiting QC",
     image_id: "", type: "Sample", assignee: "", qc_notes: "", location: "",
-    mvp_image: false, feedback_milestone: "", passport_id: defaultPassportId || "",
+    mvp_image: false, feedback_milestone: "", qc_required_by: "", passport_id: defaultPassportId || "",
   });
   const [uploading, setUploading] = useState(false);
   const [shotPath, setShotPath] = useState("");
@@ -1752,8 +1752,11 @@ function QcForm({ onSubmit, onCancel, defaultOrg, defaultPassportId, deals }) {
     const assigneePerson = Object.values(TEAM_MEMBERS).flat().find(p => p.name === form.assignee);
     onSubmit({
       ...form,
+      passport_id: form.passport_id || null,   // empty string → null (uuid column)
+      assignee: form.assignee || null,
       assignee_email: assigneePerson ? assigneePerson.email : null,
       feedback_milestone: form.feedback_milestone || null,
+      qc_required_by: form.qc_required_by || null,
       photo_evidence_path: shotPath || null,
       created_by: "You",
     });
@@ -1794,11 +1797,11 @@ function QcForm({ onSubmit, onCancel, defaultOrg, defaultPassportId, deals }) {
         <div>
           <div className="k" style={{ fontFamily:"var(--font-mono)", fontSize:"9.5px", letterSpacing:".1em", textTransform:"uppercase", color:"var(--muted2)", marginBottom:4 }}>Quality Check</div>
           <div style={{ display:"flex", gap:8 }}>
-            {["Pass","Fail"].map(r => (
+            {[["Awaiting QC","#B5720E","#FEF3E0","#F0A429"],["Pass","#1f8a57","#E3F7EC","var(--ok)"],["Fail","#c0392b","#FCE9E7","var(--bad)"]].map(([r,fg,bg,br]) => (
               <button key={r} onClick={() => set("qc_result", r)} type="button"
-                style={{ flex:1, padding:"7px 0", borderRadius:8, border:"1px solid "+(form.qc_result===r ? (r==="Pass"?"var(--ok)":"var(--bad)") : "var(--line)"),
-                  background: form.qc_result===r ? (r==="Pass"?"#E3F7EC":"#FCE9E7") : "transparent",
-                  color: form.qc_result===r ? (r==="Pass"?"#1f8a57":"#c0392b") : "var(--muted)", fontSize:13, fontWeight:600, cursor:"pointer" }}>{r}</button>
+                style={{ flex:1, padding:"7px 4px", borderRadius:8, border:"1px solid "+(form.qc_result===r ? br : "var(--line)"),
+                  background: form.qc_result===r ? bg : "transparent",
+                  color: form.qc_result===r ? fg : "var(--muted)", fontSize:12.5, fontWeight:600, cursor:"pointer", whiteSpace:"nowrap" }}>{r}</button>
             ))}
           </div>
         </div>
@@ -1835,15 +1838,23 @@ function QcForm({ onSubmit, onCancel, defaultOrg, defaultPassportId, deals }) {
           style={{ width:"100%", border:"1px solid var(--line)", borderRadius:9, padding:"9px 12px", fontFamily:"inherit", fontSize:13, resize:"vertical", minHeight:64, outline:"none" }} />
       </div>
       <div className="clog-form-row">
-        <label style={{ display:"flex", alignItems:"center", gap:7, fontSize:12.5, cursor:"pointer" }}>
-          <input type="checkbox" checked={form.mvp_image} onChange={e => set("mvp_image", e.target.checked)} style={{ accentColor:"var(--accent)" }} />
-          MVP image
-        </label>
+        <div>
+          <div className="k" style={{ fontFamily:"var(--font-mono)", fontSize:"9.5px", letterSpacing:".1em", textTransform:"uppercase", color:"var(--muted2)", marginBottom:4 }}>QC required by</div>
+          <input type="date" value={form.qc_required_by} onChange={e => set("qc_required_by", e.target.value)}
+            style={{ width:"100%", border:"1px solid var(--line)", borderRadius:8, padding:"7px 10px", fontFamily:"inherit", fontSize:13, outline:"none" }} />
+        </div>
         <div>
           <div className="k" style={{ fontFamily:"var(--font-mono)", fontSize:"9.5px", letterSpacing:".1em", textTransform:"uppercase", color:"var(--muted2)", marginBottom:4 }}>Feedback milestone</div>
           <input type="date" value={form.feedback_milestone} onChange={e => set("feedback_milestone", e.target.value)}
             style={{ width:"100%", border:"1px solid var(--line)", borderRadius:8, padding:"7px 10px", fontFamily:"inherit", fontSize:13, outline:"none" }} />
         </div>
+      </div>
+      <div className="clog-form-row">
+        <label style={{ display:"flex", alignItems:"center", gap:7, fontSize:12.5, cursor:"pointer" }}>
+          <input type="checkbox" checked={form.mvp_image} onChange={e => set("mvp_image", e.target.checked)} style={{ accentColor:"var(--accent)" }} />
+          MVP image
+        </label>
+        <div></div>
       </div>
       <div style={{ marginBottom:10 }}>
         <div className="k" style={{ fontFamily:"var(--font-mono)", fontSize:"9.5px", letterSpacing:".1em", textTransform:"uppercase", color:"var(--muted2)", marginBottom:4 }}>Photo evidence</div>
@@ -1874,7 +1885,7 @@ function QcRow({ row, canEdit, onDelete, showOrg }) {
     <tr>
       {showOrg && <td style={{ fontWeight:600 }}>{row.organization}</td>}
       <td>{row.usecase || "—"}</td>
-      <td><span className={`tag ${row.qc_result === "Pass" ? "" : ""}`} style={{ background: row.qc_result === "Pass" ? "#E3F7EC" : "#FCE9E7", color: row.qc_result === "Pass" ? "#1f8a57" : "#c0392b", fontWeight:600 }}>{row.qc_result}</span></td>
+      <td><span className="tag" style={{ background: row.qc_result === "Pass" ? "#E3F7EC" : row.qc_result === "Fail" ? "#FCE9E7" : "#FEF3E0", color: row.qc_result === "Pass" ? "#1f8a57" : row.qc_result === "Fail" ? "#c0392b" : "#B5720E", fontWeight:600 }}>{row.qc_result}</span></td>
       <td style={{ fontFamily:"var(--font-mono)", fontSize:12 }}>{row.image_id || "—"}</td>
       <td><span className="tag" style={{ background: row.type === "Paid" ? "var(--accent-soft)" : "var(--line-soft)", color: row.type === "Paid" ? "var(--accent-deep)" : "var(--muted)" }}>{row.type}</span></td>
       <td>{row.assignee || "—"}</td>
@@ -1912,17 +1923,19 @@ function QualityChecksGlobal({ deals, canEdit, onOpen, toast }) {
   const filtered = filter === "all" ? rows : rows.filter(r => r.qc_result === filter);
   const passCount = rows.filter(r => r.qc_result === "Pass").length;
   const failCount = rows.filter(r => r.qc_result === "Fail").length;
+  const awaitingCount = rows.filter(r => r.qc_result === "Awaiting QC").length;
 
   return (
     <div className="cp-page-inner">
       <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom: 18, flexWrap:"wrap", gap:10 }}>
         <div>
           <h2 className="section-title" style={{ marginBottom: 2 }}>Quality Checks</h2>
-          <div style={{ fontSize:13, color:"var(--muted)" }}>{rows.length} entries · {passCount} pass · {failCount} fail</div>
+          <div style={{ fontSize:13, color:"var(--muted)" }}>{rows.length} entries · {awaitingCount} awaiting · {passCount} pass · {failCount} fail</div>
         </div>
         <div style={{ display:"flex", gap:8, alignItems:"center" }}>
           <div className="seg">
             <button className={filter==="all"?"on":""} onClick={() => setFilter("all")}>All</button>
+            <button className={filter==="Awaiting QC"?"on":""} onClick={() => setFilter("Awaiting QC")}>Awaiting</button>
             <button className={filter==="Pass"?"on":""} onClick={() => setFilter("Pass")}>Pass</button>
             <button className={filter==="Fail"?"on":""} onClick={() => setFilter("Fail")}>Fail</button>
           </div>
@@ -1998,17 +2011,20 @@ function QcTab({ d, canEdit, toast }) {
 }
 
 // MVP Images — QC entries flagged as MVP for this deal, with Notion push
-function MvpImagesTab({ d, canEdit, toast }) {
+function MvpImagesGlobal({ deals, canEdit, onOpen, toast }) {
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [pushing, setPushing] = useState(null); // id being pushed
+  const [pushing, setPushing] = useState(null);
+
+  const dealById = {};
+  (deals || []).forEach(d => { dealById[d.id] = d; });
 
   const load = async () => {
     setLoading(true);
-    try { setRows(await sbGet("quality_checks", `?passport_id=eq.${d.id}&mvp_image=eq.true&order=created_at.desc`)); }
+    try { setRows(await sbGet("quality_checks", `?mvp_image=eq.true&order=created_at.desc&limit=500`)); }
     finally { setLoading(false); }
   };
-  useEffect(() => { load(); }, [d.id]);
+  useEffect(() => { load(); }, []);
 
   const pushToNotion = async (row) => {
     setPushing(row.id);
@@ -2026,48 +2042,66 @@ function MvpImagesTab({ d, canEdit, toast }) {
   };
 
   return (
-    <Block icon={Star} title="MVP Images">
-      <div style={{ fontSize: 12.5, color: "var(--muted)", marginBottom: 14 }}>
-        Images flagged as MVP in the Quality Checks tab show here. Push the best ones to the <strong>FF Sample Image Ammo</strong> database in Notion to share with the wider team.
+    <div className="cp-page-inner">
+      <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom: 6, flexWrap:"wrap", gap:10 }}>
+        <div>
+          <h2 className="section-title" style={{ marginBottom: 2 }}>MVP Images</h2>
+          <div style={{ fontSize:13, color:"var(--muted)" }}>{rows.length} image{rows.length !== 1 ? "s" : ""} flagged as MVP across all deals</div>
+        </div>
       </div>
+      <div style={{ fontSize:12.5, color:"var(--muted)", marginBottom:16 }}>
+        Any Quality Check entry with "MVP image" ticked appears here automatically. Push the best ones to the <strong>FF Sample Image Ammo</strong> database in Notion to share with the wider team.
+      </div>
+
       {loading ? <div className="empty"><RefreshCw size={15} className="spin" /> Loading…</div> : (
         rows.length ? (
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))", gap: 14 }}>
-            {rows.map(r => (
-              <div key={r.id} style={{ border: "1px solid var(--line)", borderRadius: 12, overflow: "hidden", background: "#fff" }}>
-                {r.photo_evidence_path ? (
-                  <a href={`${SUPABASE_URL}/storage/v1/object/public/${STORAGE_BUCKET}/${r.photo_evidence_path}`} target="_blank" rel="noreferrer">
-                    <img src={`${SUPABASE_URL}/storage/v1/object/public/${STORAGE_BUCKET}/${r.photo_evidence_path}`}
-                      alt={r.image_id || r.organization} style={{ width: "100%", height: 150, objectFit: "cover", display: "block", background: "var(--line-soft)" }} />
-                  </a>
-                ) : (
-                  <div style={{ width: "100%", height: 150, display: "flex", alignItems: "center", justifyContent: "center", background: "var(--line-soft)", color: "var(--muted2)" }}>
-                    <Camera size={28} />
-                  </div>
-                )}
-                <div style={{ padding: "11px 13px" }}>
-                  <div style={{ display: "flex", alignItems: "center", gap: 7, marginBottom: 5 }}>
-                    <Star size={13} color="#F0A429" fill="#F0A429" />
-                    <span style={{ fontSize: 13, fontWeight: 600 }}>{r.image_id || "—"}</span>
-                    <span className="tag" style={{ marginLeft: "auto", background: r.qc_result === "Pass" ? "#E3F7EC" : "#FCE9E7", color: r.qc_result === "Pass" ? "#1f8a57" : "#c0392b", fontSize: 11 }}>{r.qc_result}</span>
-                  </div>
-                  <div style={{ fontSize: 12, color: "var(--muted)" }}>{r.usecase || "—"}</div>
-                  {r.location && <div style={{ fontSize: 11.5, color: "var(--muted2)", marginTop: 2 }}><MapPin size={10} style={{ display: "inline", marginRight: 3 }} />{r.location}</div>}
-                  {canEdit && (
-                    <button onClick={() => pushToNotion(r)} disabled={pushing === r.id}
-                      style={{ marginTop: 10, width: "100%", display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 6, padding: "7px 0", borderRadius: 8, border: "1px solid var(--line)", background: r.notion_page_id ? "var(--line-soft)" : "#fff", color: r.notion_page_id ? "var(--muted)" : "var(--accent-deep)", fontSize: 12, fontWeight: 500, cursor: pushing === r.id ? "wait" : "pointer" }}>
-                      {pushing === r.id ? <><RefreshCw size={12} className="spin" /> Pushing…</>
-                        : r.notion_page_id ? <><CheckCircle2 size={12} /> In Notion</>
-                        : <><ExternalLink size={12} /> Push to Notion</>}
-                    </button>
-                  )}
-                </div>
-              </div>
-            ))}
+          <div style={{ overflowX: "auto", background:"#fff", border:"1px solid var(--line)", borderRadius: 14 }}>
+            <table className="qc-table">
+              <thead>
+                <tr>
+                  <th>Thumbnail</th><th>Organization</th><th>Use Case</th><th>Image ID / Version</th>
+                  <th>Type</th><th>QC</th><th>Location</th><th>Deal</th><th>Notion</th>
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map(r => {
+                  const deal = dealById[r.passport_id];
+                  return (
+                    <tr key={r.id}>
+                      <td>
+                        {r.photo_evidence_path ? (
+                          <a href={`${SUPABASE_URL}/storage/v1/object/public/${STORAGE_BUCKET}/${r.photo_evidence_path}`} target="_blank" rel="noreferrer">
+                            <img src={`${SUPABASE_URL}/storage/v1/object/public/${STORAGE_BUCKET}/${r.photo_evidence_path}`}
+                              alt={r.image_id || ""} style={{ width: 46, height: 46, objectFit: "cover", borderRadius: 6, display: "block", background: "var(--line-soft)" }} />
+                          </a>
+                        ) : <div style={{ width:46, height:46, borderRadius:6, background:"var(--line-soft)", display:"flex", alignItems:"center", justifyContent:"center", color:"var(--muted2)" }}><Camera size={16} /></div>}
+                      </td>
+                      <td style={{ fontWeight: 600 }}>{r.organization}</td>
+                      <td>{r.usecase || "—"}</td>
+                      <td style={{ fontFamily:"var(--font-mono)", fontSize:12 }}>{r.image_id || "—"}</td>
+                      <td><span className="tag" style={{ background: r.type === "Paid" ? "var(--accent-soft)" : "var(--line-soft)", color: r.type === "Paid" ? "var(--accent-deep)" : "var(--muted)" }}>{r.type}</span></td>
+                      <td><span className="tag" style={{ background: r.qc_result === "Pass" ? "#E3F7EC" : r.qc_result === "Fail" ? "#FCE9E7" : "#FEF3E0", color: r.qc_result === "Pass" ? "#1f8a57" : r.qc_result === "Fail" ? "#c0392b" : "#B5720E", fontWeight:600 }}>{r.qc_result}</span></td>
+                      <td style={{ fontSize:12, color:"var(--muted)" }}>{r.location || "—"}</td>
+                      <td>{deal ? <button onClick={() => onOpen(deal.id)} style={{ border:"none", background:"none", color:"var(--accent-deep)", cursor:"pointer", fontSize:12.5, padding:0, textDecoration:"underline" }}>{deal.company}</button> : <span style={{ color:"var(--muted2)", fontSize:12 }}>—</span>}</td>
+                      <td>
+                        {canEdit && (
+                          <button onClick={() => pushToNotion(r)} disabled={pushing === r.id}
+                            style={{ display:"inline-flex", alignItems:"center", gap:5, padding:"5px 10px", borderRadius:7, border:"1px solid var(--line)", background: r.notion_page_id ? "var(--line-soft)" : "#fff", color: r.notion_page_id ? "var(--muted)" : "var(--accent-deep)", fontSize:11.5, fontWeight:500, cursor: pushing === r.id ? "wait" : "pointer", whiteSpace:"nowrap" }}>
+                            {pushing === r.id ? <><RefreshCw size={11} className="spin" /> …</>
+                              : r.notion_page_id ? <><CheckCircle2 size={11} /> In Notion</>
+                              : <><ExternalLink size={11} /> Push</>}
+                          </button>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
           </div>
         ) : <div className="empty"><Star size={15} /> No MVP images yet. Tick "MVP image" on a Quality Check entry to add one here.</div>
       )}
-    </Block>
+    </div>
   );
 }
 
@@ -2075,31 +2109,60 @@ function MvpImagesTab({ d, canEdit, toast }) {
 // Independent toggles since the two handovers often happen at different times.
 function HandoverStatus({ d, canEdit, onUpdate }) {
   const h = d.handover || {};
-  const toggle = (team) => {
-    const isOn = team === "cs" ? h.cs : h.analytics;
-    onUpdate({ _handoverToggle: { team, value: !isOn } });
-  };
-  const Pill = ({ team, label, on, at, by }) => (
-    <button onClick={() => canEdit && toggle(team)} disabled={!canEdit}
-      style={{
-        display: "flex", alignItems: "center", gap: 8, padding: "8px 14px", borderRadius: 10,
-        border: "1px solid " + (on ? "var(--ok)" : "var(--line)"),
-        background: on ? "#E3F7EC" : "#fff", cursor: canEdit ? "pointer" : "default",
-        fontSize: 12.5, fontFamily: "inherit",
+  const toggle = (team, isOn) => onUpdate({ _handoverToggle: { team, value: !isOn } });
+
+  const Row = ({ team, label, on, at, by, assignee, accent }) => (
+    <div style={{
+      display: "flex", alignItems: "center", gap: 12, padding: "12px 14px", borderRadius: 12,
+      border: "1px solid " + (on ? "#bfe6cf" : "var(--line)"),
+      background: on ? "#F2FBF6" : "#fff", flex: 1, minWidth: 240,
+    }}>
+      <div style={{
+        width: 34, height: 34, borderRadius: 9, flex: "none", display: "flex", alignItems: "center", justifyContent: "center",
+        background: on ? "#E3F7EC" : "var(--line-soft)",
       }}>
-      {on ? <CheckCircle2 size={15} color="#1f8a57" /> : <Circle size={15} color="var(--muted2)" />}
-      <div style={{ textAlign: "left" }}>
-        <div style={{ fontWeight: 600, color: on ? "#1f8a57" : "var(--ink)" }}>
-          {on ? `Handed to ${label}` : `Not yet handed to ${label}`}
-        </div>
-        {on && at && <div style={{ fontSize: 10.5, color: "var(--muted2)" }}>{new Date(at).toLocaleDateString("en-GB", { day:"2-digit", month:"short", year:"numeric" })}{by ? ` · by ${by}` : ""}</div>}
+        {on ? <CheckCircle2 size={18} color="#1f8a57" /> : <ArrowRightCircle size={18} color={accent} />}
       </div>
-    </button>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: ".07em", textTransform: "uppercase", color: "var(--muted2)" }}>
+          Handover to {label}
+        </div>
+        {on ? (
+          <div style={{ fontSize: 13, fontWeight: 600, color: "#1f8a57" }}>
+            Handed over{assignee ? ` to ${assignee}` : ""}
+            <div style={{ fontSize: 10.5, fontWeight: 400, color: "var(--muted2)" }}>
+              {at ? new Date(at).toLocaleDateString("en-GB", { day:"2-digit", month:"short", year:"numeric" }) : ""}{by ? ` · by ${by}` : ""}
+            </div>
+          </div>
+        ) : (
+          <div style={{ fontSize: 13, fontWeight: 500, color: "var(--ink)" }}>
+            {assignee ? assignee : "Awaiting handover"}
+            <div style={{ fontSize: 10.5, fontWeight: 400, color: "var(--muted2)" }}>Not yet handed over</div>
+          </div>
+        )}
+      </div>
+      {canEdit && (
+        <button onClick={() => toggle(team, on)}
+          style={{
+            flex: "none", padding: "6px 12px", borderRadius: 8, fontSize: 12, fontWeight: 600, cursor: "pointer",
+            border: "1px solid " + (on ? "var(--line)" : accent),
+            background: on ? "#fff" : accent, color: on ? "var(--muted)" : "#fff",
+          }}>
+          {on ? "Undo" : "Mark handed over"}
+        </button>
+      )}
+    </div>
   );
+
   return (
-    <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 18 }}>
-      <Pill team="cs" label="CS" on={h.cs} at={h.csAt} by={h.csBy} />
-      <Pill team="analytics" label="Analytics" on={h.analytics} at={h.analyticsAt} by={h.analyticsBy} />
+    <div style={{ marginBottom: 18 }}>
+      <div style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: ".08em", textTransform: "uppercase", color: "var(--muted2)", marginBottom: 8 }}>
+        Handover status
+      </div>
+      <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
+        <Row team="cs" label="Customer Success" on={h.cs} at={h.csAt} by={h.csBy} assignee={d.owners ? d.owners.cs : null} accent="#E07A2B" />
+        <Row team="analytics" label="Analytics" on={h.analytics} at={h.analyticsAt} by={h.analyticsBy} assignee={d.owners ? d.owners.analytics : null} accent="#7A5AF5" />
+      </div>
     </div>
   );
 }
@@ -2289,7 +2352,7 @@ function Passport({ deal, onBack, canEdit, onUpdate, onAssign, onNotifyAll, onPo
 
       {/* tabs */}
       <div className="cp-tabs">
-        {[["profile", Building2, "Profile"], ["context", Target, "Context"], ["execution", Activity, "Execution"], ["qc", Camera, "Quality Checks"], ["mvp", Star, "MVP Images"], ["notes", FileText, "Notes"], ["feedback", MessageSquare, "Customer Feedback"]].map(([k, Ic, lbl]) => (
+        {[["profile", Building2, "Profile"], ["context", Target, "Context"], ["execution", Activity, "Execution"], ["qc", Camera, "Quality Checks"], ["notes", FileText, "Notes"], ["feedback", MessageSquare, "Customer Feedback"]].map(([k, Ic, lbl]) => (
           <button key={k} className={tab === k ? "on" : ""} onClick={() => setTab(k)}><Ic size={15} />{lbl}</button>
         ))}
       </div>
@@ -2299,7 +2362,6 @@ function Passport({ deal, onBack, canEdit, onUpdate, onAssign, onNotifyAll, onPo
       {tab === "execution" && <ExecutionTab d={deal} canEdit={canEdit} onUpdate={onUpdate} onSaveField={(f,v) => onUpdate({ _fieldUpdate: { field: f, value: v } })} />}
       {tab === "notes" && <NotesTab d={deal} canEdit={canEdit} onUpdate={onUpdate} toast={toast} />}
       {tab === "qc" && <QcTab d={deal} canEdit={canEdit} toast={toast} />}
-      {tab === "mvp" && <MvpImagesTab d={deal} canEdit={canEdit} toast={toast} />}
       {tab === "feedback" && <FeedbackTab d={deal} canEdit={canEdit} onUpdate={onUpdate} toast={toast} />}
     </>
   );
@@ -4609,11 +4671,29 @@ function PassportDetail({ data, onBack, canEdit, onRefresh, onAssign, onNotifyAl
       await onRefresh();
       if (value) {
         const owner = team === "cs" ? p.owner_cs : p.owner_analytics;
-        const sent = owner ? await notifyOwnersOnSlack([owner], {
-          company: p.company, dealId: p.deal_id_display,
-          text: `:incoming_envelope: *${p.company}* has been handed over to ${team === "cs" ? "Customer Success" : "Analytics"}. It's now on your radar.`,
-          by: currentUserName, channelId: slackChannel ? slackChannel.id : undefined, passportId: p.id }) : 0;
-        toast(`Marked as handed to ${team === "cs" ? "CS" : "Analytics"}` + (sent ? ` · ${owner} notified in Slack` : ""));
+        const teamLabel = team === "cs" ? "Customer Success" : "Analytics";
+        let sent = 0;
+        if (owner) {
+          sent = await notifyOwnersOnSlack([owner], {
+            company: p.company, dealId: p.deal_id_display,
+            text: `:incoming_envelope: *${p.company}* has been handed over to ${teamLabel}. It's now on your radar.`,
+            by: currentUserName, channelId: slackChannel ? slackChannel.id : undefined, passportId: p.id });
+          // Also email the owner
+          const person = Object.values(TEAM_MEMBERS).flat().find(x => x.name === owner);
+          if (person && person.email) {
+            fetch(`${SUPABASE_URL}/functions/v1/slack-notify`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json", "Authorization": `Bearer ${SUPABASE_ANON_KEY}` },
+              body: JSON.stringify({
+                event: "mention_email", to_email: person.email,
+                company: p.company, dealId: p.deal_id_display,
+                noteText: `${p.company} has been handed over to ${teamLabel} by ${currentUserName || "the SE"}. It's now on your radar in the Customer Passport.`,
+                mentionedBy: currentUserName || "SE team",
+              }),
+            }).catch(() => {});
+          }
+        }
+        toast(`Marked as handed to ${team === "cs" ? "CS" : "Analytics"}` + (owner ? ` · ${owner} notified (Slack + email)` : ""));
       }
       return;
     }
@@ -5239,6 +5319,9 @@ function AppMain({ currentUser, canEdit, onSignOut }) {
           <button className={view === "qc" ? "on" : ""} onClick={() => { setView("qc"); closePassport(); }}>
             <Camera size={15} /> Quality Checks
           </button>
+          <button className={view === "mvp" ? "on" : ""} onClick={() => { setView("mvp"); closePassport(); }}>
+            <Star size={15} /> MVP Images
+          </button>
         </div>
         <div className="cp-spacer" />
 
@@ -5375,7 +5458,9 @@ function AppMain({ currentUser, canEdit, onSignOut }) {
             ? <DashboardLive deals={deals} onOpen={openPassport} />
             : view === "qc"
               ? <QualityChecksGlobal deals={deals} canEdit={canEdit} onOpen={openPassport} toast={toast} />
-              : <DealListLive
+              : view === "mvp"
+                ? <MvpImagesGlobal deals={deals} canEdit={canEdit} onOpen={openPassport} toast={toast} />
+                : <DealListLive
                 deals={deals}
                 loading={loading}
                 onOpen={openPassport}

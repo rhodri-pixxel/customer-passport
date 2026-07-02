@@ -282,17 +282,41 @@ serve(async function(req) {
 
   if (body.action === "debug_assoc") {
     const dealId = body.hubspot_deal_id;
-    const v3notes = await hsGet("/crm/v3/objects/deals/" + dealId + "/associations/notes", token).catch(e => ({ error: String(e) }));
-    const v4notes = await hsGet("/crm/v4/objects/deals/" + dealId + "/associations/notes", token).catch(e => ({ error: String(e) }));
-    const v4meetings = await hsGet("/crm/v4/objects/deals/" + dealId + "/associations/meetings", token).catch(e => ({ error: String(e) }));
-    const v4contacts = await hsGet("/crm/v4/objects/deals/" + dealId + "/associations/contacts", token).catch(e => ({ error: String(e) }));
+    // Check every activity type directly on the deal
+    const types = ["notes", "meetings", "calls", "emails", "tasks"];
+    const dealAssoc = {};
+    for (const t of types) {
+      const r = await hsGet("/crm/v4/objects/deals/" + dealId + "/associations/" + t, token).catch(e => ({ error: String(e) }));
+      dealAssoc[t] = (r.results || []).length;
+    }
+    // Get the associated contact(s), then check activities on the first contact
+    const contacts = await hsGet("/crm/v4/objects/deals/" + dealId + "/associations/contacts", token).catch(() => ({ results: [] }));
+    const contactIds = (contacts.results || []).map(a => a.toObjectId || a.id).filter(Boolean);
+    const contactActivity = {};
+    if (contactIds.length) {
+      const cid = contactIds[0];
+      for (const t of types) {
+        const r = await hsGet("/crm/v4/objects/contacts/" + cid + "/associations/" + t, token).catch(e => ({ error: String(e) }));
+        contactActivity[t] = (r.results || []).length;
+      }
+    }
+    // Also check the associated company's activities
+    const companies = await hsGet("/crm/v4/objects/deals/" + dealId + "/associations/companies", token).catch(() => ({ results: [] }));
+    const companyIds = (companies.results || []).map(a => a.toObjectId || a.id).filter(Boolean);
+    const companyActivity = {};
+    if (companyIds.length) {
+      const coid = companyIds[0];
+      for (const t of types) {
+        const r = await hsGet("/crm/v4/objects/companies/" + coid + "/associations/" + t, token).catch(e => ({ error: String(e) }));
+        companyActivity[t] = (r.results || []).length;
+      }
+    }
     return new Response(JSON.stringify({
-      v3notes_count: (v3notes.results || []).length,
-      v3notes_sample: (v3notes.results || []).slice(0,2),
-      v4notes_count: (v4notes.results || []).length,
-      v4notes_sample: (v4notes.results || []).slice(0,2),
-      v4meetings_count: (v4meetings.results || []).length,
-      v4contacts_count: (v4contacts.results || []).length,
+      deal_activities: dealAssoc,
+      contact_count: contactIds.length,
+      contact_activities: contactActivity,
+      company_count: companyIds.length,
+      company_activities: companyActivity,
     }, null, 2), { headers: Object.assign({}, CORS, { "Content-Type": "application/json" }) });
   }
 
@@ -342,27 +366,61 @@ serve(async function(req) {
     const seen = new Set((existingNotesRes.data || []).map(r => r.hs_engagement_id));
 
     let added = 0;
-    // Fetch both notes and meetings associated with the deal
-    for (const objType of ["notes", "meetings"]) {
-      const assoc = await hsGet("/crm/v3/objects/deals/" + dealId + "/associations/" + objType, token).catch(() => ({ results: [] }));
-      const ids = (assoc.results || []).map(a => a.id || a.toObjectId).filter(Boolean).slice(0, 50);
-      for (const eid of ids) {
+
+    // HubSpot's "All activities" view aggregates engagements across the deal
+    // AND its associated contacts and companies. Activities are frequently
+    // logged on the contact/company rather than the deal itself, so we gather
+    // from all three record types.
+    const activityTypes = ["notes", "meetings", "calls", "emails"];
+
+    // Build the full set of records to scan: the deal, plus associated contacts + companies
+    const records = [{ type: "deals", id: dealId }];
+    try {
+      const cAssoc2 = await hsGet("/crm/v4/objects/deals/" + dealId + "/associations/contacts", token).catch(() => ({ results: [] }));
+      for (const a of (cAssoc2.results || [])) {
+        const id = a.toObjectId || a.id;
+        if (id) records.push({ type: "contacts", id: String(id) });
+      }
+      const coAssoc = await hsGet("/crm/v4/objects/deals/" + dealId + "/associations/companies", token).catch(() => ({ results: [] }));
+      for (const a of (coAssoc.results || [])) {
+        const id = a.toObjectId || a.id;
+        if (id) records.push({ type: "companies", id: String(id) });
+      }
+    } catch (e) { console.error("assoc gather error", e); }
+
+    // Property sets + field mapping per activity type
+    const typeConfig = {
+      notes: { props: "hs_note_body,hs_timestamp,hs_createdate", body: "hs_note_body", date: "hs_timestamp", label: "note" },
+      meetings: { props: "hs_meeting_title,hs_meeting_body,hs_meeting_start_time,hs_timestamp", body: "hs_meeting_body", date: "hs_meeting_start_time", label: "meeting", title: "hs_meeting_title" },
+      calls: { props: "hs_call_title,hs_call_body,hs_timestamp,hs_createdate", body: "hs_call_body", date: "hs_timestamp", label: "call", title: "hs_call_title" },
+      emails: { props: "hs_email_subject,hs_email_text,hs_timestamp,hs_createdate", body: "hs_email_text", date: "hs_timestamp", label: "email", title: "hs_email_subject" },
+    };
+
+    // Collect unique engagement ids per type across all records (dedupe within this run too)
+    for (const objType of activityTypes) {
+      const cfg = typeConfig[objType];
+      const engagementIds = new Set();
+      for (const rec of records) {
+        const assoc = await hsGet("/crm/v4/objects/" + rec.type + "/" + rec.id + "/associations/" + objType, token).catch(() => ({ results: [] }));
+        for (const a of (assoc.results || [])) {
+          const id = a.toObjectId || a.id;
+          if (id) engagementIds.add(String(id));
+        }
+      }
+      for (const eid of engagementIds) {
         if (seen.has(eid)) continue;
-        let propList, bodyField, dateField;
-        if (objType === "notes") { propList = "hs_note_body,hs_timestamp,hs_createdate"; bodyField = "hs_note_body"; dateField = "hs_timestamp"; }
-        else { propList = "hs_meeting_title,hs_meeting_body,hs_meeting_start_time,hs_timestamp"; bodyField = "hs_meeting_body"; dateField = "hs_meeting_start_time"; }
-        const obj = await hsGet("/crm/v3/objects/" + objType + "/" + eid + "?properties=" + propList, token).catch(() => null);
+        const obj = await hsGet("/crm/v3/objects/" + objType + "/" + eid + "?properties=" + cfg.props, token).catch(() => null);
         if (!obj || !obj.properties) continue;
-        let raw = obj.properties[bodyField] || "";
-        const title = objType === "meetings" ? (obj.properties.hs_meeting_title || "") : "";
+        const raw = obj.properties[cfg.body] || "";
+        const title = cfg.title ? (obj.properties[cfg.title] || "") : "";
         let bodyText = String(raw).replace(/<[^>]+>/g, " ").replace(/&nbsp;/g, " ").replace(/&amp;/g, "&").replace(/\s+/g, " ").trim();
         if (title) bodyText = title + (bodyText ? " — " + bodyText : "");
         if (!bodyText) continue;
-        const ts = obj.properties[dateField] || obj.properties.hs_timestamp || "";
+        const ts = obj.properties[cfg.date] || obj.properties.hs_timestamp || obj.properties.hs_createdate || "";
         await sb.from("meeting_notes").insert({
           passport_id: passportId,
           note_date: ts ? new Date(ts).toISOString().slice(0,10) : null,
-          author: objType === "meetings" ? "HubSpot (meeting)" : "HubSpot (note)",
+          author: "HubSpot (" + cfg.label + ")",
           body: bodyText.slice(0, 4000),
           hs_engagement_id: eid,
         });
