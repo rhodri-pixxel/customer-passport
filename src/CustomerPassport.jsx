@@ -2041,6 +2041,48 @@ function MvpImagesGlobal({ deals, canEdit, onOpen, toast }) {
     finally { setPushing(null); }
   };
 
+  // Export the MVP table as a CSV shaped for the Notion "FF Sample Image Ammo"
+  // database. Columns mirror that database so it imports/merges cleanly.
+  const downloadCsv = () => {
+    // CSV-escape: wrap in quotes, double any internal quotes
+    const esc = (v) => {
+      const s = (v === null || v === undefined) ? "" : String(v);
+      return `"${s.replace(/"/g, '""')}"`;
+    };
+    const headers = ["Region","Bandset","Industry","Use Case","Date of capture","Location","Version","Organization","QC Result","Type","Assignee","QC Notes","Evidence URL"];
+    const lines = [headers.map(esc).join(",")];
+    for (const r of rows) {
+      const deal = dealById[r.passport_id];
+      const evidenceUrl = r.photo_evidence_path ? `${SUPABASE_URL}/storage/v1/object/public/${STORAGE_BUCKET}/${r.photo_evidence_path}` : "";
+      const dateStr = r.created_at ? new Date(r.created_at).toLocaleDateString("en-GB", { day:"2-digit", month:"long", year:"numeric" }) : "";
+      lines.push([
+        "",                       // Region — fill on import
+        "",                       // Bandset — fill on import
+        "",                       // Industry — fill on import
+        r.usecase || "",          // Use Case
+        dateStr,                  // Date of capture (QC entry date)
+        r.location || "",         // Location
+        r.image_id || "",         // Version / Image ID
+        r.organization || (deal ? deal.company : ""),
+        r.qc_result || "",
+        r.type || "",
+        r.assignee || "",
+        r.qc_notes || "",
+        evidenceUrl,
+      ].map(esc).join(","));
+    }
+    const blob = new Blob(["\uFEFF" + lines.join("\r\n")], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `mvp-images-${new Date().toISOString().slice(0,10)}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    toast("CSV downloaded — import it into Notion via Import → CSV");
+  };
+
   return (
     <div className="cp-page-inner">
       <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom: 6, flexWrap:"wrap", gap:10 }}>
@@ -2048,9 +2090,14 @@ function MvpImagesGlobal({ deals, canEdit, onOpen, toast }) {
           <h2 className="section-title" style={{ marginBottom: 2 }}>MVP Images</h2>
           <div style={{ fontSize:13, color:"var(--muted)" }}>{rows.length} image{rows.length !== 1 ? "s" : ""} flagged as MVP across all deals</div>
         </div>
+        {rows.length > 0 && (
+          <button className="btn ghost" onClick={downloadCsv}>
+            <Download size={14} /> Download CSV for Notion
+          </button>
+        )}
       </div>
       <div style={{ fontSize:12.5, color:"var(--muted)", marginBottom:16 }}>
-        Any Quality Check entry with "MVP image" ticked appears here automatically. Push the best ones to the <strong>FF Sample Image Ammo</strong> database in Notion to share with the wider team.
+        Any Quality Check entry with "MVP image" ticked appears here automatically. Use <strong>Download CSV for Notion</strong> to export this table, then in Notion open the FF Sample Image Ammo database and choose <strong>•••  →  Merge with CSV</strong> (or Import → CSV) to pull these in.
       </div>
 
       {loading ? <div className="empty"><RefreshCw size={15} className="spin" /> Loading…</div> : (

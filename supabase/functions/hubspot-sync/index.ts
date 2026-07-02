@@ -241,7 +241,47 @@ serve(async function(req) {
       });
     }
 
-    // 3. Build the briefing text
+    // 3. Build a rich HTML summary document and store it in Supabase Storage
+    //    so PlanHat can link to a real, openable/printable file.
+    const esc = (s) => String(s == null ? "" : s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+    const listHtml = (arr) => (arr && arr.length) ? "<ul>" + arr.map(x => "<li>" + esc(x) + "</li>").join("") + "</ul>" : "<p style='color:#8a93a0'>—</p>";
+
+    const summaryHtml = "<!doctype html><html><head><meta charset='utf-8'><title>" + esc(companyName) + " — Customer Passport</title>" +
+      "<style>*{box-sizing:border-box}body{font-family:-apple-system,Segoe UI,Roboto,sans-serif;color:#1a2230;margin:0;padding:40px;line-height:1.55;max-width:820px}" +
+      ".bar{height:4px;background:linear-gradient(90deg,#7B2FBE,#2D7FF9,#0EA5B7,#2FB67A,#F0A429,#E5564B);margin:-40px -40px 28px}" +
+      "h1{font-size:23px;margin:0 0 4px}.sub{color:#6b7480;font-size:12px;font-family:monospace;margin-bottom:24px}" +
+      "h2{font-size:12.5px;text-transform:uppercase;letter-spacing:.08em;color:#0B7E8C;border-bottom:1px solid #e3e8ef;padding-bottom:5px;margin:26px 0 10px}" +
+      "p{margin:6px 0}ul{margin:6px 0;padding-left:20px}.kv{font-size:14px}.print{margin-top:30px;font-size:11px;color:#8a93a0}" +
+      "@media print{.noprint{display:none}}</style></head><body>" +
+      "<div class='bar'></div>" +
+      "<h1>" + esc(companyName) + "</h1>" +
+      "<div class='sub'>Customer Passport handover · " + esc(pp.pipeline || "") + " · " + new Date().toLocaleDateString("en-GB", {day:"2-digit",month:"long",year:"numeric"}) + "</div>" +
+      "<div class='noprint' style='background:#f4f6f9;border-radius:8px;padding:10px 14px;font-size:12.5px;color:#5b6472;margin-bottom:20px'>Tip: use your browser's Print → Save as PDF to keep a copy.</div>" +
+      "<h2>Owners</h2><p class='kv'>Sales Owner: <strong>" + esc(pp.owner_director || "—") + "</strong> &nbsp;·&nbsp; SE: <strong>" + esc(pp.owner_se || "—") + "</strong> &nbsp;·&nbsp; CS: <strong>" + esc(pp.owner_cs || "—") + "</strong> &nbsp;·&nbsp; Analytics: <strong>" + esc(pp.owner_analytics || "—") + "</strong></p>" +
+      "<p class='kv'>Stage: " + esc(pp.hubspot_stage || "—") + (pp.hubspot_amount ? " &nbsp;·&nbsp; ACV: $" + Number(pp.hubspot_amount).toLocaleString() : "") + "</p>" +
+      (pp.use_case ? "<h2>Use case</h2><p>" + esc(pp.use_case) + "</p>" : "") +
+      (pp.pain_points ? "<h2>Pain points</h2><p>" + esc(pp.pain_points) + "</p>" : "") +
+      (pp.problem_statement ? "<h2>Problem statement</h2><p>" + esc(pp.problem_statement) + "</p>" : "") +
+      ((pp.objectives && pp.objectives.length) ? "<h2>Objectives</h2>" + listHtml(pp.objectives) : "") +
+      ((pp.success_criteria && pp.success_criteria.length) ? "<h2>Success criteria</h2>" + listHtml(pp.success_criteria) : "") +
+      (pp.bandset ? "<h2>Technical</h2><p>Bandset: " + esc(pp.bandset) + (pp.cadence ? " &nbsp;·&nbsp; Cadence: " + esc(pp.cadence) : "") + "</p>" : "") +
+      (pp.next_steps ? "<h2>Next steps</h2><p>" + esc(pp.next_steps) + "</p>" : "") +
+      (pp.commercial_model ? "<h2>Commercial model</h2><p>" + esc(pp.commercial_model) + "</p>" : "") +
+      "<p class='print'>Generated from the Pixxel Customer Passport · " + new Date().toISOString().slice(0,10) + "</p>" +
+      "</body></html>";
+
+    // Upload to the public storage bucket
+    let summaryUrl = "https://customer-passport.vercel.app/?deal=" + passportId; // fallback: live passport link
+    try {
+      const path = "planhat-summaries/" + passportId + "-" + Date.now() + ".html";
+      const up = await sb.storage.from("passport-files").upload(path, new Blob([summaryHtml], { type: "text/html" }), { upsert: true, contentType: "text/html" });
+      if (!up.error) {
+        const pub = sb.storage.from("passport-files").getPublicUrl(path);
+        if (pub.data && pub.data.publicUrl) summaryUrl = pub.data.publicUrl;
+      }
+    } catch (e) { console.error("summary upload failed, using live link", e); }
+
+    // 4. Build the note text (summary + link) and attach as a conversation
     const lines = [];
     lines.push("CUSTOMER PASSPORT — " + companyName);
     lines.push("Pipeline: " + (pp.pipeline || "—") + " · Stage: " + (pp.hubspot_stage || "—"));
@@ -255,9 +295,10 @@ serve(async function(req) {
     if (pp.bandset) lines.push("Bandset: " + pp.bandset);
     if (pp.next_steps) lines.push("Next steps: " + pp.next_steps);
     if (pp.commercial_model) lines.push("Commercial: " + pp.commercial_model);
+    lines.push("");
+    lines.push("📄 Full passport summary (open & print to PDF): " + summaryUrl);
     const briefing = lines.join("\n");
 
-    // 4. Attach as a conversation on the company
     try {
       const convRes = await fetch(PH_BASE + "/conversations", {
         method: "POST", headers: phHeaders,
@@ -270,7 +311,7 @@ serve(async function(req) {
         }),
       });
       const conv = await convRes.json().catch(() => ({}));
-      return new Response(JSON.stringify({ ok: convRes.ok, company_id: companyId, conversation_id: conv._id || null, created_company: !body._existed }), {
+      return new Response(JSON.stringify({ ok: convRes.ok, company_id: companyId, conversation_id: conv._id || null, summary_url: summaryUrl }), {
         headers: Object.assign({}, CORS, { "Content-Type": "application/json" }),
       });
     } catch (e) {
