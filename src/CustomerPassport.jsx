@@ -7,6 +7,7 @@ import {
   MessageSquare, Hash, Zap, RefreshCw, CheckCheck, Camera, ListChecks, CalendarClock, Upload, Trash2, UserPlus, Link2, Star, ArrowRightCircle
 } from "lucide-react";
 import shp from "shpjs";
+import proj4 from "proj4";
 import { kml as kmlToGeoJson } from "@tmcw/togeojson";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
@@ -1205,10 +1206,21 @@ function GeoJsonMap({ geojson, onClear, canEdit }) {
   const containerRef = useRef(null);
   const [meta, setMeta] = useState({ features: 0, center: "" });
   const [renderError, setRenderError] = useState(false);
+  const [errMsg, setErrMsg] = useState("");
+
+  // Heal AOIs stored before the projection fix: reproject to lat/lng on display.
+  const healed = useMemo(() => {
+    if (!geojson) return { gj: null, err: "" };
+    try { return { gj: normalizeGeoJson(geojson), err: "" }; }
+    catch (e) { return { gj: null, err: e.message || "Unrecognised coordinate system." }; }
+  }, [geojson]);
 
   useEffect(() => {
-    if (!containerRef.current || !geojson) return;
-    setRenderError(false);
+    if (!containerRef.current) return;
+    setRenderError(false); setErrMsg("");
+    if (healed.err) { setRenderError(true); setErrMsg(healed.err); return; }
+    if (!healed.gj) return;
+    const geojsonNorm = healed.gj;
     // Init map once
     if (!mapRef.current) {
       mapRef.current = L.map(containerRef.current, {
@@ -1222,7 +1234,7 @@ function GeoJsonMap({ geojson, onClear, canEdit }) {
     // Clear previous overlay
     if (map._aoiLayer) { map.removeLayer(map._aoiLayer); }
     try {
-      const layer = L.geoJSON(geojson, {
+      const layer = L.geoJSON(geojsonNorm, {
         style: { color: "#0B7E8C", weight: 2.5, fillColor: "#0EA5B7", fillOpacity: 0.35 },
         pointToLayer: (f, latlng) => L.circleMarker(latlng, { radius: 5, color: "#0B7E8C", fillColor: "#0EA5B7", fillOpacity: 0.8 }),
       });
@@ -1230,7 +1242,7 @@ function GeoJsonMap({ geojson, onClear, canEdit }) {
       map._aoiLayer = layer;
       const bounds = layer.getBounds();
       if (bounds.isValid()) {
-        const feats = geojson.type === "FeatureCollection" ? geojson.features.length : 1;
+        const feats = geojsonNorm.type === "FeatureCollection" ? geojsonNorm.features.length : 1;
         const c = bounds.getCenter();
         setMeta({ features: feats, center: `${c.lat.toFixed(3)}°, ${c.lng.toFixed(3)}°` });
         // The container can report 0×0 if it was hidden (e.g. behind an
@@ -1252,7 +1264,7 @@ function GeoJsonMap({ geojson, onClear, canEdit }) {
       console.error("AOI render error", e);
       setRenderError(true);
     }
-  }, [geojson]);
+  }, [healed]);
 
   // Re-fit whenever the container is resized (e.g. tab becomes visible,
   // window resizes) rather than only once on mount.
@@ -1273,7 +1285,8 @@ function GeoJsonMap({ geojson, onClear, canEdit }) {
   useEffect(() => () => { if (mapRef.current) { mapRef.current.remove(); mapRef.current = null; } }, []);
 
   const downloadAoi = () => {
-    const blob = new Blob([JSON.stringify(geojson, null, 2)], { type: "application/geo+json" });
+    // Export the corrected (WGS84) version when we reprojected; raw otherwise
+    const blob = new Blob([JSON.stringify(healed.gj || geojson, null, 2)], { type: "application/geo+json" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
@@ -1290,7 +1303,7 @@ function GeoJsonMap({ geojson, onClear, canEdit }) {
       {renderError && (
         <div style={{ position:"absolute", inset:0, display:"flex", alignItems:"center", justifyContent:"center", background:"rgba(232,238,242,0.92)", flexDirection:"column", gap:6, color:"var(--muted)", fontSize:12.5, textAlign:"center", padding:16 }}>
           <AlertTriangle size={18} color="var(--warn)" />
-          Couldn't render this AOI's geometry. The file may have an unexpected coordinate format — try re-uploading, or download the raw data below to check it.
+          {errMsg || "Couldn't render this AOI's geometry. The file may have an unexpected coordinate format — try re-uploading, or download the raw data below to check it."}
         </div>
       )}
       <div style={{ position:"absolute", bottom:8, left:8, zIndex:500, background:"rgba(11,18,32,0.78)", color:"#cdd6e3", fontSize:11, padding:"4px 9px", borderRadius:6, fontFamily:"var(--font-mono)", pointerEvents:"none" }}>
@@ -1310,6 +1323,119 @@ function GeoJsonMap({ geojson, onClear, canEdit }) {
       </div>
     </div>
   );
+}
+
+/* ── AOI coordinate normalization ─────────────────────────────────
+   Leaflet expects WGS84 lat/lng. Files exported from GIS tools often
+   arrive in a projected CRS (UTM, Web Mercator, national grids) whose
+   coordinates are metres, not degrees — they plot off the edge of the
+   world. These helpers detect that and reproject to WGS84, both on
+   upload and on display (so already-stored broken AOIs heal themselves). */
+
+// proj4 strings for common projected systems seen in customer files.
+const COMMON_PROJ_DEFS = {
+  "EPSG:3857": "+proj=merc +a=6378137 +b=6378137 +lat_ts=0 +lon_0=0 +x_0=0 +y_0=0 +k=1 +units=m +nadgrids=@null +wktext +no_defs",
+  "EPSG:900913": "+proj=merc +a=6378137 +b=6378137 +lat_ts=0 +lon_0=0 +x_0=0 +y_0=0 +k=1 +units=m +nadgrids=@null +wktext +no_defs",
+  "EPSG:102100": "+proj=merc +a=6378137 +b=6378137 +lat_ts=0 +lon_0=0 +x_0=0 +y_0=0 +k=1 +units=m +nadgrids=@null +wktext +no_defs",
+  "EPSG:31287": "+proj=lcc +lat_0=47.5 +lon_0=13.33333333333333 +lat_1=49 +lat_2=46 +x_0=400000 +y_0=400000 +ellps=bessel +towgs84=577.326,90.129,463.919,5.137,1.474,5.297,2.4232 +units=m +no_defs", // MGI / Austria Lambert
+  "EPSG:25832": "+proj=utm +zone=32 +ellps=GRS80 +towgs84=0,0,0,0,0,0,0 +units=m +no_defs", // ETRS89 / UTM 32N
+  "EPSG:25833": "+proj=utm +zone=33 +ellps=GRS80 +towgs84=0,0,0,0,0,0,0 +units=m +no_defs", // ETRS89 / UTM 33N
+  "EPSG:2154":  "+proj=lcc +lat_0=46.5 +lon_0=3 +lat_1=49 +lat_2=44 +x_0=700000 +y_0=6600000 +ellps=GRS80 +towgs84=0,0,0,0,0,0,0 +units=m +no_defs", // RGF93 / Lambert-93 (France)
+  "EPSG:27700": "+proj=tmerc +lat_0=49 +lon_0=-2 +k=0.9996012717 +x_0=400000 +y_0=-100000 +ellps=airy +towgs84=446.448,-125.157,542.06,0.15,0.247,0.842,-20.489 +units=m +no_defs", // OSGB (UK)
+};
+
+// Extract an EPSG-style code from a GeoJSON `crs` member (legacy but common).
+// Handles "EPSG:32633", "urn:ogc:def:crs:EPSG::32633", "urn:ogc:def:crs:OGC:1.3:CRS84".
+function crsCodeOf(gj) {
+  const name = gj && gj.crs && gj.crs.properties && gj.crs.properties.name;
+  if (!name) return null;
+  if (/CRS84/i.test(name)) return "EPSG:4326";
+  const m = String(name).match(/EPSG[:\s]*:?[:\s]*(\d+)/i);
+  return m ? "EPSG:" + m[1] : null;
+}
+
+// proj4 definition string for a CRS code, or null if already geographic,
+// or undefined if we don't know this code.
+function projDefFor(code) {
+  if (!code) return undefined;
+  if (code === "EPSG:4326") return null; // already lat/lng
+  if (COMMON_PROJ_DEFS[code]) return COMMON_PROJ_DEFS[code];
+  const m = code.match(/^EPSG:32([67])(\d\d)$/); // WGS84 UTM zones 326xx N / 327xx S
+  if (m) {
+    const south = m[1] === "7" ? " +south" : "";
+    return `+proj=utm +zone=${parseInt(m[2], 10)}${south} +datum=WGS84 +units=m +no_defs`;
+  }
+  return undefined;
+}
+
+// Do all coordinates already look like lat/lng degrees?
+function coordsLookGeographic(gj) {
+  let ok = true;
+  const walk = (c) => {
+    if (!ok || !c) return;
+    if (typeof c[0] === "number") { if (Math.abs(c[0]) > 180 || Math.abs(c[1]) > 90) ok = false; }
+    else c.forEach(walk);
+  };
+  const feats = gj.type === "FeatureCollection" ? (gj.features || []) : [gj];
+  feats.forEach(f => { const g = f.geometry || f; if (g && g.coordinates) walk(g.coordinates); });
+  return ok;
+}
+
+// Conservative guess when coords are projected but the file declares no CRS.
+// Only guesses Web Mercator when values clearly exceed what UTM produces;
+// anything ambiguous (e.g. bare UTM with unknown zone) returns undefined.
+function guessProjDef(gj) {
+  let maxAbsX = 0, minY = Infinity, maxAbsY = 0;
+  const walk = (c) => {
+    if (typeof c[0] === "number") {
+      maxAbsX = Math.max(maxAbsX, Math.abs(c[0]));
+      maxAbsY = Math.max(maxAbsY, Math.abs(c[1]));
+      minY = Math.min(minY, c[1]);
+    } else c.forEach(walk);
+  };
+  const feats = gj.type === "FeatureCollection" ? (gj.features || []) : [gj];
+  feats.forEach(f => { const g = f.geometry || f; if (g && g.coordinates) walk(g.coordinates); });
+  const inWebMercator = maxAbsX <= 20037508.35 && maxAbsY <= 20048966.11;
+  // UTM eastings stay under ~900,000 and northings are never negative —
+  // so a big |x| or a negative y can only sensibly be Web Mercator.
+  if (inWebMercator && (maxAbsX > 950000 || minY < 0)) return COMMON_PROJ_DEFS["EPSG:3857"];
+  return undefined;
+}
+
+// Apply fn to every coordinate pair in a (deep-cloned) GeoJSON value.
+function mapGeoJsonCoords(gj, fn) {
+  const clone = JSON.parse(JSON.stringify(gj));
+  const walk = (c) => (typeof c[0] === "number") ? fn(c) : c.map(walk);
+  const feats = clone.type === "FeatureCollection" ? (clone.features || []) : [clone];
+  feats.forEach(f => { const g = f.geometry || f; if (g && g.coordinates) g.coordinates = walk(g.coordinates); });
+  delete clone.crs; // it's WGS84 now
+  return clone;
+}
+
+// Normalize any GeoJSON to WGS84 lat/lng. Returns the input untouched when
+// it's already geographic; throws with a human-readable message when the
+// projection can't be determined safely.
+function normalizeGeoJson(gj) {
+  if (!gj || typeof gj !== "object") return gj;
+  if (coordsLookGeographic(gj)) return gj;
+  const code = crsCodeOf(gj);
+  let def = projDefFor(code);
+  if (def === null) {
+    // Declared geographic but coords out of range — corrupt file
+    throw new Error("File claims lat/lng but coordinates are out of range. Re-export it as WGS84 GeoJSON.");
+  }
+  if (def === undefined) def = guessProjDef(gj);
+  if (!def) {
+    throw new Error(
+      (code ? `Unsupported CRS ${code}. ` : "Coordinates are projected (metres) but the file declares no CRS. ") +
+      "Re-export as WGS84 (EPSG:4326) GeoJSON, or upload the zipped Shapefile — its .prj lets us convert automatically."
+    );
+  }
+  const t = proj4(def, proj4.WGS84);
+  return mapGeoJsonCoords(gj, ([x, y]) => {
+    const [lng, lat] = t.forward([x, y]);
+    return [lng, lat];
+  });
 }
 
 // Parse an uploaded AOI file (GeoJSON / KML / KMZ / zipped Shapefile) → GeoJSON
@@ -1363,10 +1489,12 @@ function AoiUploader({ aoi, canEdit, which, onSetAoi, multi }) {
     if (!file) return;
     setBusy(true); setErr("");
     try {
-      const gj = await parseAoiFile(file);
-      if (!gj || (!gj.features && !gj.coordinates)) throw new Error("No geometry found in file.");
+      const parsed = await parseAoiFile(file);
+      if (!parsed || (!parsed.features && !parsed.coordinates)) throw new Error("No geometry found in file.");
+      // Reproject to WGS84 lat/lng if the file arrived in a projected CRS
+      const gj = normalizeGeoJson(parsed);
       // In multi mode, append to what's already mapped instead of replacing it
-      await onSetAoi(multi && isGeoJson ? mergeGeoJson(aoi, gj) : gj);
+      await onSetAoi(multi && isGeoJson ? mergeGeoJson(normalizeGeoJson(aoi), gj) : gj);
     } catch (ex) {
       setErr(ex.message || "Failed to parse file");
     } finally {
@@ -1386,7 +1514,7 @@ function AoiUploader({ aoi, canEdit, which, onSetAoi, multi }) {
       <GeoJsonMap geojson={isGeoJson ? aoi : null} canEdit={canEdit}
         onClear={isGeoJson ? () => onSetAoi(null) : null} />
       {showUpload && (
-        <div style={{ position:"absolute", top:8, left:8, zIndex:500, display:"flex", flexDirection:"column", gap:6, alignItems:"flex-start", maxWidth:"calc(100% - 16px)" }}>
+        <div style={{ position:"absolute", top:8, left:56, zIndex:500, display:"flex", flexDirection:"column", gap:6, alignItems:"flex-start", maxWidth:"calc(100% - 64px)" }}>
           <span style={{ background:"rgba(11,18,32,0.78)", color:"#cdd6e3", fontSize:11, padding:"4px 9px", borderRadius:6, fontFamily:"var(--font-mono)" }}>
             {!isGeoJson ? "No area of interest mapped yet" : `${count} AOI${count !== 1 ? "s" : ""} delivered`}
           </span>
@@ -1698,6 +1826,9 @@ async function addQcEntry(entry) {
 async function deleteQcEntry(id) {
   return sbDelete("quality_checks", id);
 }
+async function updateQcEntry(id, entry) {
+  return sbPatch("quality_checks", id, entry);
+}
 
 // Searchable deal picker — type to filter instead of scrolling a long dropdown
 function DealSearchPicker({ deals, value, onChange }) {
@@ -1738,19 +1869,30 @@ function DealSearchPicker({ deals, value, onChange }) {
   );
 }
 
-function QcForm({ onSubmit, onCancel, defaultOrg, defaultPassportId, deals }) {
+function QcForm({ onSubmit, onCancel, defaultOrg, defaultPassportId, deals, initial }) {
+  // `initial` = an existing QC row → the form opens pre-filled in edit mode
   const [form, setForm] = useState({
-    organization: defaultOrg || "", usecase: "", priority: "Medium", qc_result: "Awaiting QC",
-    image_id: "", type: "Sample", assignee: "", qc_notes: "", location: "",
-    mvp_image: false, feedback_milestone: "", qc_required_by: "", passport_id: defaultPassportId || "",
+    organization: (initial && initial.organization) || defaultOrg || "",
+    usecase: (initial && initial.usecase) || "",
+    priority: (initial && initial.priority) || "Medium",
+    qc_result: (initial && initial.qc_result) || "Awaiting QC",
+    image_id: (initial && initial.image_id) || "",
+    type: (initial && initial.type) || "Sample",
+    assignee: (initial && initial.assignee) || "",
+    qc_notes: (initial && initial.qc_notes) || "",
+    location: (initial && initial.location) || "",
+    mvp_image: !!(initial && initial.mvp_image),
+    feedback_milestone: (initial && initial.feedback_milestone) || "",
+    qc_required_by: (initial && initial.qc_required_by) || "",
+    passport_id: (initial && initial.passport_id) || defaultPassportId || "",
   });
   const [uploading, setUploading] = useState(false);
-  const [shotPath, setShotPath] = useState("");
+  const [shotPath, setShotPath] = useState((initial && initial.photo_evidence_path) || "");
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
   const submit = () => {
     if (!form.organization.trim()) return;
     const assigneePerson = Object.values(TEAM_MEMBERS).flat().find(p => p.name === form.assignee);
-    onSubmit({
+    const payload = {
       ...form,
       passport_id: form.passport_id || null,   // empty string → null (uuid column)
       assignee: form.assignee || null,
@@ -1758,8 +1900,9 @@ function QcForm({ onSubmit, onCancel, defaultOrg, defaultPassportId, deals }) {
       feedback_milestone: form.feedback_milestone || null,
       qc_required_by: form.qc_required_by || null,
       photo_evidence_path: shotPath || null,
-      created_by: "You",
-    });
+    };
+    if (!initial) payload.created_by = "You"; // don't overwrite original author on edit
+    onSubmit(payload);
   };
   const handleShot = async (e) => {
     const file = e.target.files[0];
@@ -1874,13 +2017,13 @@ function QcForm({ onSubmit, onCancel, defaultOrg, defaultPassportId, deals }) {
       </div>
       <div style={{ display:"flex", gap:8, justifyContent:"flex-end" }}>
         <button className="btn ghost" style={{ color:"var(--muted)", border:"1px solid var(--line)", background:"#fff" }} onClick={onCancel}>Cancel</button>
-        <button className="btn solid" onClick={submit}><Camera size={13} /> Save QC entry</button>
+        <button className="btn solid" onClick={submit}><Camera size={13} /> {initial ? "Save changes" : "Save QC entry"}</button>
       </div>
     </div>
   );
 }
 
-function QcRow({ row, canEdit, onDelete, showOrg }) {
+function QcRow({ row, canEdit, onDelete, onEdit, showOrg }) {
   return (
     <tr>
       {showOrg && <td style={{ fontWeight:600 }}>{row.organization}</td>}
@@ -1894,7 +2037,12 @@ function QcRow({ row, canEdit, onDelete, showOrg }) {
       <td>{row.mvp_image ? <CheckCircle2 size={14} color="var(--ok)" /> : "—"}</td>
       <td>{row.photo_evidence_path ? <a href={`${SUPABASE_URL}/storage/v1/object/public/${STORAGE_BUCKET}/${row.photo_evidence_path}`} target="_blank" rel="noreferrer"><Camera size={14} color="var(--accent-deep)" /></a> : "—"}</td>
       <td style={{ fontSize: 12, fontFamily: "var(--font-mono)", color: "var(--muted2)" }}>{row.feedback_milestone || "—"}</td>
-      {canEdit && <td><button onClick={() => onDelete(row.id)} style={{ border:"none", background:"none", color:"var(--muted2)", cursor:"pointer", fontSize:13 }}>✕</button></td>}
+      {canEdit && (
+        <td style={{ whiteSpace: "nowrap" }}>
+          <button onClick={() => onEdit && onEdit(row)} title="Edit this QC entry" style={{ border:"none", background:"none", color:"var(--accent-deep)", cursor:"pointer", padding:"0 4px" }}><Pencil size={13} /></button>
+          <button onClick={() => onDelete(row.id)} title="Delete" style={{ border:"none", background:"none", color:"var(--muted2)", cursor:"pointer", fontSize:13, padding:"0 4px" }}>✕</button>
+        </td>
+      )}
     </tr>
   );
 }
@@ -1903,6 +2051,7 @@ function QualityChecksGlobal({ deals, canEdit, onOpen, toast }) {
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
+  const [editRow, setEditRow] = useState(null); // the QC entry being edited, or null
   const [filter, setFilter] = useState("all"); // all | Pass | Fail
 
   const load = async () => {
@@ -1912,7 +2061,12 @@ function QualityChecksGlobal({ deals, canEdit, onOpen, toast }) {
   useEffect(() => { load(); }, []);
 
   const submit = async (entry) => {
-    try { await addQcEntry(entry); setShowForm(false); toast("QC entry saved"); await load(); }
+    try {
+      if (editRow) { await updateQcEntry(editRow.id, entry); toast("QC entry updated"); }
+      else { await addQcEntry(entry); toast("QC entry saved"); }
+      setShowForm(false); setEditRow(null);
+      await load();
+    }
     catch (e) { toast("Save failed: " + e.message); }
   };
   const remove = async (id) => {
@@ -1939,13 +2093,16 @@ function QualityChecksGlobal({ deals, canEdit, onOpen, toast }) {
             <button className={filter==="Pass"?"on":""} onClick={() => setFilter("Pass")}>Pass</button>
             <button className={filter==="Fail"?"on":""} onClick={() => setFilter("Fail")}>Fail</button>
           </div>
-          {canEdit && !showForm && (
+          {canEdit && !showForm && !editRow && (
             <button className="btn solid" onClick={() => setShowForm(true)}><Plus size={14} /> New QC entry</button>
           )}
         </div>
       </div>
 
-      {showForm && <QcForm deals={deals} onSubmit={submit} onCancel={() => setShowForm(false)} />}
+      {(showForm || editRow) && (
+        <QcForm key={editRow ? editRow.id : "new"} deals={deals} initial={editRow}
+          onSubmit={submit} onCancel={() => { setShowForm(false); setEditRow(null); }} />
+      )}
 
       {loading ? <div className="empty"><RefreshCw size={15} className="spin" /> Loading…</div> : (
         <div style={{ overflowX: "auto", background:"#fff", border:"1px solid var(--line)", borderRadius: 14 }}>
@@ -1958,7 +2115,7 @@ function QualityChecksGlobal({ deals, canEdit, onOpen, toast }) {
               </tr>
             </thead>
             <tbody>
-              {filtered.length ? filtered.map(r => <QcRow key={r.id} row={r} canEdit={canEdit} onDelete={remove} showOrg />)
+              {filtered.length ? filtered.map(r => <QcRow key={r.id} row={r} canEdit={canEdit} onDelete={remove} onEdit={(row) => { setEditRow(row); setShowForm(false); window.scrollTo({ top: 0, behavior: "smooth" }); }} showOrg />)
                 : <tr><td colSpan={canEdit ? 11 : 10} style={{ textAlign:"center", padding:30, color:"var(--muted2)" }}>No QC entries yet.</td></tr>}
             </tbody>
           </table>
@@ -1973,6 +2130,7 @@ function QcTab({ d, canEdit, toast }) {
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
+  const [editRow, setEditRow] = useState(null);
 
   const load = async () => {
     setLoading(true);
@@ -1982,7 +2140,12 @@ function QcTab({ d, canEdit, toast }) {
   useEffect(() => { load(); }, [d.id]);
 
   const submit = async (entry) => {
-    try { await addQcEntry(entry); setShowForm(false); toast("QC entry saved"); await load(); }
+    try {
+      if (editRow) { await updateQcEntry(editRow.id, entry); toast("QC entry updated"); }
+      else { await addQcEntry(entry); toast("QC entry saved"); }
+      setShowForm(false); setEditRow(null);
+      await load();
+    }
     catch (e) { toast("Save failed: " + e.message); }
   };
   const remove = async (id) => {
@@ -1992,19 +2155,23 @@ function QcTab({ d, canEdit, toast }) {
 
   return (
     <Block icon={Camera} title="Quality Checks">
-      {canEdit && !showForm && (
+      {canEdit && !showForm && !editRow && (
         <button onClick={() => setShowForm(true)} className="add-row"><Plus size={14} /> Log QC entry</button>
       )}
-      {showForm && <QcForm deals={[]} defaultOrg={d.company} defaultPassportId={d.id} onSubmit={submit} onCancel={() => setShowForm(false)} />}
+      {(showForm || editRow) && (
+        <QcForm key={editRow ? editRow.id : "new"} deals={[]} initial={editRow}
+          defaultOrg={d.company} defaultPassportId={d.id}
+          onSubmit={submit} onCancel={() => { setShowForm(false); setEditRow(null); }} />
+      )}
       {loading ? <div className="empty"><RefreshCw size={15} className="spin" /> Loading…</div> : (
         rows.length ? (
           <div style={{ overflowX: "auto" }}>
             <table className="qc-table">
               <thead><tr><th>Usecase</th><th>QC</th><th>Image ID</th><th>Type</th><th>Assignee</th><th>Notes</th><th>Location</th><th>MVP</th><th>Evidence</th><th>Milestone</th>{canEdit && <th></th>}</tr></thead>
-              <tbody>{rows.map(r => <QcRow key={r.id} row={r} canEdit={canEdit} onDelete={remove} />)}</tbody>
+              <tbody>{rows.map(r => <QcRow key={r.id} row={r} canEdit={canEdit} onDelete={remove} onEdit={(row) => { setEditRow(row); setShowForm(false); }} />)}</tbody>
             </table>
           </div>
-        ) : !showForm && <div className="empty"><Camera size={15} /> No QC entries for this deal yet.</div>
+        ) : !showForm && !editRow && <div className="empty"><Camera size={15} /> No QC entries for this deal yet.</div>
       )}
     </Block>
   );
@@ -2091,7 +2258,10 @@ function MvpImagesGlobal({ deals, canEdit, onOpen, toast }) {
           <div style={{ fontSize:13, color:"var(--muted)" }}>{rows.length} image{rows.length !== 1 ? "s" : ""} flagged as MVP across all deals</div>
         </div>
         {rows.length > 0 && (
-          <button className="btn ghost" onClick={downloadCsv}>
+          <button onClick={downloadCsv}
+            style={{ display:"inline-flex", alignItems:"center", gap:7, padding:"9px 16px", borderRadius:9,
+              border:"none", background:"#0B1220", color:"#fff", fontSize:12.5, fontWeight:600, cursor:"pointer",
+              boxShadow:"0 2px 8px -2px rgba(11,18,32,.4)" }}>
             <Download size={14} /> Download CSV for Notion
           </button>
         )}
@@ -2259,7 +2429,6 @@ function Passport({ deal, onBack, canEdit, onUpdate, onAssign, onNotifyAll, onPo
             </h1>
             <div className="hsub">
               <span>{deal.sector}</span><span className="dot" />
-              <span className="mono">{deal.id}</span><span className="dot" />
               <span className="mono">HubSpot {deal.hubspotId}</span><span className="dot" />
               <span>{fmt(deal.amount)} ACV</span>
             </div>
@@ -2436,7 +2605,7 @@ function Block({ icon: Ic, title, children, action, stamp }) {
 }
 // Link-or-upload control: paste a URL or upload a file
 // Up to 10 feasibility / supporting files — each either an uploaded file or a link
-function FeasibilityFiles({ files, canEdit, onUpload, onAddLink, onRemove }) {
+function FeasibilityFiles({ files, canEdit, onUpload, onAddLink, onRemove, title = "Feasibility & supporting files", accept, icon: RowIcon = FileText }) {
   const [busy, setBusy] = useState(false);
   const [linkOpen, setLinkOpen] = useState(false);
   const [linkName, setLinkName] = useState("");
@@ -2453,12 +2622,12 @@ function FeasibilityFiles({ files, canEdit, onUpload, onAddLink, onRemove }) {
   };
   return (
     <div>
-      <div className="k" style={{ marginBottom: 6 }}>Feasibility &amp; supporting files <span style={{ color:"var(--muted2)", fontWeight:400 }}>({list.length}/10)</span></div>
+      <div className="k" style={{ marginBottom: 6 }}>{title} <span style={{ color:"var(--muted2)", fontWeight:400 }}>({list.length}/10)</span></div>
       {list.length > 0 && (
         <div style={{ display: "flex", flexDirection: "column", gap: 6, marginBottom: 8 }}>
           {list.map((f, i) => (
             <div key={i} className="attach" style={{ margin: 0 }}>
-              <div className="ai">{isLink(f) ? <Link2 size={15} /> : <FileText size={15} />}</div>
+              <div className="ai">{isLink(f) ? <Link2 size={15} /> : <RowIcon size={15} />}</div>
               <div><div className="an2">{f.name}</div><div className="as">{isLink(f) ? "LINK" : "FILE"}</div></div>
               <div style={{ marginLeft: "auto", display: "flex", gap: 8, alignItems: "center" }}>
                 <a href={isLink(f) ? f.url : `${SUPABASE_URL}/storage/v1/object/public/${STORAGE_BUCKET}/${f.url}`} target="_blank" rel="noreferrer">
@@ -2480,7 +2649,7 @@ function FeasibilityFiles({ files, canEdit, onUpload, onAddLink, onRemove }) {
               <Link2 size={13} /> Add link
             </button>
           </div>
-          <input id={inputId} type="file" style={{ display:"none" }}
+          <input id={inputId} type="file" accept={accept} style={{ display:"none" }}
             onChange={async (e) => { const f = e.target.files[0]; if (!f) return; setBusy(true); try { await onUpload(f); } finally { setBusy(false); e.target.value=""; } }} />
           {linkOpen && (
             <div style={{ display:"flex", flexDirection:"column", gap:8, marginTop:8 }}>
@@ -2498,6 +2667,108 @@ function FeasibilityFiles({ files, canEdit, onUpload, onAddLink, onRemove }) {
         </>
       )}
       {atLimit && <div style={{ fontSize: 11.5, color: "var(--muted2)" }}>Maximum of 10 files reached.</div>}
+    </div>
+  );
+}
+
+/* ── Time of Interest ──────────────────────────────────────────────
+   One or more capture windows the customer wants imagery for.
+   Stored as [{start:'YYYY-MM-DD', end:'YYYY-MM-DD', label}] in the
+   time_of_interest jsonb column. Supports a whole-month shortcut and
+   arbitrary date ranges; multiple windows cover phased capture plans
+   (e.g. 1–15 Aug, then 1–15 Sep, then 1–15 Oct). */
+function TimeOfInterest({ windows, canEdit, onChange }) {
+  const [adding, setAdding] = useState(false);
+  const [mode, setMode] = useState("month"); // 'month' | 'range'
+  const [month, setMonth] = useState("");
+  const [form, setForm] = useState({ start: "", end: "", label: "" });
+  const list = windows || [];
+
+  const fmtD = (s) => s ? new Date(s + "T00:00:00").toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" }) : "";
+  // "July 2026" when a window spans exactly one full calendar month
+  const windowLabel = (w) => {
+    const s = new Date(w.start + "T00:00:00"), e = new Date(w.end + "T00:00:00");
+    const lastDay = new Date(e.getFullYear(), e.getMonth() + 1, 0).getDate();
+    if (s.getDate() === 1 && e.getDate() === lastDay && s.getMonth() === e.getMonth() && s.getFullYear() === e.getFullYear()) {
+      return s.toLocaleDateString("en-GB", { month: "long", year: "numeric" });
+    }
+    return `${fmtD(w.start)} – ${fmtD(w.end)}`;
+  };
+
+  const reset = () => { setForm({ start: "", end: "", label: "" }); setMonth(""); setAdding(false); };
+  const add = () => {
+    let start = form.start, end = form.end;
+    if (mode === "month") {
+      if (!month) return;
+      const [y, m] = month.split("-").map(Number);
+      start = `${month}-01`;
+      end = `${month}-${String(new Date(y, m, 0).getDate()).padStart(2, "0")}`;
+    }
+    if (!start || !end) return;
+    if (end < start) { const t = start; start = end; end = t; }
+    onChange([...list, { start, end, label: form.label.trim() }]);
+    reset();
+  };
+  const remove = (idx) => onChange(list.filter((_, i) => i !== idx));
+
+  const inputStyle = { border: "1px solid var(--line)", borderRadius: 8, padding: "7px 10px", fontSize: 13, fontFamily: "inherit", outline: "none" };
+  return (
+    <div>
+      <div className="k" style={{ marginBottom: 6 }}>Time of interest <span style={{ color: "var(--muted2)", fontWeight: 400 }}>· {list.length ? `${list.length} capture window${list.length !== 1 ? "s" : ""}` : "when should imagery be captured?"}</span></div>
+      {list.length > 0 && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 6, marginBottom: 8 }}>
+          {list.map((w, i) => (
+            <div key={i} className="attach" style={{ margin: 0 }}>
+              <div className="ai"><CalendarClock size={15} /></div>
+              <div>
+                <div className="an2">{windowLabel(w)}</div>
+                <div className="as">{w.label ? w.label.toUpperCase() : `CAPTURE WINDOW ${i + 1}`}</div>
+              </div>
+              {canEdit && (
+                <div style={{ marginLeft: "auto" }}>
+                  <button onClick={() => remove(i)} title="Remove window" style={{ border: "none", background: "none", color: "var(--muted2)", cursor: "pointer", fontSize: 13 }}>✕</button>
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+      {canEdit && !adding && (
+        <button onClick={() => setAdding(true)} className="add-row" style={{ margin: 0 }}>
+          <Plus size={13} /> Add capture window
+        </button>
+      )}
+      {canEdit && adding && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 8, marginTop: 4, border: "1px solid var(--line)", borderRadius: 10, padding: 12, background: "var(--line-soft, #f7f9fb)" }}>
+          <div style={{ display: "flex", gap: 6 }}>
+            {[["month", "Whole month"], ["range", "Date range"]].map(([m, lbl]) => (
+              <button key={m} onClick={() => setMode(m)} type="button"
+                style={{ flex: 1, padding: "6px 8px", borderRadius: 7, fontSize: 12, fontWeight: 600, cursor: "pointer",
+                  border: "1px solid " + (mode === m ? "var(--accent)" : "var(--line)"),
+                  background: mode === m ? "var(--accent-soft, #E4F5F7)" : "transparent",
+                  color: mode === m ? "var(--accent-deep, #0B7E8C)" : "var(--muted)" }}>{lbl}</button>
+            ))}
+          </div>
+          {mode === "month" ? (
+            <input type="month" value={month} onChange={e => setMonth(e.target.value)} style={inputStyle} />
+          ) : (
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+              <input type="date" value={form.start} onChange={e => setForm(f => ({ ...f, start: e.target.value }))} style={{ ...inputStyle, flex: 1, minWidth: 130 }} />
+              <span style={{ alignSelf: "center", color: "var(--muted2)", fontSize: 12 }}>to</span>
+              <input type="date" value={form.end} onChange={e => setForm(f => ({ ...f, end: e.target.value }))} style={{ ...inputStyle, flex: 1, minWidth: 130 }} />
+            </div>
+          )}
+          <input placeholder="Label (optional — e.g. First capture, Growing season)" value={form.label}
+            onChange={e => setForm(f => ({ ...f, label: e.target.value }))}
+            onKeyDown={e => { if (e.key === "Enter") add(); if (e.key === "Escape") reset(); }}
+            style={inputStyle} />
+          <div style={{ display: "flex", gap: 8 }}>
+            <button onClick={add} style={{ padding: "6px 14px", borderRadius: 7, border: "none", background: "var(--accent)", color: "#fff", fontSize: 12.5, fontWeight: 600, cursor: "pointer" }}>Add window</button>
+            <button onClick={reset} style={{ padding: "6px 14px", borderRadius: 7, border: "1px solid var(--line)", background: "transparent", color: "var(--muted)", fontSize: 12.5, cursor: "pointer" }}>Cancel</button>
+          </div>
+        </div>
+      )}
+      {!canEdit && list.length === 0 && <div style={{ fontSize: 12, color: "var(--muted2)" }}>No capture windows defined.</div>}
     </div>
   );
 }
@@ -2846,14 +3117,26 @@ function ProfileTab({ d, canEdit, onSaveField, onUpdate }) {
           <EditableTags k="Data sources" values={t.dataSources} field="data_sources" canEdit={canEdit} onSave={onSaveField} cls="spec" />
           <EditableSelect k="Bandset" value={t.bandset} field="bandset" canEdit={canEdit} onSave={onSaveField} options={BANDSET_OPTIONS} customLabel="Custom" />
           <EditableField k="Cadence / revisit" value={t.cadence} field="cadence" canEdit={canEdit} onSave={onSaveField} />
+          <TimeOfInterest
+            windows={t.timeOfInterest} canEdit={canEdit}
+            onChange={(w) => onUpdate({ _setToi: w })}
+          />
           <FeasibilityFiles
             files={t.feasibilityFiles} canEdit={canEdit}
             onUpload={(file) => onUpdate({ _uploadFeasibilityFile: { file } })}
             onAddLink={(name, url) => onUpdate({ _addFeasibilityLink: { name, url } })}
             onRemove={(idx) => onUpdate({ _removeFeasibilityFile: { idx } })}
           />
+          <FeasibilityFiles
+            title="Area of interest — files" icon={MapPin}
+            accept=".geojson,.json,.kml,.kmz,.zip,.shp,.gpkg"
+            files={t.aoiFiles} canEdit={canEdit}
+            onUpload={(file) => onUpdate({ _uploadAoiFile: { file } })}
+            onAddLink={(name, url) => onUpdate({ _addAoiLink: { name, url } })}
+            onRemove={(idx) => onUpdate({ _removeAoiFile: { idx } })}
+          />
           <span style={{ fontSize:11.5, color:"var(--muted2)", display:"inline-flex", alignItems:"center", gap:5, marginTop:4 }}>
-            <MapPin size={12} /> Area of interest is managed on the Context tab
+            <MapPin size={12} /> The interactive AOI map lives on the Context tab
           </span>
         </div>
       </Block>
@@ -4513,6 +4796,8 @@ function PassportDetail({ data, onBack, canEdit, onRefresh, onAssign, onNotifyAl
         aoiLink: !!p.aoi_link,
         feasibilityLink: !!p.feasibility_link,
         feasibilityFiles: p.feasibility_files || [],
+        aoiFiles: p.aoi_files || [],
+        timeOfInterest: p.time_of_interest || [],
       },
     },
     context: {
@@ -4693,6 +4978,42 @@ function PassportDetail({ data, onBack, canEdit, onRefresh, onAssign, onNotifyAl
       await onRefresh();
       return;
     }
+    // ── AOI files (separate section, up to 10, JSONB array) ─────
+    if (updated._uploadAoiFile) {
+      const { file } = updated._uploadAoiFile;
+      const path = await uploadFile(p.id, file);
+      const current = Array.isArray(p.aoi_files) ? p.aoi_files : [];
+      if (current.length < 10) {
+        const next = [...current, { name: file.name, url: path, type: "file" }];
+        await sbPatch("handover_passports", p.id, { aoi_files: next });
+      }
+      await onRefresh();
+      return;
+    }
+    if (updated._addAoiLink) {
+      const { name, url } = updated._addAoiLink;
+      const current = Array.isArray(p.aoi_files) ? p.aoi_files : [];
+      if (current.length < 10) {
+        const next = [...current, { name, url, type: "link" }];
+        await sbPatch("handover_passports", p.id, { aoi_files: next });
+      }
+      await onRefresh();
+      return;
+    }
+    if (updated._removeAoiFile) {
+      const { idx } = updated._removeAoiFile;
+      const current = Array.isArray(p.aoi_files) ? p.aoi_files : [];
+      const next = current.filter((_, i) => i !== idx);
+      await sbPatch("handover_passports", p.id, { aoi_files: next });
+      await onRefresh();
+      return;
+    }
+    // ── Time of Interest capture windows ────────────────────────
+    if (updated._setToi) {
+      await sbPatch("handover_passports", p.id, { time_of_interest: updated._setToi });
+      await onRefresh();
+      return;
+    }
     // ── AOI upload (parsed GeoJSON) ────────────────────────────
     if (updated._setAoi) {
       const { geojson, which } = updated._setAoi; // which: 'aoi' | 'sample'
@@ -4837,7 +5158,12 @@ function PassportDetail({ data, onBack, canEdit, onRefresh, onAssign, onNotifyAl
             body: JSON.stringify({ action: "push_to_planhat", passport_id: p.id }),
           });
           const data = await res.json();
-          if (data.ok) toast("✓ Pushed to PlanHat");
+          if (data.ok) {
+            const who = data.company_name ? `"${data.company_name}"` : "company";
+            const how = data.company_created ? `created ${who}` : `matched ${who}${data.matched_by === "externalId" ? " by HubSpot ID" : ""}`;
+            const link = data.passport_field_set ? " · passport link set" : " · couldn't set Customer Passport field (check field name)";
+            toast(`✓ PlanHat: ${how}${link}`);
+          }
           else toast("PlanHat: " + (data.error || "failed"));
         } catch (e) { toast("PlanHat push failed: " + e.message); }
       }}

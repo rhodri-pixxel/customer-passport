@@ -207,32 +207,77 @@ serve(async function(req) {
         status: 404, headers: Object.assign({}, CORS, { "Content-Type": "application/json" }),
       });
     }
-    const companyName = pp.company || pp.hubspot_deal_name || "Unknown";
+    // The shareable per-deal link — same URL as the "Copy link" button.
+    const passportLink = "https://customer-passport.vercel.app/?deal=" + passportId;
 
-    // 1. Find company by name
-    let companyId = null;
+    // ── 0. Resolve the deal's associated HubSpot COMPANY ─────────
+    // Passports carry a HubSpot *deal* id, but a PlanHat company maps
+    // to a HubSpot *company*. Using the company name (not the deal
+    // name) fixes mismatches like deal "GeoVille_AUT - Data purchase…"
+    // vs company "GeoVille"; the company id becomes the externalId key.
+    let hsCompanyId: string | null = null;
+    let hsCompanyName: string | null = null;
     try {
-      const findRes = await fetch(PH_BASE + "/companies?" + new URLSearchParams({ name: companyName }), { headers: phHeaders });
-      const found = await findRes.json().catch(() => []);
-      if (Array.isArray(found) && found.length) {
-        // Exact (case-insensitive) name match preferred
-        const exact = found.find(c => (c.name || "").toLowerCase().trim() === companyName.toLowerCase().trim());
-        companyId = (exact || found[0])._id;
+      if (pp.hubspot_deal_id) {
+        const assoc = await hsGet("/crm/v4/objects/deals/" + pp.hubspot_deal_id + "/associations/companies", token).catch(() => ({ results: [] }));
+        const first = (assoc.results || [])[0];
+        const coid = first ? (first.toObjectId || first.id) : null;
+        if (coid) {
+          const co = await hsGet("/crm/v3/objects/companies/" + coid + "?properties=name,domain", token).catch(() => null);
+          hsCompanyId = String(coid);
+          if (co && co.properties && co.properties.name) hsCompanyName = co.properties.name;
+        }
       }
-    } catch (e) { console.error("PlanHat find error", e); }
+    } catch (e) { console.error("HubSpot company lookup failed", e); }
 
-    // 2. Create company if missing
+    const companyName = hsCompanyName || pp.company || pp.hubspot_deal_name || "Unknown";
+
+    // ── 1. Match PlanHat company by externalId (HubSpot company id) ──
+    // PlanHat lets you address objects by external id via the "extid-"
+    // prefix. Once stamped, every future push matches instantly and
+    // unambiguously regardless of name drift.
+    let companyId = null;
+    let companyCreated = false;
+    let matchedBy: string | null = null;
+    let existingExternalId: string | null = null;
+    if (hsCompanyId) {
+      try {
+        const r = await fetch(PH_BASE + "/companies/extid-" + encodeURIComponent(hsCompanyId), { headers: phHeaders });
+        if (r.ok) {
+          const c = await r.json().catch(() => null);
+          if (c && c._id) { companyId = c._id; matchedBy = "externalId"; existingExternalId = c.externalId || null; }
+        }
+      } catch (e) { console.error("PlanHat extid lookup error", e); }
+    }
+
+    // ── 2. Fallback: match by (HubSpot company) name ──────────────
+    if (!companyId) {
+      try {
+        const findRes = await fetch(PH_BASE + "/companies?" + new URLSearchParams({ name: companyName }), { headers: phHeaders });
+        const found = await findRes.json().catch(() => []);
+        if (Array.isArray(found) && found.length) {
+          // Exact (case-insensitive) name match preferred
+          const exact = found.find(c => (c.name || "").toLowerCase().trim() === companyName.toLowerCase().trim());
+          const pick = exact || (found.length === 1 ? found[0] : null);
+          if (pick) { companyId = pick._id; matchedBy = "name"; existingExternalId = pick.externalId || null; }
+        }
+      } catch (e) { console.error("PlanHat find error", e); }
+    }
+
+    // ── 3. Create the company if still missing ────────────────────
     if (!companyId) {
       try {
         const createRes = await fetch(PH_BASE + "/companies", {
           method: "POST", headers: phHeaders,
           body: JSON.stringify({
             name: companyName,
-            externalId: pp.hubspot_deal_id ? "hs_" + pp.hubspot_deal_id : undefined,
+            externalId: hsCompanyId || undefined,
+            custom: { "Customer Passport": passportLink },
           }),
         });
         const created = await createRes.json().catch(() => ({}));
         companyId = created._id;
+        companyCreated = !!companyId;
       } catch (e) { console.error("PlanHat create error", e); }
     }
     if (!companyId) {
@@ -241,7 +286,25 @@ serve(async function(req) {
       });
     }
 
-    // 3. Build a rich HTML summary document and store it in Supabase Storage
+    // ── 4. Stamp externalId (if safe) + write the passport link ───
+    // externalId is only written when the company doesn't already carry
+    // a different one — never clobber an id another integration owns.
+    // The link goes into the "Customer Passport" custom field; PlanHat
+    // custom fields are addressed by their display name under `custom`.
+    let passportFieldSet = false;
+    try {
+      const patch: Record<string, unknown> = { custom: { "Customer Passport": passportLink } };
+      if (hsCompanyId && (!existingExternalId || existingExternalId === hsCompanyId)) {
+        patch.externalId = hsCompanyId;
+      }
+      const putRes = await fetch(PH_BASE + "/companies/" + companyId, {
+        method: "PUT", headers: phHeaders, body: JSON.stringify(patch),
+      });
+      passportFieldSet = putRes.ok;
+      if (!putRes.ok) console.error("PlanHat field write failed", putRes.status, await putRes.text().catch(() => ""));
+    } catch (e) { console.error("PlanHat field write error", e); }
+
+    // ── 5. Build a rich HTML summary document and store it in Supabase Storage
     //    so PlanHat can link to a real, openable/printable file.
     const esc = (s) => String(s == null ? "" : s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
     const listHtml = (arr) => (arr && arr.length) ? "<ul>" + arr.map(x => "<li>" + esc(x) + "</li>").join("") + "</ul>" : "<p style='color:#8a93a0'>—</p>";
@@ -271,7 +334,7 @@ serve(async function(req) {
       "</body></html>";
 
     // Upload to the public storage bucket
-    let summaryUrl = "https://customer-passport.vercel.app/?deal=" + passportId; // fallback: live passport link
+    let summaryUrl = passportLink; // fallback: live passport link
     try {
       const path = "planhat-summaries/" + passportId + "-" + Date.now() + ".html";
       const up = await sb.storage.from("passport-files").upload(path, new Blob([summaryHtml], { type: "text/html" }), { upsert: true, contentType: "text/html" });
@@ -281,7 +344,7 @@ serve(async function(req) {
       }
     } catch (e) { console.error("summary upload failed, using live link", e); }
 
-    // 4. Build the note text (summary + link) and attach as a conversation
+    // ── 6. Build the note text (summary + link) and attach as a conversation
     const lines = [];
     lines.push("CUSTOMER PASSPORT — " + companyName);
     lines.push("Pipeline: " + (pp.pipeline || "—") + " · Stage: " + (pp.hubspot_stage || "—"));
@@ -311,7 +374,17 @@ serve(async function(req) {
         }),
       });
       const conv = await convRes.json().catch(() => ({}));
-      return new Response(JSON.stringify({ ok: convRes.ok, company_id: companyId, conversation_id: conv._id || null, summary_url: summaryUrl }), {
+      return new Response(JSON.stringify({
+        ok: convRes.ok,
+        company_id: companyId,
+        company_name: companyName,
+        company_created: companyCreated,
+        matched_by: matchedBy,
+        passport_field_set: passportFieldSet,
+        passport_link: passportLink,
+        conversation_id: conv._id || null,
+        summary_url: summaryUrl,
+      }), {
         headers: Object.assign({}, CORS, { "Content-Type": "application/json" }),
       });
     } catch (e) {
