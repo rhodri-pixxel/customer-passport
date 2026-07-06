@@ -3157,6 +3157,16 @@ function ContextTab({ d, canEdit, onSaveField, onUpdate }) {
         <Block icon={MapPin} title="Area of interest">
           <AoiUploader aoi={d.context.aoi} canEdit={canEdit} which="aoi"
             onSetAoi={(geojson) => onUpdate({ _setAoi: { geojson, which:"aoi" } })} />
+          <div style={{ marginTop: 14 }}>
+            <FeasibilityFiles
+              title="AOI files" icon={MapPin}
+              accept=".geojson,.json,.kml,.kmz,.zip,.shp,.gpkg"
+              files={d.profile.tech.aoiFiles} canEdit={canEdit}
+              onUpload={(file) => onUpdate({ _uploadAoiFile: { file } })}
+              onAddLink={(name, url) => onUpdate({ _addAoiLink: { name, url } })}
+              onRemove={(idx) => onUpdate({ _removeAoiFile: { idx } })}
+            />
+          </div>
         </Block>
       </div>
     </>
