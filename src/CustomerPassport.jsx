@@ -2634,7 +2634,7 @@ function Block({ icon: Ic, title, children, action, stamp }) {
 }
 // Link-or-upload control: paste a URL or upload a file
 // Up to 10 feasibility / supporting files — each either an uploaded file or a link
-function FeasibilityFiles({ files, canEdit, onUpload, onAddLink, onRemove, title = "Feasibility & supporting files", accept, icon: RowIcon = FileText }) {
+function FeasibilityFiles({ files, canEdit, onUpload, onAddLink, onRemove, title = "Feasibility & supporting files", accept, icon: RowIcon = FileText, showLink = true }) {
   const [busy, setBusy] = useState(false);
   const [linkOpen, setLinkOpen] = useState(false);
   const [linkName, setLinkName] = useState("");
@@ -2643,6 +2643,15 @@ function FeasibilityFiles({ files, canEdit, onUpload, onAddLink, onRemove, title
   const atLimit = list.length >= 10;
   const inputId = `feas-${Math.random().toString(36).slice(2,7)}`;
   const isLink = (f) => f.type === "link";
+  const isInline = (f) => f.type === "geojson";  // AOI imported into the list (inline GeoJSON, no storage file)
+  const downloadInline = (f) => {
+    const blob = new Blob([JSON.stringify(f.geojson, null, 2)], { type: "application/geo+json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = (f.name || "aoi").replace(/\.geojson$/i, "") + ".geojson";
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
   const submitLink = () => {
     const url = linkUrl.trim();
     if (!url) return;
@@ -2657,11 +2666,17 @@ function FeasibilityFiles({ files, canEdit, onUpload, onAddLink, onRemove, title
           {list.map((f, i) => (
             <div key={i} className="attach" style={{ margin: 0 }}>
               <div className="ai">{isLink(f) ? <Link2 size={15} /> : <RowIcon size={15} />}</div>
-              <div><div className="an2">{f.name}</div><div className="as">{isLink(f) ? "LINK" : "FILE"}</div></div>
+              <div><div className="an2">{f.name}</div><div className="as">{isLink(f) ? "LINK" : isInline(f) ? "GEOJSON" : "FILE"}</div></div>
               <div style={{ marginLeft: "auto", display: "flex", gap: 8, alignItems: "center" }}>
-                <a href={isLink(f) ? f.url : `${SUPABASE_URL}/storage/v1/object/public/${STORAGE_BUCKET}/${f.url}`} target="_blank" rel="noreferrer">
-                  {isLink(f) ? <ExternalLink size={14} color="var(--muted2)" /> : <Download size={14} color="var(--muted2)" />}
-                </a>
+                {isInline(f) ? (
+                  <button onClick={() => downloadInline(f)} title="Download" style={{ border: "none", background: "none", cursor: "pointer", padding: 0, display: "inline-flex" }}>
+                    <Download size={14} color="var(--muted2)" />
+                  </button>
+                ) : (
+                  <a href={isLink(f) ? f.url : `${SUPABASE_URL}/storage/v1/object/public/${STORAGE_BUCKET}/${f.url}`} target="_blank" rel="noreferrer">
+                    {isLink(f) ? <ExternalLink size={14} color="var(--muted2)" /> : <Download size={14} color="var(--muted2)" />}
+                  </a>
+                )}
                 {canEdit && <button onClick={() => onRemove(i)} title="Remove" style={{ border:"none", background:"none", color:"var(--muted2)", cursor:"pointer", fontSize:13 }}>✕</button>}
               </div>
             </div>
@@ -2674,9 +2689,11 @@ function FeasibilityFiles({ files, canEdit, onUpload, onAddLink, onRemove, title
             <label htmlFor={inputId} className="add-row" style={{ cursor: busy?"wait":"pointer", margin:0, flex:1, minWidth:120 }}>
               <Upload size={13} /> {busy ? "Uploading…" : "Upload file"}
             </label>
-            <button onClick={() => setLinkOpen(o => !o)} className="add-row" style={{ margin:0, flex:1, minWidth:120 }}>
-              <Link2 size={13} /> Add link
-            </button>
+            {showLink && (
+              <button onClick={() => setLinkOpen(o => !o)} className="add-row" style={{ margin:0, flex:1, minWidth:120 }}>
+                <Link2 size={13} /> Add link
+              </button>
+            )}
           </div>
           <input id={inputId} type="file" accept={accept} style={{ display:"none" }}
             onChange={async (e) => { const f = e.target.files[0]; if (!f) return; setBusy(true); try { await onUpload(f); } finally { setBusy(false); e.target.value=""; } }} />
@@ -3173,42 +3190,55 @@ function ProfileTab({ d, canEdit, onSaveField, onUpdate }) {
   );
 }
 
-// Context-tab AOI: the interactive map (base aoi_geojson) with the uploaded AOI
-// files parsed and drawn on top as a read-only overlay, plus the file list
-// (multi-upload, names, per-file download). Files are fetched from storage and
-// parsed on display, so already-uploaded files show on the map too.
+// Context-tab AOI: a single merged map view driven by the one AOI-files list.
+// Every uploaded file is fetched from storage, parsed, and drawn together with
+// the legacy interactive AOI (if any) in one unified style — so there is only
+// one place to upload (the list) and the map simply reflects it. The map's
+// "Remove" clears only a leftover legacy AOI; files are managed in the list.
 function ContextAoi({ d, canEdit, onUpdate }) {
   const files = d.profile.tech.aoiFiles || [];
-  const [overlay, setOverlay] = useState(null);
-  const key = files.map(f => (f.type === "link" ? "" : f.url || "")).join("|");
+  const base = d.context.aoi || null;
+  const [fileGeo, setFileGeo] = useState(null);
+  const key = files.length + ":" + files.map(f => f.url || (f.geojson ? "inline" : "")).join("|");
 
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      const parseable = files.filter(f => f.type !== "link" && f.url && /\.(geojson|json|kml|zip)$/i.test(f.name || ""));
-      if (!parseable.length) { setOverlay(null); return; }
       const feats = [];
-      for (const f of parseable) {
+      for (const f of files) {
+        if (f.type === "link") continue;
         try {
-          const res = await fetch(`${SUPABASE_URL}/storage/v1/object/public/${STORAGE_BUCKET}/${f.url}`);
-          if (!res.ok) continue;
-          const blob = await res.blob();
-          const parsed = await parseAoiFile(new File([blob], f.name));
-          feats.push(...toFeatures(normalizeGeoJson(parsed)));
+          if (f.geojson) {
+            // Inline GeoJSON entry (e.g. a legacy AOI imported into the list).
+            feats.push(...toFeatures(normalizeGeoJson(f.geojson)));
+          } else if (f.url && /\.(geojson|json|kml|zip)$/i.test(f.name || "")) {
+            const res = await fetch(`${SUPABASE_URL}/storage/v1/object/public/${STORAGE_BUCKET}/${f.url}`);
+            if (!res.ok) continue;
+            const blob = await res.blob();
+            const parsed = await parseAoiFile(new File([blob], f.name));
+            feats.push(...toFeatures(normalizeGeoJson(parsed)));
+          }
         } catch (e) { console.error("AOI file map-parse failed:", f.name, e); }
       }
-      if (!cancelled) setOverlay(feats.length ? { type: "FeatureCollection", features: feats } : null);
+      if (!cancelled) setFileGeo(feats.length ? { type: "FeatureCollection", features: feats } : null);
     })();
     return () => { cancelled = true; };
   }, [key]);
 
+  // One merged FeatureCollection: legacy interactive AOI + every uploaded file,
+  // all in the same style. Null when there's nothing to show.
+  const merged = useMemo(() => {
+    const m = mergeGeoJson(base, fileGeo);
+    return m.features.length ? m : null;
+  }, [base, fileGeo]);
+
   return (
     <>
-      <AoiUploader aoi={d.context.aoi} canEdit={canEdit} which="aoi" overlay={overlay}
-        onSetAoi={(geojson) => onUpdate({ _setAoi: { geojson, which:"aoi" } })} />
+      <GeoJsonMap geojson={merged} canEdit={canEdit}
+        onClear={base ? () => onUpdate({ _setAoi: { geojson: null, which: "aoi" } }) : null} />
       <div style={{ marginTop: 14 }}>
         <FeasibilityFiles
-          title="AOI files" icon={MapPin}
+          title="AOI files" icon={MapPin} showLink={false}
           accept=".geojson,.json,.kml,.kmz,.zip,.shp,.gpkg"
           files={files} canEdit={canEdit}
           onUpload={(file) => onUpdate({ _uploadAoiFile: { file } })}
