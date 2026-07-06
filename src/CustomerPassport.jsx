@@ -1201,7 +1201,7 @@ function geoJsonToSvgPaths(gj, b, W=100, H=100) {
   return paths;
 }
 
-function GeoJsonMap({ geojson, onClear, canEdit }) {
+function GeoJsonMap({ geojson, overlay, onClear, canEdit }) {
   const mapRef = useRef(null);
   const containerRef = useRef(null);
   const [meta, setMeta] = useState({ features: 0, center: "" });
@@ -1215,67 +1215,94 @@ function GeoJsonMap({ geojson, onClear, canEdit }) {
     catch (e) { return { gj: null, err: e.message || "Unrecognised coordinate system." }; }
   }, [geojson]);
 
+  // Optional read-only overlay (e.g. parsed AOI files) drawn alongside the base.
+  const healedOverlay = useMemo(() => {
+    if (!overlay) return null;
+    try { return normalizeGeoJson(overlay); }
+    catch (e) { return null; }
+  }, [overlay]);
+
+  // Fit the map to whichever layers currently exist (base + overlay).
+  const fitToLayers = (map) => {
+    const ls = [map._aoiLayer, map._overlayLayer].filter(Boolean);
+    if (!ls.length) return;
+    let bounds = ls[0].getBounds();
+    for (let i = 1; i < ls.length; i++) bounds = bounds.extend(ls[i].getBounds());
+    if (!bounds.isValid()) return;
+    let attempts = 0;
+    const tryFit = () => {
+      attempts++;
+      map.invalidateSize();
+      map.fitBounds(bounds, { padding: [24, 24], maxZoom: 13 });
+      if (attempts < 4) setTimeout(tryFit, 150 * attempts);
+    };
+    tryFit();
+  };
+
   useEffect(() => {
     if (!containerRef.current) return;
     setRenderError(false); setErrMsg("");
     if (healed.err) { setRenderError(true); setErrMsg(healed.err); return; }
-    if (!healed.gj) return;
-    const geojsonNorm = healed.gj;
-    // Init map once
+    // Nothing to draw and no overlay → keep the original empty behaviour.
+    if (!healed.gj && !healedOverlay) return;
+    // Init map once (basemap renders as soon as there's something to show).
     if (!mapRef.current) {
       mapRef.current = L.map(containerRef.current, {
         zoomControl: true, attributionControl: false, scrollWheelZoom: false,
-      });
+      }).setView([20, 0], 2);
       L.tileLayer("https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png", {
         maxZoom: 19, subdomains: "abcd",
       }).addTo(mapRef.current);
     }
     const map = mapRef.current;
-    // Clear previous overlay
-    if (map._aoiLayer) { map.removeLayer(map._aoiLayer); }
+    // Clear previous layers
+    if (map._aoiLayer) { map.removeLayer(map._aoiLayer); map._aoiLayer = null; }
+    if (map._overlayLayer) { map.removeLayer(map._overlayLayer); map._overlayLayer = null; }
     try {
-      const layer = L.geoJSON(geojsonNorm, {
-        style: { color: "#0B7E8C", weight: 2.5, fillColor: "#0EA5B7", fillOpacity: 0.35 },
-        pointToLayer: (f, latlng) => L.circleMarker(latlng, { radius: 5, color: "#0B7E8C", fillColor: "#0EA5B7", fillOpacity: 0.8 }),
-      });
-      layer.addTo(map);
-      map._aoiLayer = layer;
-      const bounds = layer.getBounds();
-      if (bounds.isValid()) {
-        const feats = geojsonNorm.type === "FeatureCollection" ? geojsonNorm.features.length : 1;
-        const c = bounds.getCenter();
-        setMeta({ features: feats, center: `${c.lat.toFixed(3)}°, ${c.lng.toFixed(3)}°` });
-        // The container can report 0×0 if it was hidden (e.g. behind an
-        // inactive tab) at the moment the map initialized. invalidateSize
-        // + fitBounds is retried a few times so the AOI reliably ends up
-        // framed correctly rather than stuck at the default zero-size view.
-        let attempts = 0;
-        const tryFit = () => {
-          attempts++;
-          map.invalidateSize();
-          map.fitBounds(bounds, { padding: [24, 24], maxZoom: 13 });
-          if (attempts < 4) setTimeout(tryFit, 150 * attempts);
-        };
-        tryFit();
-      } else {
-        setRenderError(true);
+      let feats = 0;
+      if (healed.gj) {
+        const layer = L.geoJSON(healed.gj, {
+          style: { color: "#0B7E8C", weight: 2.5, fillColor: "#0EA5B7", fillOpacity: 0.35 },
+          pointToLayer: (f, latlng) => L.circleMarker(latlng, { radius: 5, color: "#0B7E8C", fillColor: "#0EA5B7", fillOpacity: 0.8 }),
+        });
+        layer.addTo(map); map._aoiLayer = layer;
+        feats += healed.gj.type === "FeatureCollection" ? healed.gj.features.length : 1;
+      }
+      if (healedOverlay) {
+        const olayer = L.geoJSON(healedOverlay, {
+          style: { color: "#7B2FBE", weight: 2, fillColor: "#9d5be0", fillOpacity: 0.22, dashArray: "5 3" },
+          pointToLayer: (f, latlng) => L.circleMarker(latlng, { radius: 5, color: "#7B2FBE", fillColor: "#9d5be0", fillOpacity: 0.85 }),
+        });
+        olayer.addTo(map); map._overlayLayer = olayer;
+        feats += healedOverlay.type === "FeatureCollection" ? healedOverlay.features.length : 1;
+      }
+      // The container can report 0×0 if it was hidden (e.g. behind an inactive
+      // tab) when the map initialized. fitToLayers retries invalidateSize +
+      // fitBounds a few times so the AOI reliably ends up framed correctly.
+      const drawn = [map._aoiLayer, map._overlayLayer].filter(Boolean);
+      if (drawn.length) {
+        let bounds = drawn[0].getBounds();
+        for (let i = 1; i < drawn.length; i++) bounds = bounds.extend(drawn[i].getBounds());
+        if (bounds.isValid()) {
+          const c = bounds.getCenter();
+          setMeta({ features: feats, center: `${c.lat.toFixed(3)}°, ${c.lng.toFixed(3)}°` });
+          fitToLayers(map);
+        } else {
+          setRenderError(true);
+        }
       }
     } catch (e) {
       console.error("AOI render error", e);
       setRenderError(true);
     }
-  }, [healed]);
+  }, [healed, healedOverlay]);
 
   // Re-fit whenever the container is resized (e.g. tab becomes visible,
   // window resizes) rather than only once on mount.
   useEffect(() => {
     if (!containerRef.current || typeof ResizeObserver === "undefined") return;
     const ro = new ResizeObserver(() => {
-      if (mapRef.current && mapRef.current._aoiLayer) {
-        mapRef.current.invalidateSize();
-        const b = mapRef.current._aoiLayer.getBounds();
-        if (b.isValid()) mapRef.current.fitBounds(b, { padding: [24, 24], maxZoom: 13 });
-      }
+      if (mapRef.current) { mapRef.current.invalidateSize(); fitToLayers(mapRef.current); }
     });
     ro.observe(containerRef.current);
     return () => ro.disconnect();
@@ -1285,8 +1312,10 @@ function GeoJsonMap({ geojson, onClear, canEdit }) {
   useEffect(() => () => { if (mapRef.current) { mapRef.current.remove(); mapRef.current = null; } }, []);
 
   const downloadAoi = () => {
-    // Export the corrected (WGS84) version when we reprojected; raw otherwise
-    const blob = new Blob([JSON.stringify(healed.gj || geojson, null, 2)], { type: "application/geo+json" });
+    // Export base + overlay merged (all AOIs) as one WGS84 GeoJSON.
+    const base = healed.gj || geojson;
+    const out = (base && healedOverlay) ? mergeGeoJson(base, healedOverlay) : (base || healedOverlay);
+    const blob = new Blob([JSON.stringify(out, null, 2)], { type: "application/geo+json" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
@@ -1475,7 +1504,7 @@ function mergeGeoJson(existing, added) {
   return { type: "FeatureCollection", features: [...toFeatures(existing), ...toFeatures(added)] };
 }
 
-function AoiUploader({ aoi, canEdit, which, onSetAoi, multi }) {
+function AoiUploader({ aoi, canEdit, which, onSetAoi, multi, overlay }) {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
   const inputId = `aoi-up-${which}-${Math.random().toString(36).slice(2,7)}`;
@@ -1511,12 +1540,12 @@ function AoiUploader({ aoi, canEdit, which, onSetAoi, multi }) {
   const showUpload = canEdit && (!isGeoJson || multi);
   return (
     <div style={{ position:"relative" }}>
-      <GeoJsonMap geojson={isGeoJson ? aoi : null} canEdit={canEdit}
+      <GeoJsonMap geojson={isGeoJson ? aoi : null} overlay={overlay} canEdit={canEdit}
         onClear={isGeoJson ? () => onSetAoi(null) : null} />
       {showUpload && (
         <div style={{ position:"absolute", top:8, left:56, zIndex:500, display:"flex", flexDirection:"column", gap:6, alignItems:"flex-start", maxWidth:"calc(100% - 64px)" }}>
           <span style={{ background:"rgba(11,18,32,0.78)", color:"#cdd6e3", fontSize:11, padding:"4px 9px", borderRadius:6, fontFamily:"var(--font-mono)" }}>
-            {!isGeoJson ? "No area of interest mapped yet" : `${count} AOI${count !== 1 ? "s" : ""} delivered`}
+            {!isGeoJson ? (overlay ? "AOI files shown on map" : "No area of interest mapped yet") : `${count} AOI${count !== 1 ? "s" : ""} delivered`}
           </span>
           <label htmlFor={inputId} title="GeoJSON · KML · zipped Shapefile" style={{
             display:"inline-flex", alignItems:"center", gap:7, cursor: busy?"wait":"pointer",
@@ -3144,6 +3173,53 @@ function ProfileTab({ d, canEdit, onSaveField, onUpdate }) {
   );
 }
 
+// Context-tab AOI: the interactive map (base aoi_geojson) with the uploaded AOI
+// files parsed and drawn on top as a read-only overlay, plus the file list
+// (multi-upload, names, per-file download). Files are fetched from storage and
+// parsed on display, so already-uploaded files show on the map too.
+function ContextAoi({ d, canEdit, onUpdate }) {
+  const files = d.profile.tech.aoiFiles || [];
+  const [overlay, setOverlay] = useState(null);
+  const key = files.map(f => (f.type === "link" ? "" : f.url || "")).join("|");
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const parseable = files.filter(f => f.type !== "link" && f.url && /\.(geojson|json|kml|zip)$/i.test(f.name || ""));
+      if (!parseable.length) { setOverlay(null); return; }
+      const feats = [];
+      for (const f of parseable) {
+        try {
+          const res = await fetch(`${SUPABASE_URL}/storage/v1/object/public/${STORAGE_BUCKET}/${f.url}`);
+          if (!res.ok) continue;
+          const blob = await res.blob();
+          const parsed = await parseAoiFile(new File([blob], f.name));
+          feats.push(...toFeatures(normalizeGeoJson(parsed)));
+        } catch (e) { console.error("AOI file map-parse failed:", f.name, e); }
+      }
+      if (!cancelled) setOverlay(feats.length ? { type: "FeatureCollection", features: feats } : null);
+    })();
+    return () => { cancelled = true; };
+  }, [key]);
+
+  return (
+    <>
+      <AoiUploader aoi={d.context.aoi} canEdit={canEdit} which="aoi" overlay={overlay}
+        onSetAoi={(geojson) => onUpdate({ _setAoi: { geojson, which:"aoi" } })} />
+      <div style={{ marginTop: 14 }}>
+        <FeasibilityFiles
+          title="AOI files" icon={MapPin}
+          accept=".geojson,.json,.kml,.kmz,.zip,.shp,.gpkg"
+          files={files} canEdit={canEdit}
+          onUpload={(file) => onUpdate({ _uploadAoiFile: { file } })}
+          onAddLink={(name, url) => onUpdate({ _addAoiLink: { name, url } })}
+          onRemove={(idx) => onUpdate({ _removeAoiFile: { idx } })}
+        />
+      </div>
+    </>
+  );
+}
+
 function ContextTab({ d, canEdit, onSaveField, onUpdate }) {
   return (
     <>
@@ -3155,18 +3231,7 @@ function ContextTab({ d, canEdit, onSaveField, onUpdate }) {
           <EditableList items={d.context.objectives} field="objectives" canEdit={canEdit} onSave={onSaveField} emptyIcon={Target} emptyText="No objectives defined." />
         </Block>
         <Block icon={MapPin} title="Area of interest">
-          <AoiUploader aoi={d.context.aoi} canEdit={canEdit} which="aoi"
-            onSetAoi={(geojson) => onUpdate({ _setAoi: { geojson, which:"aoi" } })} />
-          <div style={{ marginTop: 14 }}>
-            <FeasibilityFiles
-              title="AOI files" icon={MapPin}
-              accept=".geojson,.json,.kml,.kmz,.zip,.shp,.gpkg"
-              files={d.profile.tech.aoiFiles} canEdit={canEdit}
-              onUpload={(file) => onUpdate({ _uploadAoiFile: { file } })}
-              onAddLink={(name, url) => onUpdate({ _addAoiLink: { name, url } })}
-              onRemove={(idx) => onUpdate({ _removeAoiFile: { idx } })}
-            />
-          </div>
+          <ContextAoi d={d} canEdit={canEdit} onUpdate={onUpdate} />
         </Block>
       </div>
     </>
