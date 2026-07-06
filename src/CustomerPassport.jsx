@@ -4496,8 +4496,12 @@ const CORE_PIPELINES_LIST = [
 
 async function fetchPassports({ pipeline, stage, ownerFilter, search, archivedView } = {}) {
   const pipes = (pipeline && pipeline !== "all") ? [pipeline] : CORE_PIPELINES_LIST;
-  const pipeQ = pipes.map(p => `pipeline.eq.${encodeURIComponent(p)}`).join(",");
-  let params = `?select=id,hubspot_deal_id,company,deal_id_display,hubspot_stage,hubspot_stage_idx,hubspot_amount,hubspot_last_contacted,hubspot_last_contact_owner,hubspot_synced_at,owner_director,owner_se,owner_cs,owner_analytics,pipeline,last_activity_label,updated_at,handed_to_cs,handed_to_analytics,is_eap,archived,archived_at,archived_reason&or=(${pipeQ})&order=updated_at.desc&limit=300`;
+  // Use `in.()` with double-quoted values — required so pipeline names with
+  // special chars (e.g. "Bespoke Analytics (EMEA & APAC)") are treated literally.
+  // The `or=(pipeline.eq.…)` form lets raw parentheses break the filter parse,
+  // silently dropping every pipeline listed after the one with parens (Reseller).
+  const pipeQ = pipes.map(p => `"${encodeURIComponent(p)}"`).join(",");
+  let params = `?select=id,hubspot_deal_id,company,deal_id_display,hubspot_stage,hubspot_stage_idx,hubspot_amount,hubspot_last_contacted,hubspot_last_contact_owner,hubspot_synced_at,owner_director,owner_se,owner_cs,owner_analytics,pipeline,last_activity_label,updated_at,handed_to_cs,handed_to_analytics,is_eap,archived,archived_at,archived_reason&pipeline=in.(${pipeQ})&order=updated_at.desc&limit=300`;
   if (stage !== undefined && stage !== "all") params += `&hubspot_stage_idx=eq.${stage}`;
   // archivedView: "active" (default, hide archived) | "archived" (only archived) | "all"
   if (!archivedView || archivedView === "active") params += `&archived=eq.false`;
