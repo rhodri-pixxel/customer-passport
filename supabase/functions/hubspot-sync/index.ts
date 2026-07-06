@@ -547,6 +547,93 @@ serve(async function(req) {
     });
   }
 
+  // BATCH: refresh contacts + activities for EVERY deal (nightly cron calls this).
+  // Mirrors the per-deal sync_notes_for_deal logic above; runs in the background
+  // so the HTTP call returns immediately, and wraps each deal in try/catch so one
+  // failure doesn't abort the run. Dedupes by hs_engagement_id, so after the first
+  // (heavier) run each night only picks up genuinely new activity.
+  if (body.action === "sync_all_notes") {
+    const passportsRes = await sb.from("handover_passports").select("id, hubspot_deal_id").not("hubspot_deal_id", "is", null);
+    const list = passportsRes.data || [];
+
+    const runForDeal = async (dealId, passportId) => {
+      // ── contacts ──
+      try {
+        const existingContactsRes = await sb.from("deal_contacts").select("hubspot_contact_id").eq("passport_id", passportId).not("hubspot_contact_id", "is", null);
+        const seenContacts = new Set((existingContactsRes.data || []).map(r => r.hubspot_contact_id));
+        const cAssoc = await hsGet("/crm/v3/objects/deals/" + dealId + "/associations/contacts", token).catch(() => ({ results: [] }));
+        const contactIds = (cAssoc.results || []).map(a => a.id || a.toObjectId).filter(Boolean).slice(0, 30);
+        for (const cid of contactIds) {
+          if (seenContacts.has(cid)) continue;
+          const contact = await hsGet("/crm/v3/objects/contacts/" + cid + "?properties=firstname,lastname,email,jobtitle", token).catch(() => null);
+          if (!contact || !contact.properties) continue;
+          const pr = contact.properties;
+          const name = ((pr.firstname || "") + " " + (pr.lastname || "")).trim() || pr.email || "Unknown";
+          await sb.from("deal_contacts").insert({ passport_id: passportId, name: name, role: pr.jobtitle || null, email: pr.email || null, hubspot_contact_id: cid });
+          seenContacts.add(cid);
+        }
+      } catch (e) { console.error("batch contact pull error for " + dealId, e); }
+
+      // ── activities (deal + associated contacts + companies) ──
+      const existingNotesRes = await sb.from("meeting_notes").select("hs_engagement_id").eq("passport_id", passportId).not("hs_engagement_id", "is", null);
+      const seen = new Set((existingNotesRes.data || []).map(r => r.hs_engagement_id));
+      let added = 0;
+      const activityTypes = ["notes", "meetings", "calls", "emails"];
+      const records = [{ type: "deals", id: dealId }];
+      try {
+        const cAssoc2 = await hsGet("/crm/v4/objects/deals/" + dealId + "/associations/contacts", token).catch(() => ({ results: [] }));
+        for (const a of (cAssoc2.results || [])) { const id = a.toObjectId || a.id; if (id) records.push({ type: "contacts", id: String(id) }); }
+        const coAssoc = await hsGet("/crm/v4/objects/deals/" + dealId + "/associations/companies", token).catch(() => ({ results: [] }));
+        for (const a of (coAssoc.results || [])) { const id = a.toObjectId || a.id; if (id) records.push({ type: "companies", id: String(id) }); }
+      } catch (e) { console.error("batch assoc gather error for " + dealId, e); }
+
+      const typeConfig = {
+        notes: { props: "hs_note_body,hs_timestamp,hs_createdate", body: "hs_note_body", date: "hs_timestamp", label: "note" },
+        meetings: { props: "hs_meeting_title,hs_meeting_body,hs_meeting_start_time,hs_timestamp", body: "hs_meeting_body", date: "hs_meeting_start_time", label: "meeting", title: "hs_meeting_title" },
+        calls: { props: "hs_call_title,hs_call_body,hs_timestamp,hs_createdate", body: "hs_call_body", date: "hs_timestamp", label: "call", title: "hs_call_title" },
+        emails: { props: "hs_email_subject,hs_email_text,hs_timestamp,hs_createdate", body: "hs_email_text", date: "hs_timestamp", label: "email", title: "hs_email_subject" },
+      };
+      for (const objType of activityTypes) {
+        const cfg = typeConfig[objType];
+        const engagementIds = new Set();
+        for (const rec of records) {
+          const assoc = await hsGet("/crm/v4/objects/" + rec.type + "/" + rec.id + "/associations/" + objType, token).catch(() => ({ results: [] }));
+          for (const a of (assoc.results || [])) { const id = a.toObjectId || a.id; if (id) engagementIds.add(String(id)); }
+        }
+        for (const eid of engagementIds) {
+          if (seen.has(eid)) continue;
+          const obj = await hsGet("/crm/v3/objects/" + objType + "/" + eid + "?properties=" + cfg.props, token).catch(() => null);
+          if (!obj || !obj.properties) continue;
+          const raw = obj.properties[cfg.body] || "";
+          const title = cfg.title ? (obj.properties[cfg.title] || "") : "";
+          let bodyText = String(raw).replace(/<[^>]+>/g, " ").replace(/&nbsp;/g, " ").replace(/&amp;/g, "&").replace(/\s+/g, " ").trim();
+          if (title) bodyText = title + (bodyText ? " — " + bodyText : "");
+          if (!bodyText) continue;
+          const ts = obj.properties[cfg.date] || obj.properties.hs_timestamp || obj.properties.hs_createdate || "";
+          await sb.from("meeting_notes").insert({ passport_id: passportId, note_date: ts ? new Date(ts).toISOString().slice(0,10) : null, author: "HubSpot (" + cfg.label + ")", body: bodyText.slice(0, 4000), hs_engagement_id: eid });
+          seen.add(eid);
+          added++;
+        }
+      }
+      return added;
+    };
+
+    const job = (async () => {
+      let ok = 0, failed = 0, totalNotes = 0;
+      for (const p of list) {
+        try { totalNotes += await runForDeal(p.hubspot_deal_id, p.id); ok++; }
+        catch (e) { failed++; console.error("sync_all_notes: deal " + p.hubspot_deal_id + " failed", e); }
+      }
+      console.log("sync_all_notes complete: " + ok + " ok, " + failed + " failed, " + totalNotes + " notes added, of " + list.length + " deals");
+    })();
+    if (typeof EdgeRuntime !== "undefined" && EdgeRuntime.waitUntil) EdgeRuntime.waitUntil(job);
+    else await job;
+
+    return new Response(JSON.stringify({ ok: true, started: true, deals: list.length }), {
+      headers: Object.assign({}, CORS, { "Content-Type": "application/json" }),
+    });
+  }
+
   // FULL SYNC
   const ROSTER_NAME_BY_EMAIL = {
     "alex@pixxel.space":"Alex Koh Hock Poh","allyson@pixxel.space":"Allyson Jenkins",
