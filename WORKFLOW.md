@@ -6,6 +6,30 @@ How to make changes safely and ship them to production.
 - **`staging`** = where edits are tested first, via a Vercel preview deployment.
 - **Never edit `main` directly.** Always go through `staging`.
 
+## Before you start (sync with the team)
+
+Pull everyone else's changes down **before** you make your own, so your commits
+land on top of theirs — this keeps the fast-forward promote (step 4) working.
+
+```bash
+cd path/to/customer-passport
+git checkout main
+git pull origin main        # teammates' production changes
+git checkout staging
+git pull origin staging     # teammates' staging changes
+git merge main              # make sure staging also has anything new in main
+```
+
+Optional — peek at what changed first (never touches your files):
+```bash
+git fetch origin
+git log --oneline origin/main -5
+git log --oneline origin/staging -5
+```
+
+If a pull reports **conflict** or **diverged**, stop — you and a teammate edited
+the same lines. Resolve carefully (or ask for help) before continuing.
+
 ## The cycle
 
 **1. Start on the staging branch**
