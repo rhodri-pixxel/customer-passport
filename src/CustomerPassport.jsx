@@ -3190,26 +3190,28 @@ function ProfileTab({ d, canEdit, onSaveField, onUpdate }) {
   );
 }
 
-// Context-tab AOI: a single merged map view driven by the one AOI-files list.
-// Every uploaded file is fetched from storage, parsed, and drawn together with
-// the legacy interactive AOI (if any) in one unified style — so there is only
-// one place to upload (the list) and the map simply reflects it. The map's
-// "Remove" clears only a leftover legacy AOI; files are managed in the list.
+// Context-tab AOI: one list + one map. A legacy interactive AOI (aoi_geojson) is
+// surfaced as the first list row (inline geojson) so already-uploaded AOIs appear
+// in the list AND on the map automatically — no migration. Every list entry (that
+// row + each uploaded file) is parsed and drawn together in one style.
 function ContextAoi({ d, canEdit, onUpdate }) {
-  const files = d.profile.tech.aoiFiles || [];
+  const rawFiles = d.profile.tech.aoiFiles || [];
   const base = d.context.aoi || null;
-  const [fileGeo, setFileGeo] = useState(null);
-  const key = files.length + ":" + files.map(f => f.url || (f.geojson ? "inline" : "")).join("|");
+  const baseEntry = base ? { name: "AOI (imported)", type: "geojson", geojson: base } : null;
+  const listFiles = baseEntry ? [baseEntry, ...rawFiles] : rawFiles;
+
+  const [mapGeo, setMapGeo] = useState(null);
+  const key = listFiles.length + ":" + listFiles.map(f => f.url || (f.geojson ? "inline" : "")).join("|");
 
   useEffect(() => {
     let cancelled = false;
     (async () => {
       const feats = [];
-      for (const f of files) {
+      for (const f of listFiles) {
         if (f.type === "link") continue;
         try {
           if (f.geojson) {
-            // Inline GeoJSON entry (e.g. a legacy AOI imported into the list).
+            // Inline GeoJSON entry (the surfaced legacy AOI).
             feats.push(...toFeatures(normalizeGeoJson(f.geojson)));
           } else if (f.url && /\.(geojson|json|kml|zip)$/i.test(f.name || "")) {
             const res = await fetch(`${SUPABASE_URL}/storage/v1/object/public/${STORAGE_BUCKET}/${f.url}`);
@@ -3220,30 +3222,26 @@ function ContextAoi({ d, canEdit, onUpdate }) {
           }
         } catch (e) { console.error("AOI file map-parse failed:", f.name, e); }
       }
-      if (!cancelled) setFileGeo(feats.length ? { type: "FeatureCollection", features: feats } : null);
+      if (!cancelled) setMapGeo(feats.length ? { type: "FeatureCollection", features: feats } : null);
     })();
     return () => { cancelled = true; };
   }, [key]);
 
-  // One merged FeatureCollection: legacy interactive AOI + every uploaded file,
-  // all in the same style. Null when there's nothing to show.
-  const merged = useMemo(() => {
-    const m = mergeGeoJson(base, fileGeo);
-    return m.features.length ? m : null;
-  }, [base, fileGeo]);
-
   return (
     <>
-      <GeoJsonMap geojson={merged} canEdit={canEdit}
-        onClear={base ? () => onUpdate({ _setAoi: { geojson: null, which: "aoi" } }) : null} />
+      <GeoJsonMap geojson={mapGeo} canEdit={canEdit} />
       <div style={{ marginTop: 14 }}>
         <FeasibilityFiles
           title="AOI files" icon={MapPin} showLink={false}
           accept=".geojson,.json,.kml,.kmz,.zip,.shp,.gpkg"
-          files={files} canEdit={canEdit}
+          files={listFiles} canEdit={canEdit}
           onUpload={(file) => onUpdate({ _uploadAoiFile: { file } })}
-          onAddLink={(name, url) => onUpdate({ _addAoiLink: { name, url } })}
-          onRemove={(idx) => onUpdate({ _removeAoiFile: { idx } })}
+          onRemove={(i) => {
+            // Row 0 is the surfaced legacy AOI → clears aoi_geojson; the rest map
+            // back to their index in the real aoi_files array.
+            if (baseEntry && i === 0) onUpdate({ _setAoi: { geojson: null, which: "aoi" } });
+            else onUpdate({ _removeAoiFile: { idx: i - (baseEntry ? 1 : 0) } });
+          }}
         />
       </div>
     </>
