@@ -553,25 +553,18 @@ serve(async function(req) {
   // failure doesn't abort the run. Dedupes by hs_engagement_id, so after the first
   // (heavier) run each night only picks up genuinely new activity.
   if (body.action === "sync_all_notes") {
-    // Only ACTIVE deals, and by default only those contacted in the last `days`
-    // days (default 7) — keeps the nightly run small enough to finish inside the
-    // edge time limit. Pass { "all": true } to force every active deal (one-off
-    // backfill), or { "days": N } to widen the window.
-    const days = Number(body.days) || 7;
-    const cutoff = Date.now() - days * 86400000;
-    const toMillis = (v) => {
-      if (!v) return 0;
-      const s = String(v).trim();
-      if (/^\d+$/.test(s)) { const n = Number(s); return s.length <= 10 ? n * 1000 : n; }
-      const t = Date.parse(s);
-      return isNaN(t) ? 0 : t;
-    };
+    // Process the N "stalest" active deals per run (never-synced first, then
+    // oldest notes_synced_at), then stamp each. A frequent cron cycles through
+    // every deal over the day, and each run stays well inside the edge time
+    // limit. Pass { "limit": N } to tune the batch size.
+    const limit = Number(body.limit) || 20;
     const passportsRes = await sb.from("handover_passports")
-      .select("id, hubspot_deal_id, hubspot_last_contacted")
+      .select("id, hubspot_deal_id")
       .not("hubspot_deal_id", "is", null)
-      .or("archived.is.null,archived.eq.false");
-    let list = passportsRes.data || [];
-    if (!body.all) list = list.filter(p => toMillis(p.hubspot_last_contacted) >= cutoff);
+      .or("archived.is.null,archived.eq.false")
+      .order("notes_synced_at", { ascending: true, nullsFirst: true })
+      .limit(limit);
+    const list = passportsRes.data || [];
 
     const runForDeal = async (dealId, passportId) => {
       // ── contacts ──
@@ -640,6 +633,8 @@ serve(async function(req) {
       for (const p of list) {
         try { totalNotes += await runForDeal(p.hubspot_deal_id, p.id); ok++; }
         catch (e) { failed++; console.error("sync_all_notes: deal " + p.hubspot_deal_id + " failed", e); }
+        // Stamp regardless of success so the next run advances to other deals.
+        await sb.from("handover_passports").update({ notes_synced_at: new Date().toISOString() }).eq("id", p.id);
       }
       console.log("sync_all_notes complete: " + ok + " ok, " + failed + " failed, " + totalNotes + " notes added, of " + list.length + " deals");
     })();
