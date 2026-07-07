@@ -553,8 +553,25 @@ serve(async function(req) {
   // failure doesn't abort the run. Dedupes by hs_engagement_id, so after the first
   // (heavier) run each night only picks up genuinely new activity.
   if (body.action === "sync_all_notes") {
-    const passportsRes = await sb.from("handover_passports").select("id, hubspot_deal_id").not("hubspot_deal_id", "is", null);
-    const list = passportsRes.data || [];
+    // Only ACTIVE deals, and by default only those contacted in the last `days`
+    // days (default 7) — keeps the nightly run small enough to finish inside the
+    // edge time limit. Pass { "all": true } to force every active deal (one-off
+    // backfill), or { "days": N } to widen the window.
+    const days = Number(body.days) || 7;
+    const cutoff = Date.now() - days * 86400000;
+    const toMillis = (v) => {
+      if (!v) return 0;
+      const s = String(v).trim();
+      if (/^\d+$/.test(s)) { const n = Number(s); return s.length <= 10 ? n * 1000 : n; }
+      const t = Date.parse(s);
+      return isNaN(t) ? 0 : t;
+    };
+    const passportsRes = await sb.from("handover_passports")
+      .select("id, hubspot_deal_id, hubspot_last_contacted")
+      .not("hubspot_deal_id", "is", null)
+      .or("archived.is.null,archived.eq.false");
+    let list = passportsRes.data || [];
+    if (!body.all) list = list.filter(p => toMillis(p.hubspot_last_contacted) >= cutoff);
 
     const runForDeal = async (dealId, passportId) => {
       // ── contacts ──
