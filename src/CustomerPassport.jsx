@@ -3271,11 +3271,30 @@ const QC_FAIL_REASONS = ["BBR","Cloud cover","Geometric","Bounding-box","Stripin
 const STATUS_CLS = { "Tasked":"cs-tasked","Captured":"cs-captured","QC In Progress":"cs-qcprog","QC Passed":"cs-qcpass","QC Failed":"cs-qcfail","Shared":"cs-shared" };
 const STATUS_DOT = { "Tasked":"var(--se)","Captured":"var(--accent)","QC In Progress":"var(--warn)","QC Passed":"var(--ok)","QC Failed":"var(--bad)","Shared":"var(--an)" };
 
-function CaptureLog({ entries, canEdit, onAdd, onUploadShot }) {
+function CaptureLog({ entries, canEdit, onAdd, onEdit, onDelete, onUploadShot }) {
   const [open, setOpen] = useState(false);
-  const [form, setForm] = useState({ date: new Date().toISOString().slice(0,10), status:"Tasked", failReasons:[], otherText:"", note:"", shotPath:"" });
+  const [editId, setEditId] = useState(null);   // id of the entry being edited, or null for a new one
+  const emptyForm = () => ({ date: new Date().toISOString().slice(0,10), status:"Tasked", failReasons:[], otherText:"", note:"", shotPath:"" });
+  const [form, setForm] = useState(emptyForm());
   const [uploading, setUploading] = useState(false);
   const toggleReason = (r) => setForm(f => ({ ...f, failReasons: f.failReasons.includes(r) ? f.failReasons.filter(x => x !== r) : [...f.failReasons, r] }));
+  const closeForm = () => { setOpen(false); setEditId(null); setForm(emptyForm()); };
+  // Split a stored "BBR, Other: Color balance" string back into checkboxes + free text
+  const parseReasons = (failReason) => {
+    const failReasons = [], others = [];
+    (failReason || "").split(",").map(s => s.trim()).filter(Boolean).forEach(part => {
+      if (/^Other\s*:/i.test(part)) { failReasons.push("Other"); others.push(part.replace(/^Other\s*:\s*/i, "")); }
+      else if (QC_FAIL_REASONS.includes(part)) failReasons.push(part);
+      else { failReasons.push("Other"); others.push(part); }
+    });
+    return { failReasons: [...new Set(failReasons)], otherText: others.join(", ") };
+  };
+  const startEdit = (entry) => {
+    const parsed = entry.status === "QC Failed" ? parseReasons(entry.failReason) : { failReasons: [], otherText: "" };
+    setForm({ date: entry.date || new Date().toISOString().slice(0,10), status: entry.status || "Tasked", failReasons: parsed.failReasons, otherText: parsed.otherText, note: entry.note || "", shotPath: entry.shotPath || "" });
+    setEditId(entry.id);
+    setOpen(true);
+  };
   const submit = () => {
     if (!form.note.trim() && form.failReasons.length === 0) { return; }
     // Build a readable failReason string from the selected reasons + other text
@@ -3284,12 +3303,9 @@ function CaptureLog({ entries, canEdit, onAdd, onUploadShot }) {
       const parts = form.failReasons.map(r => r === "Other" && form.otherText.trim() ? `Other: ${form.otherText.trim()}` : r);
       reasonStr = parts.join(", ");
     }
-    onAdd({
-      date: form.date, status: form.status, failReason: reasonStr,
-      note: form.note, shotPath: form.shotPath, author:"You",
-    });
-    setOpen(false);
-    setForm({ date: new Date().toISOString().slice(0,10), status:"Tasked", failReasons:[], otherText:"", note:"", shotPath:"" });
+    const payload = { date: form.date, status: form.status, failReason: reasonStr, note: form.note, shotPath: form.shotPath, author:"You" };
+    if (editId) onEdit(editId, payload); else onAdd(payload);
+    closeForm();
   };
   const handleShot = async (e) => {
     const file = e.target.files[0];
@@ -3311,6 +3327,12 @@ function CaptureLog({ entries, canEdit, onAdd, onUploadShot }) {
               <span className={`clog-status ${STATUS_CLS[e.status]||""}`}>{e.status}</span>
               <span style={{ fontSize:11.5, fontFamily:"var(--font-mono)", color:"var(--muted2)" }}>{e.date}</span>
               {e.failReason && <span className="clog-reason"><AlertTriangle size={11} /> {e.failReason}</span>}
+              {canEdit && (
+                <span style={{ marginLeft:"auto", display:"inline-flex", gap:2 }}>
+                  <button onClick={() => startEdit(e)} title="Edit entry" style={{ border:"none", background:"none", color:"var(--accent-deep)", cursor:"pointer", padding:3, display:"inline-flex" }}><Pencil size={13} /></button>
+                  <button onClick={() => onDelete(e.id)} title="Remove entry" style={{ border:"none", background:"none", color:"var(--muted2)", cursor:"pointer", padding:3, display:"inline-flex" }}><Trash2 size={13} /></button>
+                </span>
+              )}
             </div>
             <div className="clog-note">{e.note}</div>
             {e.shotPath && <a href={`${SUPABASE_URL}/storage/v1/object/public/${STORAGE_BUCKET}/${e.shotPath}`} target="_blank" rel="noreferrer" style={{ display:"inline-flex", alignItems:"center", gap:5, fontSize:12, color:"var(--accent-deep)", marginTop:4 }}><Camera size={12} /> View failed image</a>}
@@ -3382,8 +3404,8 @@ function CaptureLog({ entries, canEdit, onAdd, onUploadShot }) {
             </div>
           )}
           <div style={{ display:"flex", gap:8, justifyContent:"flex-end", marginTop:10 }}>
-            <button className="btn ghost" style={{ color:"var(--muted)", border:"1px solid var(--line)", background:"#fff" }} onClick={() => setOpen(false)}>Cancel</button>
-            <button className="btn solid" onClick={submit}><Camera size={13} /> Save event</button>
+            <button className="btn ghost" style={{ color:"var(--muted)", border:"1px solid var(--line)", background:"#fff" }} onClick={closeForm}>Cancel</button>
+            <button className="btn solid" onClick={submit}><Camera size={13} /> {editId ? "Save changes" : "Save event"}</button>
           </div>
         </div>
       )}
@@ -3610,6 +3632,15 @@ function ExecutionTab({ d, canEdit, onUpdate, onSaveField }) {
       author: "You",
     }});
   };
+  const editCaptureEvent = (id, entry) => {
+    onUpdate({ _updateCaptureEntry: { id, fields: {
+      entry_date: entry.date,
+      status: entry.status,
+      fail_reason: entry.failReason || null,
+      note: entry.note,
+      screenshot_path: entry.shotPath || null,
+    }}});
+  };
   const toggleAction = (id) => {
     const item = (e.actionItems||[]).find(a => a.id === id);
     onUpdate({ _toggleAction: { id, done: item ? !item.done : true } });
@@ -3645,6 +3676,8 @@ function ExecutionTab({ d, canEdit, onUpdate, onSaveField }) {
       {/* Capture / image progress log */}
       <Block icon={Camera} title="Capture & image progress log">
         <CaptureLog entries={e.captureLog||[]} canEdit={canEdit} onAdd={addCaptureEvent}
+          onEdit={editCaptureEvent}
+          onDelete={(id) => onUpdate({ _deleteRecord: { table:"capture_log", id } })}
           onUploadShot={async (file) => await uploadFile(d.id, file)} />
       </Block>
 
@@ -4989,6 +5022,12 @@ function PassportDetail({ data, onBack, canEdit, onRefresh, onAssign, onNotifyAl
           text: `:satellite: Capture log update on *${p.company}*: *${ce.status}*${reason}. ${ce.note || ""}`.trim(),
           by: currentUserName, channelId: slackChannel ? slackChannel.id : undefined, passportId: p.id });
       if (sent) toast(`Capture logged · notified ${sent} owner${sent !== 1 ? "s" : ""} in Slack`);
+      return;
+    }
+    // Capture log entry — edit
+    if (updated._updateCaptureEntry) {
+      await sbPatch("capture_log", updated._updateCaptureEntry.id, updated._updateCaptureEntry.fields);
+      await onRefresh();
       return;
     }
     // Action item toggle
