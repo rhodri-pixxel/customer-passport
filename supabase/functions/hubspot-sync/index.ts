@@ -557,7 +557,7 @@ serve(async function(req) {
     // oldest notes_synced_at), then stamp each. A frequent cron cycles through
     // every deal over the day, and each run stays well inside the edge time
     // limit. Pass { "limit": N } to tune the batch size.
-    const limit = Number(body.limit) || 20;
+    const limit = Number(body.limit) || 60;
     const passportsRes = await sb.from("handover_passports")
       .select("id, hubspot_deal_id")
       .not("hubspot_deal_id", "is", null)
@@ -629,14 +629,20 @@ serve(async function(req) {
     };
 
     const job = (async () => {
-      let ok = 0, failed = 0, totalNotes = 0;
+      // Stop well before the ~150s hard limit — process as many of the fetched
+      // deals as safely fit, stamp each; the rest are picked up next run. This
+      // self-adapts to heavy deals so a run is never killed mid-way.
+      const deadline = Date.now() + 110000;
+      let ok = 0, failed = 0, totalNotes = 0, processed = 0;
       for (const p of list) {
+        if (Date.now() > deadline) break;
         try { totalNotes += await runForDeal(p.hubspot_deal_id, p.id); ok++; }
         catch (e) { failed++; console.error("sync_all_notes: deal " + p.hubspot_deal_id + " failed", e); }
         // Stamp regardless of success so the next run advances to other deals.
         await sb.from("handover_passports").update({ notes_synced_at: new Date().toISOString() }).eq("id", p.id);
+        processed++;
       }
-      console.log("sync_all_notes complete: " + ok + " ok, " + failed + " failed, " + totalNotes + " notes added, of " + list.length + " deals");
+      console.log("sync_all_notes complete: " + ok + " ok, " + failed + " failed, " + totalNotes + " notes added, " + processed + "/" + list.length + " fetched");
     })();
     if (typeof EdgeRuntime !== "undefined" && EdgeRuntime.waitUntil) EdgeRuntime.waitUntil(job);
     else await job;
