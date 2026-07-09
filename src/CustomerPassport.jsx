@@ -3433,7 +3433,7 @@ function EditableField({ k, value, field, canEdit, onSave, mono, placeholder }) 
 }
 
 // Inline-editable comma-separated tags (e.g. data sources).
-function EditableTags({ k, values, field, canEdit, onSave, cls }) {
+function EditableTags({ k, values, field, canEdit, onSave, cls, placeholder }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState((values || []).join(", "));
   const [saving, setSaving] = useState(false);
@@ -3454,7 +3454,7 @@ function EditableTags({ k, values, field, canEdit, onSave, cls }) {
         <div className="k">{k}</div>
         <input
           autoFocus value={draft} onChange={e => setDraft(e.target.value)}
-          placeholder="Comma-separated, e.g. FireFly VNIR, Sentinel-2, PlanetScope"
+          placeholder={placeholder || "Comma-separated, e.g. FireFly VNIR, Sentinel-2, PlanetScope"}
           style={{ width:"100%", border:"1px solid var(--accent)", borderRadius:8, padding:"8px 11px", fontSize:13, fontFamily:"inherit", marginTop:4, outline:"none" }}
           onKeyDown={e => { if (e.key === "Enter") save(); if (e.key === "Escape") { setDraft((values||[]).join(", ")); setEditing(false); } }}
         />
@@ -3545,6 +3545,15 @@ function ProfileTab({ d, canEdit, onSaveField, onUpdate }) {
           <EditableField k="Use case" value={d.profile.useCase} field="use_case" canEdit={canEdit} onSave={onSaveField} />
           <EditableField k="Pain points" value={d.profile.painPoints} field="pain_points" canEdit={canEdit} onSave={onSaveField} />
           <EditableField k="Support needs" value={d.profile.supportNeeds} field="support_needs" canEdit={canEdit} onSave={onSaveField} />
+        </div>
+      </Block>
+
+      <Block icon={Star} title="What the customer wants">
+        <div className="kv">
+          <EditableTags k="Imagery priorities" values={d.profile.imageryPriorities} field="imagery_priorities" canEdit={canEdit} onSave={onSaveField} cls="spec"
+            placeholder="Comma-separated, e.g. Spectral fidelity, Spatial resolution, Capture frequency, Coastal monitoring" />
+          <EditableField k="Expected value from Pixxel" value={d.profile.expectedValue} field="expected_value" canEdit={canEdit} onSave={onSaveField}
+            placeholder="What outcome/value does the customer expect, based on earlier conversations?" />
         </div>
       </Block>
 
@@ -4008,6 +4017,88 @@ function SampleDataAdder({ items, canEdit, onAdd, onDelete }) {
   );
 }
 
+// Common commercial/legal formalities offered as quick-add chips.
+const COMMERCIAL_LEGAL_PRESETS = ["NDA", "Order form", "Contract / MSA", "DPA", "SOW", "Security review"];
+// status label → [text colour, background]
+const CL_STATUS_STYLE = {
+  "Not started": ["#6B7480", "var(--line-soft)"],
+  "In progress": ["#B5720E", "#FEF3E0"],
+  "Complete":    ["#1f8a57", "#E3F7EC"],
+};
+
+// Structured tracker for completed legal/commercial formalities (NDA, order form,
+// contract, …). Stored as a jsonb array on the passport; each change saves the
+// whole array via onSave("commercial_legal", next).
+function CommercialLegalTracker({ items, canEdit, onSave }) {
+  const rows = Array.isArray(items) ? items : [];
+  const [custom, setCustom] = useState("");
+  const commit = (next) => onSave("commercial_legal", next);
+  const addRow = (label) => {
+    const l = String(label || "").trim();
+    if (!l || rows.some(r => (r.label || "").toLowerCase() === l.toLowerCase())) return;
+    commit([...rows, { label: l, status: "Not started", date: "", note: "" }]);
+  };
+  const updateRow = (i, patch) => commit(rows.map((r, idx) => idx === i ? { ...r, ...patch } : r));
+  const removeRow = (i) => commit(rows.filter((_, idx) => idx !== i));
+  const used = new Set(rows.map(r => (r.label || "").toLowerCase()));
+
+  return (
+    <div>
+      {rows.length ? (
+        <div style={{ overflowX: "auto" }}>
+          <table className="qc-table" style={{ margin: 0 }}>
+            <thead><tr><th>Item</th><th>Status</th><th>Date</th><th>Note</th>{canEdit && <th></th>}</tr></thead>
+            <tbody>
+              {rows.map((r, i) => {
+                const [fg, bg] = CL_STATUS_STYLE[r.status] || CL_STATUS_STYLE["Not started"];
+                return (
+                  <tr key={i}>
+                    <td style={{ fontWeight: 600 }}>{r.label}</td>
+                    <td>
+                      {canEdit ? (
+                        <div className="cp-select" style={{ display: "inline-flex", minWidth: 128 }}>
+                          <select value={r.status || "Not started"} onChange={ev => updateRow(i, { status: ev.target.value })}>
+                            {Object.keys(CL_STATUS_STYLE).map(s => <option key={s} value={s}>{s}</option>)}
+                          </select>
+                          <ChevronDown size={13} className="chev" />
+                        </div>
+                      ) : <span className="tag" style={{ background: bg, color: fg, fontWeight: 600 }}>{r.status || "Not started"}</span>}
+                    </td>
+                    <td>
+                      {canEdit
+                        ? <input type="date" defaultValue={r.date || ""} onChange={ev => updateRow(i, { date: ev.target.value })}
+                            style={{ border: "1px solid var(--line)", borderRadius: 7, padding: "5px 8px", fontFamily: "inherit", fontSize: 12.5, outline: "none" }} />
+                        : <span style={{ fontSize: 12, fontFamily: "var(--font-mono)", color: "var(--muted2)" }}>{r.date || "—"}</span>}
+                    </td>
+                    <td style={{ minWidth: 180 }}>
+                      {canEdit
+                        ? <input defaultValue={r.note || ""} placeholder="e.g. signed via DocuSign" onBlur={ev => { if ((ev.target.value || "") !== (r.note || "")) updateRow(i, { note: ev.target.value }); }}
+                            style={{ width: "100%", border: "1px solid var(--line)", borderRadius: 7, padding: "5px 8px", fontFamily: "inherit", fontSize: 12.5, outline: "none" }} />
+                        : <span style={{ fontSize: 12.5, color: "var(--muted)" }}>{r.note || "—"}</span>}
+                    </td>
+                    {canEdit && <td><button onClick={() => removeRow(i)} title="Remove" style={{ border: "none", background: "none", color: "var(--muted2)", cursor: "pointer", fontSize: 13 }}>✕</button></td>}
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      ) : <div className="empty"><FileText size={15} /> No formalities tracked yet{canEdit && " — add one below"}.</div>}
+
+      {canEdit && (
+        <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 6, marginTop: 10 }}>
+          {COMMERCIAL_LEGAL_PRESETS.filter(p => !used.has(p.toLowerCase())).map(p => (
+            <button key={p} onClick={() => addRow(p)} className="tag" style={{ cursor: "pointer", border: "1px dashed var(--line)", background: "transparent", color: "var(--accent-deep)" }}>+ {p}</button>
+          ))}
+          <input value={custom} onChange={ev => setCustom(ev.target.value)} placeholder="Add custom…"
+            onKeyDown={ev => { if (ev.key === "Enter") { addRow(custom); setCustom(""); } }}
+            style={{ border: "1px solid var(--line)", borderRadius: 7, padding: "5px 10px", fontFamily: "inherit", fontSize: 12.5, outline: "none", width: 150 }} />
+        </div>
+      )}
+    </div>
+  );
+}
+
 function ExecutionTab({ d, canEdit, onUpdate, onSaveField }) {
   const e = d.execution;
   const st = d.sectionStamps || {};
@@ -4094,6 +4185,29 @@ function ExecutionTab({ d, canEdit, onUpdate, onSaveField }) {
             <EditableField k="Next steps" value={e.nextSteps} field="next_steps" canEdit={canEdit} onSave={onSaveField} />
             <EditableField k="Commercial model" value={e.commercial} field="commercial_model" canEdit={canEdit} onSave={onSaveField} />
           </div>
+        </Block>
+      </div>
+
+      <div className="cols">
+        {/* Aurora workspace */}
+        <Block icon={Layers} title="Aurora workspace">
+          <div className="kv">
+            {e.auroraUrl && (
+              <a href={e.auroraUrl} target="_blank" rel="noreferrer" style={{ display:"inline-flex", alignItems:"center", gap:6, fontSize:13, color:"var(--accent-deep)", fontWeight:500, marginBottom:6 }}>
+                <ExternalLink size={13} /> Open workspace
+              </a>
+            )}
+            <EditableField k="Workspace / project" value={e.auroraWorkspace} field="aurora_workspace" canEdit={canEdit} onSave={onSaveField}
+              placeholder="Aurora workspace name or ID" />
+            <EditableField k="Workspace link" value={e.auroraUrl} field="aurora_url" canEdit={canEdit} onSave={onSaveField}
+              placeholder="https://…" mono />
+          </div>
+        </Block>
+
+        {/* Completed legal / commercial formalities */}
+        <Block icon={FileText} title="Commercial & legal formalities">
+          <CommercialLegalTracker items={e.commercialLegal} canEdit={canEdit}
+            onSave={onSaveField} />
         </Block>
       </div>
 
@@ -5319,6 +5433,8 @@ function PassportDetail({ data, onBack, canEdit, onRefresh, onAssign, onNotifyAl
       useCase: p.use_case || "",
       painPoints: p.pain_points || "",
       supportNeeds: p.support_needs || "",
+      imageryPriorities: p.imagery_priorities || [],
+      expectedValue: p.expected_value || "",
       tech: {
         dataSources: p.data_sources || [],
         bandset: p.bandset || "",
@@ -5342,6 +5458,9 @@ function PassportDetail({ data, onBack, canEdit, onRefresh, onAssign, onNotifyAl
       risks: risks.map(r => ({ id: r.id, sev: r.severity, text: r.description })),
       nextSteps: p.next_steps || "",
       commercial: p.commercial_model || "",
+      auroraWorkspace: p.aurora_workspace || "",
+      auroraUrl: p.aurora_url || "",
+      commercialLegal: Array.isArray(p.commercial_legal) ? p.commercial_legal : [],
       captureLog: captureLog.map(e => ({
         id: e.id, date: e.entry_date, status: e.status, failReason: e.fail_reason || "",
         note: e.note, author: e.author, shotPath: e.screenshot_path || "",
@@ -5638,6 +5757,7 @@ function PassportDetail({ data, onBack, canEdit, onRefresh, onAssign, onNotifyAl
         "customer_team","use_case","pain_points","support_needs","data_sources",
         "bandset","cadence","problem_statement","objectives","success_criteria",
         "next_steps","commercial_model","expertise_level","tasked_aois",
+        "imagery_priorities","expected_value","aurora_workspace","aurora_url","commercial_legal",
       ];
       if (ALLOWED.includes(field)) {
         // Record this field as app-edited so the HubSpot sync won't overwrite it
