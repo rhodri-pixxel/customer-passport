@@ -40,10 +40,14 @@ const NOTION_VERSION = "2022-06-28";
 
 // Query an entire Notion database, following pagination (100 rows/page).
 // Capped at 20 pages (2,000 rows) to stay within the edge time limit.
-async function notionQueryAll(dbId, token) {
+// Optional `filter` is a Notion query filter object (e.g. match by a property).
+async function notionQueryAll(dbId, token, filter) {
   const rows = [];
   let cursor;
   for (let i = 0; i < 20; i++) {
+    const payload = { page_size: 100 };
+    if (cursor) payload.start_cursor = cursor;
+    if (filter) payload.filter = filter;
     const res = await fetch(`https://api.notion.com/v1/databases/${dbId}/query`, {
       method: "POST",
       headers: {
@@ -51,7 +55,7 @@ async function notionQueryAll(dbId, token) {
         "Content-Type": "application/json",
         "Notion-Version": NOTION_VERSION,
       },
-      body: JSON.stringify(cursor ? { start_cursor: cursor, page_size: 100 } : { page_size: 100 }),
+      body: JSON.stringify(payload),
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.message || "Notion query failed");
@@ -341,6 +345,22 @@ serve(async function(req) {
       if (!r.ok) return json({ ok: false, error: data.message || "Notion API error" }, 502);
       await sb.from("customer_feedback").update({ notion_page_id: data.id }).eq("id", fbId);
       return json({ ok: true, notion_page_id: data.id });
+    } catch (e) {
+      return json({ ok: false, error: String(e) }, 502);
+    }
+  }
+
+  // ── List feedback from Notion (pull existing entries into the Feedback tab) ──
+  // Optionally narrowed to one customer by matching the "Customer Name" title.
+  if (body.action === "list_feedback") {
+    const notionToken = Deno.env.get("NOTION_TOKEN");
+    const dbId = Deno.env.get("NOTION_FEEDBACK_DB_ID");
+    if (!notionToken || !dbId) return json({ ok: false, error: "Notion not configured — NOTION_FEEDBACK_DB_ID not set." }, 400);
+    const name = (body.customer_name || "").trim();
+    const filter = name ? { property: "Customer Name", title: { contains: name } } : undefined;
+    try {
+      const rows = (await notionQueryAll(dbId, notionToken, filter)).map(notionRow);
+      return json({ ok: true, rows });
     } catch (e) {
       return json({ ok: false, error: String(e) }, 502);
     }

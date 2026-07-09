@@ -4961,6 +4961,28 @@ function SatBadge({ sat, size = "md" }) {
   );
 }
 
+// Map a Notion "Satellite Imagery Customer Feedback" row → the card's entry shape.
+function mapNotionFeedback(r) {
+  const arr = (v) => Array.isArray(v) ? v : (v ? String(v).split(",").map((s) => s.trim()).filter(Boolean) : []);
+  const str = (v) => Array.isArray(v) ? v.join(", ") : (v || "");
+  return {
+    id: "notion-" + r._id,
+    notionPageId: r._id,
+    _fromNotion: true,
+    satisfaction: r["Satisfaction Rating"] || "Neutral",
+    keyInsights: r["Key Insights"] || "",
+    date: r["Feedback Date"] || "",
+    type: r["Type"] || "",
+    customerExpertise: r["Customer Expertise"] || "",
+    softwareUsed: str(r["Software Used"]),
+    imageBandsets: arr(r["Image Bandset(s)"]),
+    imageIds: arr(r["Image IDs"]),
+    followUpDate: r["Follow-up Date"] || "",
+    followUpAssignedTo: str(r["Follow Up Assigned To"]),
+    supportingFiles: Array.isArray(r["Supporting Files & Images"]) ? r["Supporting Files & Images"] : [],
+  };
+}
+
 function FeedbackTab({ d, canEdit, onUpdate, toast }) {
   const [filter, setFilter] = useState("all");
   const [expanded, setExpanded] = useState(null);
@@ -4973,10 +4995,34 @@ function FeedbackTab({ d, canEdit, onUpdate, toast }) {
 
   const [syncingAll, setSyncingAll] = useState(false);
   const [syncingId, setSyncingId] = useState(null);
+  const [notionEntries, setNotionEntries] = useState([]);
 
-  const items = (d.feedback || []).filter(f => filter === "all" || f.satisfaction === filter);
-  const counts = Object.fromEntries(Object.keys(SAT_META).map(k => [k, (d.feedback || []).filter(f => f.satisfaction === k).length]));
-  const unsynced = (d.feedback || []).filter(f => !f.notionPageId);
+  // Pull existing feedback for this customer from Notion, matched by company name.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch(`${SUPABASE_URL}/functions/v1/hubspot-sync`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "Authorization": `Bearer ${SUPABASE_ANON_KEY}` },
+          body: JSON.stringify({ action: "list_feedback", customer_name: d.company }),
+        });
+        const data = await res.json();
+        if (!cancelled && data.ok) setNotionEntries((data.rows || []).map(mapNotionFeedback));
+      } catch (e) { /* best-effort pull */ }
+    })();
+    return () => { cancelled = true; };
+  }, [d.company, d.id]);
+
+  // Merge local (Supabase) entries with Notion-only entries, deduped by page id.
+  const localEntries = d.feedback || [];
+  const localPageIds = new Set(localEntries.map(f => f.notionPageId).filter(Boolean));
+  const pulledOnly = notionEntries.filter(ne => !localPageIds.has(ne.notionPageId));
+  const allEntries = [...localEntries, ...pulledOnly].sort((a, b) => String(b.date || "").localeCompare(String(a.date || "")));
+
+  const items = allEntries.filter(f => filter === "all" || f.satisfaction === filter);
+  const counts = Object.fromEntries(Object.keys(SAT_META).map(k => [k, allEntries.filter(f => f.satisfaction === k).length]));
+  const unsynced = localEntries.filter(f => !f.notionPageId);
 
   const syncOne = async (fb) => {
     setSyncingId(fb.id);
@@ -5018,9 +5064,10 @@ function FeedbackTab({ d, canEdit, onUpdate, toast }) {
           <div className="nb-title">Notion · Satellite Imagery Customer Feedback</div>
           <div className="nb-status">
             <span className="notion-dot linked" />
-            <span>{unsynced.length === 0
-              ? "Connected — all entries synced to Notion"
-              : `Connected — ${unsynced.length} entr${unsynced.length === 1 ? "y" : "ies"} not yet synced`}</span>
+            <span>Connected — {[
+              pulledOnly.length ? `${pulledOnly.length} pulled from Notion` : null,
+              unsynced.length ? `${unsynced.length} not yet synced` : null,
+            ].filter(Boolean).join(" · ") || "all entries synced"}</span>
           </div>
         </div>
         {canEdit && unsynced.length > 0 && (
@@ -5034,7 +5081,7 @@ function FeedbackTab({ d, canEdit, onUpdate, toast }) {
       <div className="fb-header">
         <div className="fb-sat-bar">
           <button className={`sat-chip all${filter === "all" ? " on" : ""}`} onClick={() => setFilter("all")}>
-            All · {(d.feedback || []).length}
+            All · {allEntries.length}
           </button>
           {Object.entries(SAT_META).map(([k, m]) => counts[k] > 0 && (
             <button key={k} className={`sat-chip ${m.cls}${filter === k ? " on" : ""}`} onClick={() => setFilter(f => f === k ? "all" : k)}>
@@ -5153,6 +5200,7 @@ function FeedbackTab({ d, canEdit, onUpdate, toast }) {
                   <span>·</span>
                   <span>{fb.customerExpertise}</span>
                   {fb.followUpDate && <><span>·</span><span>Follow-up {fb.followUpDate}</span></>}
+                  {fb._fromNotion && <><span>·</span><span style={{ color:"var(--accent-deep)", fontWeight:600 }}>From Notion</span></>}
                 </div>
               </div>
               <ChevronDown size={16} color="var(--muted2)" style={{ transform: expanded === fb.id ? "rotate(180deg)" : "none", transition:".15s" }} />
@@ -5194,7 +5242,7 @@ function FeedbackTab({ d, canEdit, onUpdate, toast }) {
                 </div>
                 {fb.notionPageId ? (
                   <div style={{ marginTop: 14 }}>
-                    <span className="link"><ExternalLink size={12} /> View in Notion</span>
+                    <a className="link" href={`https://www.notion.so/${String(fb.notionPageId).replace(/-/g, "")}`} target="_blank" rel="noreferrer"><ExternalLink size={12} /> View in Notion</a>
                   </div>
                 ) : canEdit ? (
                   <div style={{ marginTop: 14 }}>
