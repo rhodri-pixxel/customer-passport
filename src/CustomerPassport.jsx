@@ -4997,7 +4997,9 @@ function FeedbackTab({ d, canEdit, onUpdate, toast }) {
   const [syncingId, setSyncingId] = useState(null);
   const [notionEntries, setNotionEntries] = useState([]);
 
-  // Pull existing feedback for this customer from Notion, matched by company name.
+  // Pull existing feedback for this customer from Notion. Match on the dedicated
+  // "Hubspot name" column (the exact HubSpot company name), normalized for
+  // case/whitespace. All matching rows are kept — including intentional duplicates.
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -5005,10 +5007,14 @@ function FeedbackTab({ d, canEdit, onUpdate, toast }) {
         const res = await fetch(`${SUPABASE_URL}/functions/v1/hubspot-sync`, {
           method: "POST",
           headers: { "Content-Type": "application/json", "Authorization": `Bearer ${SUPABASE_ANON_KEY}` },
-          body: JSON.stringify({ action: "list_feedback", customer_name: d.company }),
+          body: JSON.stringify({ action: "list_feedback" }),
         });
         const data = await res.json();
-        if (!cancelled && data.ok) setNotionEntries((data.rows || []).map(mapNotionFeedback));
+        if (cancelled || !data.ok) return;
+        const norm = (s) => String(s || "").trim().toLowerCase();
+        const target = norm(d.company);
+        const matched = target ? (data.rows || []).filter(r => norm(r["Hubspot name"]) === target) : [];
+        setNotionEntries(matched.map(mapNotionFeedback));
       } catch (e) { /* best-effort pull */ }
     })();
     return () => { cancelled = true; };
