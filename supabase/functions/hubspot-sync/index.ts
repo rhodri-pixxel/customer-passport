@@ -30,6 +30,23 @@ async function hsPatch(path, body, token) {
 // ── Stage helpers ─────────────────────────────────────────
 const STAGE_LABELS = ["Discovery","Technical Validation","Quote / Solution Scoping","Proposal","Contracting & Negotiation","Closed Won","Closed Lost"];
 function stageLabel(i) { return STAGE_LABELS[i] || "Discovery"; }
+
+// The app renders a fixed 7-stage bar (Discovery..Closed Won=5, Closed Lost=6).
+// HubSpot pipelines vary in stage count/order, so a stage's raw position within
+// its pipeline is NOT the canonical index — closed stages especially land wrong
+// (e.g. a 5-stage pipeline puts Closed Won at position 3 → renders as "Proposal").
+// Resolve closed-won / closed-lost from HubSpot's stage metadata (+ label as a
+// fallback) so they always map to 5/6; keep the positional index for open stages,
+// clamped below the closed slots so an open stage never renders as closed.
+function canonicalStageIdx(stage, ordinal) {
+  const meta = stage.metadata || {};
+  const label = String(stage.label || "").toLowerCase();
+  const isClosed = meta.isClosed === true || meta.isClosed === "true";
+  const prob = parseFloat(meta.probability);
+  if ((isClosed && prob === 1) || label.indexOf("closed won") !== -1 || label === "won") return 5;
+  if ((isClosed && prob === 0) || label.indexOf("closed lost") !== -1 || label === "lost") return 6;
+  return Math.min(ordinal, 4);
+}
 function lastActivityLabel(iso) {
   if (!iso) return "No activity";
   const d = Math.floor((Date.now() - new Date(iso).getTime()) / 86400000);
@@ -425,12 +442,34 @@ serve(async function(req) {
         companyActivity[t] = (r.results || []).length;
       }
     }
+    // Dump the raw property keys of one sample email (deal-level first, else contact)
+    // so we can see which field actually holds the body/subject.
+    let sampleEmail = null;
+    try {
+      let emailId = null;
+      const de = await hsGet("/crm/v4/objects/deals/" + dealId + "/associations/emails", token).catch(() => ({ results: [] }));
+      emailId = (de.results || []).map(a => a.toObjectId || a.id).filter(Boolean)[0];
+      if (!emailId && contactIds.length) {
+        const ce = await hsGet("/crm/v4/objects/contacts/" + contactIds[0] + "/associations/emails", token).catch(() => ({ results: [] }));
+        emailId = (ce.results || []).map(a => a.toObjectId || a.id).filter(Boolean)[0];
+      }
+      if (emailId) {
+        const full = await hsGet("/crm/v3/objects/emails/" + emailId + "?properties=hs_email_subject,hs_email_text,hs_email_html,hs_body_preview,hs_email_direction,hs_email_status,hs_timestamp", token).catch(e => ({ error: String(e) }));
+        const props = full.properties || {};
+        sampleEmail = {
+          id: emailId,
+          all_property_keys: Object.keys(props),
+          nonempty: Object.fromEntries(Object.entries(props).filter(([k, v]) => v != null && String(v).trim() !== "").map(([k, v]) => [k, String(v).slice(0, 80)])),
+        };
+      }
+    } catch (e) { sampleEmail = { error: String(e) }; }
     return new Response(JSON.stringify({
       deal_activities: dealAssoc,
       contact_count: contactIds.length,
       contact_activities: contactActivity,
       company_count: companyIds.length,
       company_activities: companyActivity,
+      sample_email: sampleEmail,
     }, null, 2), { headers: Object.assign({}, CORS, { "Content-Type": "application/json" }) });
   }
 
@@ -507,7 +546,7 @@ serve(async function(req) {
       notes: { props: "hs_note_body,hs_timestamp,hs_createdate", body: "hs_note_body", date: "hs_timestamp", label: "note" },
       meetings: { props: "hs_meeting_title,hs_meeting_body,hs_meeting_start_time,hs_timestamp", body: "hs_meeting_body", date: "hs_meeting_start_time", label: "meeting", title: "hs_meeting_title" },
       calls: { props: "hs_call_title,hs_call_body,hs_timestamp,hs_createdate", body: "hs_call_body", date: "hs_timestamp", label: "call", title: "hs_call_title" },
-      emails: { props: "hs_email_subject,hs_email_text,hs_timestamp,hs_createdate", body: "hs_email_text", date: "hs_timestamp", label: "email", title: "hs_email_subject" },
+      emails: { props: "hs_email_subject,hs_email_text,hs_email_html,hs_body_preview,hs_timestamp,hs_createdate", body: "hs_email_text", date: "hs_timestamp", label: "email", title: "hs_email_subject" },
     };
 
     // Collect unique engagement ids per type across all records (dedupe within this run too)
@@ -525,7 +564,7 @@ serve(async function(req) {
         if (seen.has(eid)) continue;
         const obj = await hsGet("/crm/v3/objects/" + objType + "/" + eid + "?properties=" + cfg.props, token).catch(() => null);
         if (!obj || !obj.properties) continue;
-        const raw = obj.properties[cfg.body] || "";
+        const raw = obj.properties[cfg.body] || obj.properties.hs_email_html || obj.properties.hs_body_preview || "";
         const title = cfg.title ? (obj.properties[cfg.title] || "") : "";
         let bodyText = String(raw).replace(/<[^>]+>/g, " ").replace(/&nbsp;/g, " ").replace(/&amp;/g, "&").replace(/\s+/g, " ").trim();
         if (title) bodyText = title + (bodyText ? " — " + bodyText : "");
@@ -601,7 +640,7 @@ serve(async function(req) {
         notes: { props: "hs_note_body,hs_timestamp,hs_createdate", body: "hs_note_body", date: "hs_timestamp", label: "note" },
         meetings: { props: "hs_meeting_title,hs_meeting_body,hs_meeting_start_time,hs_timestamp", body: "hs_meeting_body", date: "hs_meeting_start_time", label: "meeting", title: "hs_meeting_title" },
         calls: { props: "hs_call_title,hs_call_body,hs_timestamp,hs_createdate", body: "hs_call_body", date: "hs_timestamp", label: "call", title: "hs_call_title" },
-        emails: { props: "hs_email_subject,hs_email_text,hs_timestamp,hs_createdate", body: "hs_email_text", date: "hs_timestamp", label: "email", title: "hs_email_subject" },
+        emails: { props: "hs_email_subject,hs_email_text,hs_email_html,hs_body_preview,hs_timestamp,hs_createdate", body: "hs_email_text", date: "hs_timestamp", label: "email", title: "hs_email_subject" },
       };
       for (const objType of activityTypes) {
         const cfg = typeConfig[objType];
@@ -614,7 +653,7 @@ serve(async function(req) {
           if (seen.has(eid)) continue;
           const obj = await hsGet("/crm/v3/objects/" + objType + "/" + eid + "?properties=" + cfg.props, token).catch(() => null);
           if (!obj || !obj.properties) continue;
-          const raw = obj.properties[cfg.body] || "";
+          const raw = obj.properties[cfg.body] || obj.properties.hs_email_html || obj.properties.hs_body_preview || "";
           const title = cfg.title ? (obj.properties[cfg.title] || "") : "";
           let bodyText = String(raw).replace(/<[^>]+>/g, " ").replace(/&nbsp;/g, " ").replace(/&amp;/g, "&").replace(/\s+/g, " ").trim();
           if (title) bodyText = title + (bodyText ? " — " + bodyText : "");
@@ -706,7 +745,7 @@ serve(async function(req) {
     PIPELINE_LABEL[pl.id] = pl.label;
     (pl.stages || []).forEach(function(s, i) {
       STAGE_TO_PIPELINE[s.id] = pl.id;
-      STAGE_TO_IDX[s.id] = i;
+      STAGE_TO_IDX[s.id] = canonicalStageIdx(s, i);
       STAGE_TO_LABEL[s.id] = s.label;
     });
   }
