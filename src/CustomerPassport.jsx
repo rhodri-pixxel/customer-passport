@@ -1922,23 +1922,22 @@ function mapIprItemToQc(item, deal) {
   const assigneePerson = assigneeName
     ? Object.values(TEAM_MEMBERS).flat().find(p => p.name === assigneeName) : null;
   const cloud = item.cloud_cover_percentage != null ? `${Math.round(item.cloud_cover_percentage)}% cloud` : "";
-  const notes = [
-    item.processing_status ? `IPR: ${item.processing_status}` : "",
-    item.bandset ? `Bandset: ${item.bandset}` : "",
-    cloud,
-  ].filter(Boolean).join(" · ");
+  // IPR-provenance data lives in its own column, not in the reviewer's QC notes.
+  const iprInfo = [item.processing_status || "", cloud].filter(Boolean).join(" · ");
   const location = item.aoi_id
     || (item.latitude != null && item.longitude != null ? `${item.latitude.toFixed(3)}, ${item.longitude.toFixed(3)}` : "");
   return {
     organization: (deal && deal.company) || item.aoi_id || "Unknown",
     passport_id: deal ? deal.id : null,
-    usecase: item.bandset || "",
+    usecase: "",                  // customer use case is unknown from IPR — leave for the reviewer
+    bandset: item.bandset || "",
     qc_result: "Awaiting QC",
     image_id: iprImageId(item),
     type: "Sample",
     assignee: assigneeName || null,
     assignee_email: assigneePerson ? assigneePerson.email : null,
-    qc_notes: notes,
+    qc_notes: "",                 // reviewer fills this in during QC
+    ipr_info: iprInfo,
     location,
     mvp_image: false,
     created_by: "IPR import",
@@ -2054,6 +2053,8 @@ function QcForm({ onSubmit, onCancel, defaultOrg, defaultPassportId, deals, init
   const [form, setForm] = useState({
     organization: (initial && initial.organization) || defaultOrg || "",
     usecase: (initial && initial.usecase) || "",
+    bandset: (initial && initial.bandset) || "",
+    ipr_info: (initial && initial.ipr_info) || "",  // preserved on edit; not user-editable
     priority: (initial && initial.priority) || "Medium",
     qc_result: (initial && initial.qc_result) || "Awaiting QC",
     image_id: (initial && initial.image_id) || "",
@@ -2114,6 +2115,18 @@ function QcForm({ onSubmit, onCancel, defaultOrg, defaultPassportId, deals, init
           <div className="k" style={{ fontFamily:"var(--font-mono)", fontSize:"9.5px", letterSpacing:".1em", textTransform:"uppercase", color:"var(--muted2)", marginBottom:4 }}>Image ID</div>
           <input value={form.image_id} onChange={e => set("image_id", e.target.value)} placeholder="e.g. FF03 2790"
             style={{ width:"100%", border:"1px solid var(--line)", borderRadius:8, padding:"7px 10px", fontFamily:"inherit", fontSize:13, outline:"none" }} />
+        </div>
+      </div>
+      <div className="clog-form-row">
+        <div>
+          <div className="k" style={{ fontFamily:"var(--font-mono)", fontSize:"9.5px", letterSpacing:".1em", textTransform:"uppercase", color:"var(--muted2)", marginBottom:4 }}>Bandset</div>
+          <input value={form.bandset} onChange={e => set("bandset", e.target.value)} placeholder="e.g. Vegetation"
+            style={{ width:"100%", border:"1px solid var(--line)", borderRadius:8, padding:"7px 10px", fontFamily:"inherit", fontSize:13, outline:"none" }} />
+        </div>
+        <div>
+          <div className="k" style={{ fontFamily:"var(--font-mono)", fontSize:"9.5px", letterSpacing:".1em", textTransform:"uppercase", color:"var(--muted2)", marginBottom:4 }}>IPR info</div>
+          <input value={form.ipr_info} readOnly placeholder="— (auto-filled from IPR)"
+            style={{ width:"100%", border:"1px solid var(--line)", borderRadius:8, padding:"7px 10px", fontFamily:"inherit", fontSize:13, outline:"none", background:"var(--line-soft)", color:"var(--muted)" }} />
         </div>
       </div>
       <div className="clog-form-row">
@@ -2208,6 +2221,7 @@ function QcRow({ row, canEdit, onDelete, onEdit, showOrg }) {
     <tr>
       {showOrg && <td style={{ fontWeight:600 }}>{row.organization}</td>}
       <td>{row.usecase || "—"}</td>
+      <td>{row.bandset || "—"}</td>
       <td><span className="tag" style={{ background: row.qc_result === "Pass" ? "#E3F7EC" : row.qc_result === "Fail" ? "#FCE9E7" : "#FEF3E0", color: row.qc_result === "Pass" ? "#1f8a57" : row.qc_result === "Fail" ? "#c0392b" : "#B5720E", fontWeight:600 }}>{row.qc_result}</span></td>
       <td style={{ fontFamily:"var(--font-mono)", fontSize:12 }}>{row.image_id || "—"}</td>
       <td><span className="tag" style={{ background: row.type === "Paid" ? "var(--accent-soft)" : "var(--line-soft)", color: row.type === "Paid" ? "var(--accent-deep)" : "var(--muted)" }}>{row.type}</span></td>
@@ -2217,6 +2231,7 @@ function QcRow({ row, canEdit, onDelete, onEdit, showOrg }) {
       <td>{row.mvp_image ? <CheckCircle2 size={14} color="var(--ok)" /> : "—"}</td>
       <td>{row.photo_evidence_path ? <a href={`${SUPABASE_URL}/storage/v1/object/public/${STORAGE_BUCKET}/${row.photo_evidence_path}`} target="_blank" rel="noreferrer"><Camera size={14} color="var(--accent-deep)" /></a> : "—"}</td>
       <td style={{ fontSize: 12, fontFamily: "var(--font-mono)", color: "var(--muted2)" }}>{row.feedback_milestone || "—"}</td>
+      <td style={{ fontSize: 11.5, color: "var(--muted2)", maxWidth: 180 }}>{row.ipr_info || "—"}</td>
       {canEdit && (
         <td style={{ whiteSpace: "nowrap" }}>
           <button onClick={() => onEdit && onEdit(row)} title="Edit this QC entry" style={{ border:"none", background:"none", color:"var(--accent-deep)", cursor:"pointer", padding:"0 4px" }}><Pencil size={13} /></button>
@@ -2507,14 +2522,14 @@ function QualityChecksGlobal({ deals, canEdit, onOpen, toast }) {
           <table className="qc-table">
             <thead>
               <tr>
-                <th>Organization</th><th>Usecase</th><th>QC</th><th>Image ID</th><th>Type</th>
-                <th>Assignee</th><th>Notes</th><th>Location</th><th>MVP</th><th>Evidence</th><th>Milestone</th>
+                <th>Organization</th><th>Usecase</th><th>Bandset</th><th>QC</th><th>Image ID</th><th>Type</th>
+                <th>Assignee</th><th>Notes</th><th>Location</th><th>MVP</th><th>Evidence</th><th>Milestone</th><th>IPR info</th>
                 {canEdit && <th></th>}
               </tr>
             </thead>
             <tbody>
               {filtered.length ? filtered.map(r => <QcRow key={r.id} row={r} canEdit={canEdit} onDelete={remove} onEdit={(row) => { setEditRow(row); setShowForm(false); window.scrollTo({ top: 0, behavior: "smooth" }); }} showOrg />)
-                : <tr><td colSpan={canEdit ? 11 : 10} style={{ textAlign:"center", padding:30, color:"var(--muted2)" }}>No QC entries yet.</td></tr>}
+                : <tr><td colSpan={canEdit ? 13 : 12} style={{ textAlign:"center", padding:30, color:"var(--muted2)" }}>No QC entries yet.</td></tr>}
             </tbody>
           </table>
         </div>
@@ -2571,7 +2586,7 @@ function QcTab({ d, canEdit, toast }) {
         rows.length ? (
           <div style={{ overflowX: "auto" }}>
             <table className="qc-table">
-              <thead><tr><th>Usecase</th><th>QC</th><th>Image ID</th><th>Type</th><th>Assignee</th><th>Notes</th><th>Location</th><th>MVP</th><th>Evidence</th><th>Milestone</th>{canEdit && <th></th>}</tr></thead>
+              <thead><tr><th>Usecase</th><th>Bandset</th><th>QC</th><th>Image ID</th><th>Type</th><th>Assignee</th><th>Notes</th><th>Location</th><th>MVP</th><th>Evidence</th><th>Milestone</th><th>IPR info</th>{canEdit && <th></th>}</tr></thead>
               <tbody>{rows.map(r => <QcRow key={r.id} row={r} canEdit={canEdit} onDelete={remove} onEdit={(row) => { setEditRow(row); setShowForm(false); }} />)}</tbody>
             </table>
           </div>
@@ -2628,7 +2643,7 @@ function MvpImagesGlobal({ deals, canEdit, onOpen, toast }) {
       const dateStr = r.created_at ? new Date(r.created_at).toLocaleDateString("en-GB", { day:"2-digit", month:"long", year:"numeric" }) : "";
       lines.push([
         "",                       // Region — fill on import
-        "",                       // Bandset — fill on import
+        r.bandset || "",          // Bandset (from IPR)
         "",                       // Industry — fill on import
         r.usecase || "",          // Use Case
         dateStr,                  // Date of capture (QC entry date)

@@ -53,23 +53,21 @@ function mapItemToQc(item: any, deal: any) {
   const seName: string | null = deal.owner_se || null;
   const se = seName ? SE_ROSTER[seName] : null;
   const cloud = item.cloud_cover_percentage != null ? `${Math.round(item.cloud_cover_percentage)}% cloud` : "";
-  const notes = [
-    item.processing_status ? `IPR: ${item.processing_status}` : "",
-    item.bandset ? `Bandset: ${item.bandset}` : "",
-    cloud,
-  ].filter(Boolean).join(" · ");
+  const iprInfo = [item.processing_status || "", cloud].filter(Boolean).join(" · ");
   const location = item.aoi_id
     || (item.latitude != null && item.longitude != null ? `${item.latitude.toFixed(3)}, ${item.longitude.toFixed(3)}` : "");
   return {
     organization: deal.company || item.aoi_id || "Unknown",
     passport_id: deal.id,
-    usecase: item.bandset || "",
+    usecase: "",
+    bandset: item.bandset || "",
     qc_result: "Awaiting QC",
     image_id: iprImageId(item),
     type: "Sample",
     assignee: seName,
     assignee_email: se ? se.email : null,
-    qc_notes: notes,
+    qc_notes: "",
+    ipr_info: iprInfo,
     location,
     mvp_image: false,
     created_by: "IPR auto-sync",
