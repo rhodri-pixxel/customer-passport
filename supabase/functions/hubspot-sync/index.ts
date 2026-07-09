@@ -473,6 +473,45 @@ serve(async function(req) {
     }, null, 2), { headers: Object.assign({}, CORS, { "Content-Type": "application/json" }) });
   }
 
+  // READ-ONLY probe: find where commercial/legal docs (NDA/order form/contract)
+  // live on a deal — checks legal-ish deal properties, note attachments, quotes,
+  // and file associations. Used once to design the sync; safe to leave in place.
+  if (body.action === "debug_docs") {
+    const dealId = body.hubspot_deal_id;
+    const KW = /(nda|contract|order[\s_]*form|\bmsa\b|sign|legal|agreement|docusign|pandadoc|\bsow\b|\bdpa\b|terms|proposal|quote|document)/i;
+    // 1. Deal properties whose name/label looks legal/commercial, + this deal's values
+    const propsRes = await hsGet("/crm/v3/properties/deals", token).catch(() => ({ results: [] }));
+    const matchProps = (propsRes.results || [])
+      .filter(pr => KW.test(pr.name || "") || KW.test(pr.label || ""))
+      .map(pr => ({ name: pr.name, label: pr.label, type: pr.type }));
+    let dealVals = {};
+    const names = matchProps.map(p => p.name).slice(0, 100);
+    if (names.length) {
+      const dl = await hsGet("/crm/v3/objects/deals/" + dealId + "?properties=" + names.join(","), token).catch(() => ({}));
+      dealVals = Object.fromEntries(Object.entries(dl.properties || {}).filter(([k, v]) => v != null && String(v).trim() !== ""));
+    }
+    // 2. Notes on the deal that carry file attachments
+    const notesAssoc = await hsGet("/crm/v4/objects/deals/" + dealId + "/associations/notes", token).catch(() => ({ results: [] }));
+    const noteIds = (notesAssoc.results || []).map(a => a.toObjectId || a.id).filter(Boolean).slice(0, 25);
+    const noteAttachments = [];
+    for (const nid of noteIds) {
+      const n = await hsGet("/crm/v3/objects/notes/" + nid + "?properties=hs_attachment_ids,hs_note_body", token).catch(() => null);
+      if (n && n.properties && n.properties.hs_attachment_ids) {
+        noteAttachments.push({ note: nid, attachment_ids: n.properties.hs_attachment_ids, preview: String(n.properties.hs_note_body || "").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim().slice(0, 60) });
+      }
+    }
+    // 3. Quotes + 4. direct file associations
+    const quotes = await hsGet("/crm/v4/objects/deals/" + dealId + "/associations/quotes", token).catch(() => ({ results: [] }));
+    const files = await hsGet("/crm/v4/objects/deals/" + dealId + "/associations/files", token).catch(e => ({ error: String(e) }));
+    return new Response(JSON.stringify({
+      matching_properties: matchProps,
+      deal_property_values: dealVals,
+      note_attachments: noteAttachments,
+      quotes_count: (quotes.results || []).length,
+      files_assoc: files.results ? files.results.length : files,
+    }, null, 2), { headers: Object.assign({}, CORS, { "Content-Type": "application/json" }) });
+  }
+
   if (body.action === "sync_notes_for_deal") {
     const dealId = body.hubspot_deal_id;
     const passportId = body.passport_id;
