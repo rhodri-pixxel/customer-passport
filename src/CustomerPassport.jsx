@@ -2746,6 +2746,9 @@ function MvpImagesGlobal({ deals, canEdit, onOpen, toast }) {
 function HandoverStatus({ d, canEdit, onUpdate }) {
   const h = d.handover || {};
   const toggle = (team, isOn) => onUpdate({ _handoverToggle: { team, value: !isOn } });
+  const [handbackOpen, setHandbackOpen] = useState(false);
+  const [handbackNote, setHandbackNote] = useState("");
+  const se = d.owners ? d.owners.se : null;
 
   const Row = ({ team, label, on, at, by, assignee, accent }) => (
     <div style={{
@@ -2798,7 +2801,57 @@ function HandoverStatus({ d, canEdit, onUpdate }) {
       <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
         <Row team="cs" label="Customer Success" on={h.cs} at={h.csAt} by={h.csBy} assignee={d.owners ? d.owners.cs : null} accent="#E07A2B" />
         <Row team="analytics" label="Analytics" on={h.analytics} at={h.analyticsAt} by={h.analyticsBy} assignee={d.owners ? d.owners.analytics : null} accent="#7A5AF5" />
+
+        {/* Hand back to SE — the ball is in the SE's court for the next step */}
+        <div style={{
+          display: "flex", alignItems: "center", gap: 12, padding: "12px 14px", borderRadius: 12,
+          border: "1px solid " + (h.backToSe ? "#F0C99A" : "var(--line)"),
+          background: h.backToSe ? "#FEF6EC" : "#fff", flex: 1, minWidth: 240,
+        }}>
+          <div style={{
+            width: 34, height: 34, borderRadius: 9, flex: "none", display: "flex", alignItems: "center", justifyContent: "center",
+            background: h.backToSe ? "#FCEBD3" : "var(--line-soft)",
+          }}>
+            <ArrowRightCircle size={18} color={h.backToSe ? "#C77C1E" : "var(--se)"} style={h.backToSe ? { transform: "scaleX(-1)" } : undefined} />
+          </div>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: ".07em", textTransform: "uppercase", color: "var(--muted2)" }}>Next step owned by SE</div>
+            {h.backToSe ? (
+              <div style={{ fontSize: 13, fontWeight: 600, color: "#B5720E" }}>
+                Handed back to SE{se ? ` · ${se}` : ""}
+                {h.backToSeNote && <div style={{ fontSize: 11.5, fontWeight: 400, color: "var(--muted)", marginTop: 2 }}>“{h.backToSeNote}”</div>}
+                <div style={{ fontSize: 10.5, fontWeight: 400, color: "var(--muted2)" }}>
+                  {h.backToSeAt ? new Date(h.backToSeAt).toLocaleDateString("en-GB", { day:"2-digit", month:"short", year:"numeric" }) : ""}{h.backToSeBy ? ` · by ${h.backToSeBy}` : ""}
+                </div>
+              </div>
+            ) : (
+              <div style={{ fontSize: 13, fontWeight: 500, color: "var(--ink)" }}>
+                {se || "No SE assigned"}
+                <div style={{ fontSize: 10.5, fontWeight: 400, color: "var(--muted2)" }}>SE not flagged for next step</div>
+              </div>
+            )}
+          </div>
+          {canEdit && (h.backToSe
+            ? <button onClick={() => onUpdate({ _handbackToSe: { value: false } })}
+                style={{ flex: "none", padding: "6px 12px", borderRadius: 8, fontSize: 12, fontWeight: 600, cursor: "pointer", border: "1px solid var(--line)", background: "#fff", color: "var(--muted)" }}>Clear</button>
+            : <button onClick={() => setHandbackOpen(o => !o)}
+                style={{ flex: "none", padding: "6px 12px", borderRadius: 8, fontSize: 12, fontWeight: 600, cursor: "pointer", border: "1px solid #C77C1E", background: "#C77C1E", color: "#fff" }}>Hand back to SE</button>
+          )}
+        </div>
       </div>
+
+      {canEdit && handbackOpen && !h.backToSe && (
+        <div style={{ marginTop: 10, display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+          <input value={handbackNote} onChange={e => setHandbackNote(e.target.value)} autoFocus
+            placeholder="What does the SE need to do? (optional)"
+            onKeyDown={e => { if (e.key === "Enter") { onUpdate({ _handbackToSe: { value: true, note: handbackNote.trim() } }); setHandbackOpen(false); setHandbackNote(""); } }}
+            style={{ flex: 1, minWidth: 260, border: "1px solid var(--accent)", borderRadius: 8, padding: "8px 11px", fontFamily: "inherit", fontSize: 13, outline: "none" }} />
+          <button onClick={() => { onUpdate({ _handbackToSe: { value: true, note: handbackNote.trim() } }); setHandbackOpen(false); setHandbackNote(""); }}
+            style={{ padding: "8px 14px", borderRadius: 8, border: "none", background: "#C77C1E", color: "#fff", fontSize: 12.5, fontWeight: 600, cursor: "pointer" }}>Confirm hand-back</button>
+          <button onClick={() => { setHandbackOpen(false); setHandbackNote(""); }}
+            style={{ padding: "8px 14px", borderRadius: 8, border: "1px solid var(--line)", background: "#fff", color: "var(--muted)", fontSize: 12.5, cursor: "pointer" }}>Cancel</button>
+        </div>
+      )}
     </div>
   );
 }
@@ -2987,7 +3040,7 @@ function Passport({ deal, onBack, canEdit, onUpdate, onAssign, onNotifyAll, onPo
 
       {/* tabs */}
       <div className="cp-tabs">
-        {[["profile", Building2, "Profile"], ["context", Target, "Context"], ["execution", Activity, "Execution"], ["qc", Camera, "Quality Checks"], ["notes", FileText, "Notes"], ["feedback", MessageSquare, "Customer Feedback"]].map(([k, Ic, lbl]) => (
+        {[["profile", Building2, "Profile"], ["context", Target, "Context"], ["execution", Activity, "Execution"], ["csummary", LayoutGrid, "CS Summary"], ["qc", Camera, "Quality Checks"], ["notes", FileText, "Notes"], ["feedback", MessageSquare, "Customer Feedback"]].map(([k, Ic, lbl]) => (
           <button key={k} className={tab === k ? "on" : ""} onClick={() => setTab(k)}><Ic size={15} />{lbl}</button>
         ))}
       </div>
@@ -2995,6 +3048,7 @@ function Passport({ deal, onBack, canEdit, onUpdate, onAssign, onNotifyAll, onPo
       {tab === "profile" && <ProfileTab d={deal} canEdit={canEdit} onSaveField={(f,v) => onUpdate({ _fieldUpdate: { field: f, value: v } })} onUpdate={onUpdate} />}
       {tab === "context" && <ContextTab d={deal} canEdit={canEdit} onSaveField={(f,v) => onUpdate({ _fieldUpdate: { field: f, value: v } })} onUpdate={onUpdate} />}
       {tab === "execution" && <ExecutionTab d={deal} canEdit={canEdit} onUpdate={onUpdate} onSaveField={(f,v) => onUpdate({ _fieldUpdate: { field: f, value: v } })} />}
+      {tab === "csummary" && <CSSummaryTab d={deal} canEdit={canEdit} onUpdate={onUpdate} onSaveField={(f,v) => onUpdate({ _fieldUpdate: { field: f, value: v } })} />}
       {tab === "notes" && <NotesTab d={deal} canEdit={canEdit} onUpdate={onUpdate} toast={toast} />}
       {tab === "qc" && <QcTab d={deal} canEdit={canEdit} toast={toast} />}
       {tab === "feedback" && <FeedbackTab d={deal} canEdit={canEdit} onUpdate={onUpdate} toast={toast} />}
@@ -4219,6 +4273,125 @@ function ExecutionTab({ d, canEdit, onUpdate, onSaveField }) {
   );
 }
 
+const CADENCE_OPTIONS = ["Weekly", "Fortnightly", "Monthly", "Quarterly", "Ad-hoc / reactive"];
+
+// A small read-only key/value row for the summary.
+function SummaryKV({ k, v, mono }) {
+  return (
+    <div>
+      <div className="k">{k}</div>
+      <div className="v" style={mono ? { fontFamily: "var(--font-mono)", fontSize: 12.5 } : undefined}>
+        {v ? v : <span style={{ color: "var(--muted2)" }}>Not captured</span>}
+      </div>
+    </div>
+  );
+}
+
+// CS Summary — a read-oriented digest that pulls the fields a CS needs to run the
+// account, aggregated from the Profile / Context / Execution tabs. Files remain
+// downloadable; cadence and commercial/legal are editable here since CS owns them.
+function CSSummaryTab({ d, canEdit, onSaveField, onUpdate }) {
+  const t = d.profile.tech;
+  const e = d.execution;
+  const pocs = e.pocs || [];
+  return (
+    <>
+      {/* Customer cadence — how often CS should check in */}
+      <Block icon={CalendarClock} title="Customer cadence">
+        <div style={{ fontSize: 12, color: "var(--muted2)", marginBottom: 8 }}>How often should CS check in with this customer?</div>
+        <div className="kv">
+          <EditableSelect k="Check-in cadence" value={d.profile.customerCadence} field="customer_cadence" canEdit={canEdit} onSave={onSaveField} options={CADENCE_OPTIONS} customLabel="Custom" />
+        </div>
+      </Block>
+
+      {/* What the customer wants */}
+      <Block icon={Target} title="What the customer wants">
+        <div className="kv">
+          <SummaryKV k="Use case" v={d.profile.useCase} />
+          <SummaryKV k="Pain points" v={d.profile.painPoints} />
+          <SummaryKV k="Support needs" v={d.profile.supportNeeds} />
+          <div>
+            <div className="k">Imagery priorities</div>
+            <div className="tags" style={{ marginTop: 4 }}>
+              {(d.profile.imageryPriorities && d.profile.imageryPriorities.length)
+                ? d.profile.imageryPriorities.map((s, i) => <span key={i} className="tag spec">{s}</span>)
+                : <span style={{ color: "var(--muted2)", fontSize: 13 }}>Not captured</span>}
+            </div>
+          </div>
+          <SummaryKV k="Expected value from Pixxel" v={d.profile.expectedValue} />
+        </div>
+      </Block>
+
+      {/* Technical requirements pulled from Profile */}
+      <Block icon={Radar} title="Technical requirements">
+        <div className="kv">
+          <div>
+            <div className="k">Data sources</div>
+            <div className="tags" style={{ marginTop: 4 }}>
+              {(t.dataSources && t.dataSources.length)
+                ? t.dataSources.map((s, i) => <span key={i} className="tag spec">{s}</span>)
+                : <span style={{ color: "var(--muted2)", fontSize: 13 }}>Not captured</span>}
+            </div>
+          </div>
+          <SummaryKV k="Bandset" v={t.bandset} />
+          <SummaryKV k="Cadence / revisit" v={t.cadence} />
+        </div>
+        <div style={{ marginTop: 12 }}>
+          <TimeOfInterest windows={t.timeOfInterest} canEdit={false} onChange={() => {}} />
+        </div>
+      </Block>
+
+      <div className="cols">
+        <Block icon={MapPin} title="Area of interest — files">
+          <FeasibilityFiles title="AOI files" icon={MapPin} showLink={false}
+            accept=".geojson,.json,.kml,.kmz,.zip,.shp,.gpkg"
+            files={t.aoiFiles} canEdit={false} />
+          <div style={{ fontSize: 11, color: "var(--muted2)", marginTop: 6 }}>
+            <MapPin size={11} style={{ verticalAlign: "-1px" }} /> The interactive AOI map is on the Context tab.
+          </div>
+        </Block>
+        <Block icon={Paperclip} title="Attachments">
+          <AttachmentsManager attachments={d.notes.attachments} canEdit={false} />
+        </Block>
+      </div>
+
+      <div className="cols">
+        <Block icon={Layers} title="Aurora workspace">
+          <div className="kv">
+            {e.auroraUrl && (
+              <a href={e.auroraUrl} target="_blank" rel="noreferrer" style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 13, color: "var(--accent-deep)", fontWeight: 500, marginBottom: 6 }}>
+                <ExternalLink size={13} /> Open workspace
+              </a>
+            )}
+            <SummaryKV k="Workspace / project / org ID" v={e.auroraWorkspace} />
+            <SummaryKV k="Workspace link" v={e.auroraUrl} mono />
+          </div>
+        </Block>
+        <Block icon={FileText} title="Commercial & legal formalities">
+          <CommercialLegalTracker items={e.commercialLegal} canEdit={canEdit} onSave={onSaveField} />
+        </Block>
+      </div>
+
+      {/* Proofs of concept (read-only summary) */}
+      <Block icon={Activity} title="Proofs of concept">
+        {pocs.length ? (
+          <div className="kv">
+            {pocs.map(poc => (
+              <div key={poc.id} style={{ display: "flex", alignItems: "baseline", gap: 8, padding: "6px 0", borderBottom: "1px solid var(--line-soft)" }}>
+                <span className="tag" style={{ background: "var(--accent-soft)", color: "var(--accent-deep)", fontWeight: 600 }}>{poc.status || "Planned"}</span>
+                <div>
+                  <div style={{ fontWeight: 600, fontSize: 13 }}>{poc.name}</div>
+                  {poc.note && <div style={{ fontSize: 12.5, color: "var(--muted)" }}>{poc.note}</div>}
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : <div className="empty"><Activity size={15} /> No proof of concept recorded.</div>}
+      </Block>
+    </>
+  );
+}
+
 function NotesTab({ d, canEdit, onUpdate, toast }) {
   const [draft, setDraft] = useState("");
   const [mentionQuery, setMentionQuery] = useState(null); // null = no active mention
@@ -5423,6 +5596,7 @@ function PassportDetail({ data, onBack, canEdit, onRefresh, onAssign, onNotifyAl
     handover: {
       cs: !!p.handed_to_cs, csAt: p.handed_to_cs_at, csBy: p.handed_to_cs_by,
       analytics: !!p.handed_to_analytics, analyticsAt: p.handed_to_analytics_at, analyticsBy: p.handed_to_analytics_by,
+      backToSe: !!p.handed_back_to_se, backToSeAt: p.handed_back_to_se_at, backToSeBy: p.handed_back_to_se_by, backToSeNote: p.handed_back_to_se_note || "",
     },
     isEap: !!p.is_eap,
     archived: !!p.archived, archivedAt: p.archived_at, archivedReason: p.archived_reason,
@@ -5435,6 +5609,7 @@ function PassportDetail({ data, onBack, canEdit, onRefresh, onAssign, onNotifyAl
       supportNeeds: p.support_needs || "",
       imageryPriorities: p.imagery_priorities || [],
       expectedValue: p.expected_value || "",
+      customerCadence: p.customer_cadence || "",
       tech: {
         dataSources: p.data_sources || [],
         bandset: p.bandset || "",
@@ -5720,6 +5895,38 @@ function PassportDetail({ data, onBack, canEdit, onRefresh, onAssign, onNotifyAl
       }
       return;
     }
+    // Hand back to SE — flags that the SE owns the next step (tasks to finish
+    // before CS/Analytics can proceed). Optional note explains what's needed.
+    if (updated._handbackToSe) {
+      const { value, note } = updated._handbackToSe;
+      const patch = value
+        ? { handed_back_to_se: true, handed_back_to_se_at: new Date().toISOString(), handed_back_to_se_by: currentUserName || "You", handed_back_to_se_note: note || null }
+        : { handed_back_to_se: false, handed_back_to_se_at: null, handed_back_to_se_by: null, handed_back_to_se_note: null };
+      await sbPatch("handover_passports", p.id, patch);
+      await onRefresh();
+      if (value && p.owner_se) {
+        const noteLine = note ? `\n> ${note}` : "";
+        await notifyOwnersOnSlack([p.owner_se], {
+          company: p.company, dealId: p.deal_id_display,
+          text: `:back: *${p.company}* has been handed back to you (SE) — the next step is yours.${noteLine}`,
+          by: currentUserName, channelId: slackChannel ? slackChannel.id : undefined, passportId: p.id });
+        const person = Object.values(TEAM_MEMBERS).flat().find(x => x.name === p.owner_se);
+        if (person && person.email) {
+          fetch(`${SUPABASE_URL}/functions/v1/slack-notify`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json", "Authorization": `Bearer ${SUPABASE_ANON_KEY}` },
+            body: JSON.stringify({
+              event: "mention_email", to_email: person.email,
+              company: p.company, dealId: p.deal_id_display,
+              noteText: `${p.company} has been handed back to you (SE) by ${currentUserName || "CS"}. The next step is yours.${note ? " Note: " + note : ""}`,
+              mentionedBy: currentUserName || "CS team",
+            }),
+          }).catch(() => {});
+        }
+      }
+      toast(value ? `Handed back to SE${p.owner_se ? ` · ${p.owner_se} notified` : ""}` : "Hand-back cleared");
+      return;
+    }
     // EAP (Early Access Program) flag
     if (updated._toggleEap) {
       await sbPatch("handover_passports", p.id, { is_eap: updated._toggleEap.value });
@@ -5758,6 +5965,7 @@ function PassportDetail({ data, onBack, canEdit, onRefresh, onAssign, onNotifyAl
         "bandset","cadence","problem_statement","objectives","success_criteria",
         "next_steps","commercial_model","expertise_level","tasked_aois",
         "imagery_priorities","expected_value","aurora_workspace","aurora_url","commercial_legal",
+        "customer_cadence",
       ];
       if (ALLOWED.includes(field)) {
         // Record this field as app-edited so the HubSpot sync won't overwrite it
@@ -5843,6 +6051,16 @@ const REGION_BY_OWNER = {
   "Mauricio Meira": "Americas",
   "Gp Capt Debashish Sengupta (Retd)": "India",
 };
+// Fallback when the owner isn't mapped: infer from pipelines whose name clearly
+// encodes a region (kept conservative to avoid mis-labelling ambiguous pipelines).
+const REGION_BY_PIPELINE = {
+  "Public Sector (USA)": "Americas",
+  "Americas Private Sector": "Americas",
+  "Public Sector (India)": "India",
+};
+function regionFor(d) {
+  return REGION_BY_OWNER[d.owner_director] || REGION_BY_PIPELINE[d.pipeline] || "Other";
+}
 const REGION_ORDER = ["EMEA", "APAC", "Americas", "India", "Other"];
 const REGION_COLORS = { EMEA: "#7A5AF5", APAC: "#0EA5B7", Americas: "#E07A2B", India: "#2FB67A", Other: "#929BAB" };
 
@@ -5886,7 +6104,7 @@ function DashboardLive({ deals, onOpen }) {
 
   // Region breakdown — grouped by Sales Owner's mapped region
   const byRegion = REGION_ORDER.map(region => {
-    const regionDeals = deals.filter(d => (REGION_BY_OWNER[d.owner_director] || "Other") === region);
+    const regionDeals = deals.filter(d => regionFor(d) === region);
     const regionActive = regionDeals.filter(d => d.hubspot_stage_idx < 6);
     return {
       region,
@@ -5987,7 +6205,7 @@ function DashboardLive({ deals, onOpen }) {
 
       <Block icon={MapPin} title="Deals by region">
         <div style={{ fontSize: 11, color: "var(--muted2)", marginBottom: 10 }}>
-          Region is derived from the Sales Owner: Alex Koh Hock Poh → APAC, Caio Miranda → EMEA, Jimmy Greco / Mauricio Meira → Americas, Gp Capt Debashish Sengupta → India. Anyone else falls under Other.
+          Region is derived from the Sales Owner (Alex Koh Hock Poh → APAC, Caio Miranda → EMEA, Jimmy Greco / Mauricio Meira → Americas, Gp Capt Debashish Sengupta → India); if the owner isn't mapped, it falls back to the pipeline (Public Sector USA / Americas Private Sector → Americas, Public Sector India → India). Anything else is Other.
         </div>
         <div className="cols">
           <div className="barlist">
