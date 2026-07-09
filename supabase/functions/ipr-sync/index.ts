@@ -1,8 +1,10 @@
 // supabase/functions/ipr-sync/index.ts
 // Scheduled server-side twin of the in-app "Sync captured images" button.
-// For every active deal it pulls newly captured, QC-ready images from the IPR
-// portal (matched to the deal by company name), creates Awaiting-QC rows in
-// quality_checks assigned to the deal's SE, and pings that SE on Slack.
+// For every active *customer* (Closed Won or handed to CS) it pulls newly
+// captured, QC-ready images from the IPR portal (matched to the deal by company
+// name), creates Awaiting-QC rows in quality_checks assigned to the deal's SE,
+// and pings that SE on Slack. Scoping to customers keeps the run inside the
+// edge-function time limit; use the in-app button for ad-hoc syncs of any deal.
 //
 // Deploy:  supabase functions deploy ipr-sync
 // Schedule (run every night — see supabase/functions/ipr-sync/README below):
@@ -83,12 +85,33 @@ serve(async function (req) {
   );
   const SLACK_BOT_TOKEN = Deno.env.get("SLACK_BOT_TOKEN");
 
+  // dry_run validates the scope + matching without inserting rows or pinging Slack.
+  // ping does a single 10s-bounded fetch to the IPR portal to test reachability.
+  let dryRun = false, ping = false;
+  try { const b = await req.json(); dryRun = !!b?.dry_run; ping = !!b?.ping; } catch (_) { /* no body */ }
+
+  if (ping) {
+    const t0 = Date.now();
+    try {
+      const ctrl = new AbortController();
+      const to = setTimeout(() => ctrl.abort(), 10000);
+      const r = await fetch(`${IPR_API}/api/metadata/detailed?pageSize=1`, { signal: ctrl.signal });
+      clearTimeout(to);
+      return new Response(JSON.stringify({ reachable: true, status: r.status, ms: Date.now() - t0 }), { headers: Object.assign({}, CORS, { "Content-Type": "application/json" }) });
+    } catch (e) {
+      return new Response(JSON.stringify({ reachable: false, error: String(e && e.message || e), ms: Date.now() - t0 }), { headers: Object.assign({}, CORS, { "Content-Type": "application/json" }) });
+    }
+  }
+
   try {
-    // Active deals with a company name to match on.
+    // Active *customers* only — Closed Won (stage idx 5) or already handed to CS.
+    // This matches the "images captured for customers" intent and keeps the run
+    // well inside the edge-function time limit (~54 deals vs ~337 active).
     const { data: deals, error: dealErr } = await sb
       .from("handover_passports")
       .select("id,company,owner_se,owner_cs")
-      .eq("archived", false);
+      .eq("archived", false)
+      .or("hubspot_stage_idx.eq.5,handed_to_cs.eq.true");
     if (dealErr) throw dealErr;
 
     // Existing QC image ids (lowercased) — never create a duplicate.
@@ -100,28 +123,42 @@ serve(async function (req) {
 
     const toInsert: any[] = [];
     const perDealNew: Record<string, { deal: any; count: number }> = {};
+    const withCompany = (deals || []).filter((d: any) => d.company)
+      .map((d: any) => ({ ...d, _needle: String(d.company).toLowerCase() }));
 
-    for (const deal of (deals || [])) {
-      if (!deal.company) continue;
-      let items: any[] = [];
+    // Pull ALL QC-ready images in a couple of calls (one per status), then match
+    // them to customers locally by company name. Querying IPR once per deal was
+    // ~108 slow calls and blew the edge time limit; this is ~2 calls total.
+    const readyImages: any[] = [];
+    for (const status of IPR_QC_READY_STATUSES) {
       try {
-        for (const status of IPR_QC_READY_STATUSES) {
-          const got = await iprFetch({ query: deal.company, processingStatus: status });
-          items = items.concat(got);
-        }
-      } catch (e) {
-        console.error("IPR fetch failed for", deal.company, e);
-        continue;
-      }
-      for (const item of items) {
-        const id = iprImageId(item).toLowerCase();
-        if (!id || existing.has(id)) continue;
-        existing.add(id);
-        toInsert.push(mapItemToQc(item, deal));
-        const key = deal.id;
-        if (!perDealNew[key]) perDealNew[key] = { deal, count: 0 };
-        perDealNew[key].count++;
-      }
+        const got = await iprFetch({ processingStatus: status, pageSize: "5000" });
+        readyImages.push(...got);
+      } catch (e) { console.error("IPR fetch failed for status", status, e); }
+    }
+
+    for (const item of readyImages) {
+      const id = iprImageId(item).toLowerCase();
+      if (!id || existing.has(id)) continue;
+      const hay = `${item.aoi_id || ""} ${item.target || ""}`.toLowerCase();
+      if (!hay.trim()) continue;
+      const deal = withCompany.find((d: any) => hay.includes(d._needle));
+      if (!deal) continue;
+      existing.add(id);
+      toInsert.push(mapItemToQc(item, deal));
+      const key = deal.id;
+      if (!perDealNew[key]) perDealNew[key] = { deal, count: 0 };
+      perDealNew[key].count++;
+    }
+
+    if (dryRun) {
+      return new Response(JSON.stringify({
+        ok: true, dry_run: true,
+        customers_scanned: withCompany.length,
+        images_scanned: readyImages.length,
+        would_add: toInsert.length,
+        deals_with_new: Object.keys(perDealNew).length,
+      }, null, 2), { headers: Object.assign({}, CORS, { "Content-Type": "application/json" }) });
     }
 
     // Insert in chunks.
@@ -160,7 +197,8 @@ serve(async function (req) {
 
     return new Response(JSON.stringify({
       ok: true,
-      deals_scanned: (deals || []).length,
+      customers_scanned: withCompany.length,
+      images_scanned: readyImages.length,
       added,
       se_notified: notified,
       synced_at: new Date().toISOString(),

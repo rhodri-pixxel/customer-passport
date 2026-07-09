@@ -1,9 +1,13 @@
 # ipr-sync
 
 Scheduled server-side twin of the in-app **Sync captured images** button. Pulls
-newly captured, QC-ready images from the IPR portal for every active deal and
-creates `Awaiting QC` rows in `quality_checks`, assigned to each deal's SE.
+newly captured, QC-ready images from the IPR portal for every active **customer**
+(Closed Won or handed to CS) and creates `Awaiting QC` rows in `quality_checks`,
+assigned to each deal's SE.
 
+- **Scope:** active customers only (`hubspot_stage_idx = 5` OR `handed_to_cs`), so
+  a run stays inside the edge-function time limit. Use the in-app button for
+  ad-hoc syncs of any deal.
 - **Match:** IPR images whose AOI/target text contains the deal's `company` name.
 - **Filter:** only `Sent to Aurora` / `Datahub upload completed` (see `IPR_QC_READY_STATUSES`).
 - **Assignee:** the deal's `owner_se`; if the deal has no SE the row is still
