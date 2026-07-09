@@ -1,5 +1,13 @@
 # ipr-sync
 
+> ⚠️ **DORMANT — do not schedule.** The IPR portal (`ipr-image-status.portals.pixxel.dev`)
+> is not reachable from Supabase's edge network (outbound fetch times out — verify
+> with `{"ping":true}`). A cron here would 504 every run. Auto-population is done
+> via the in-app **Sync captured images** button, which runs in the browser (on
+> Pixxel's network). This function is kept only in case IPR becomes reachable from
+> Supabase later; if so, deploy + schedule per the steps below and re-test with
+> `{"dry_run":true}` first.
+
 Scheduled server-side twin of the in-app **Sync captured images** button. Pulls
 newly captured, QC-ready images from the IPR portal for every active **customer**
 (Closed Won or handed to CS) and creates `Awaiting QC` rows in `quality_checks`,
