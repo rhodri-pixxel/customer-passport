@@ -27,6 +27,125 @@ async function hsPatch(path, body, token) {
   return res.json();
 }
 
+// ── JSON response helper (CORS + content-type) ────────────
+function json(body, status) {
+  return new Response(JSON.stringify(body), {
+    status: status || 200,
+    headers: Object.assign({}, CORS, { "Content-Type": "application/json" }),
+  });
+}
+
+// ── Notion helpers ────────────────────────────────────────
+const NOTION_VERSION = "2022-06-28";
+
+// Query an entire Notion database, following pagination (100 rows/page).
+// Capped at 20 pages (2,000 rows) to stay within the edge time limit.
+async function notionQueryAll(dbId, token) {
+  const rows = [];
+  let cursor;
+  for (let i = 0; i < 20; i++) {
+    const res = await fetch(`https://api.notion.com/v1/databases/${dbId}/query`, {
+      method: "POST",
+      headers: {
+        "Authorization": "Bearer " + token,
+        "Content-Type": "application/json",
+        "Notion-Version": NOTION_VERSION,
+      },
+      body: JSON.stringify(cursor ? { start_cursor: cursor, page_size: 100 } : { page_size: 100 }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.message || "Notion query failed");
+    rows.push(...(data.results || []));
+    if (!data.has_more) break;
+    cursor = data.next_cursor;
+  }
+  return rows;
+}
+
+// Flatten one Notion property to a plain JS value the map can consume.
+function notionProp(p) {
+  if (!p) return null;
+  switch (p.type) {
+    case "title":
+    case "rich_text":  return (p[p.type] || []).map((t) => t.plain_text).join("");
+    case "select":     return p.select ? p.select.name : null;
+    case "multi_select": return (p.multi_select || []).map((s) => s.name);
+    case "number":     return p.number;
+    case "url":        return p.url || null;
+    case "checkbox":   return p.checkbox;
+    case "date":       return p.date ? p.date.start : null;
+    case "people":     return (p.people || []).map((u) => u.name || "").filter(Boolean);
+    case "files":      return (p.files || []).map((f) => (f.external ? f.external.url : (f.file ? f.file.url : null))).filter(Boolean);
+    default:           return null;
+  }
+}
+
+// Map a Notion page → { <PropertyName>: value }, keyed by the DB's column names.
+function notionRow(page) {
+  const out = { _id: page.id };
+  const props = page.properties || {};
+  for (const key of Object.keys(props)) out[key] = notionProp(props[key]);
+  return out;
+}
+
+// Build FF Sample Image Ammo properties from popup fields (type-correct, skips
+// blanks). Notion auto-creates any select/multi_select option that doesn't exist.
+function sampleAmmoProps(f) {
+  const has = (v) => v !== undefined && v !== null && String(v).trim() !== "";
+  const title = (v) => ({ title: [{ text: { content: String(v) } }] });
+  const rt = (v) => ({ rich_text: [{ text: { content: String(v) } }] });
+  const sel = (v) => ({ select: { name: String(v) } });
+  const num = (v) => ({ number: Number(v) });
+  const url = (v) => ({ url: String(v) });
+  const date = (v) => ({ date: { start: String(v).slice(0, 10) } });
+
+  const props = {};
+  // "Image ID" is the DB title — always set it (fall back so it's never blank).
+  props["Image ID"] = title(has(f.imageId) ? f.imageId : (f.useCase || f.location || "MVP image"));
+  if (has(f.useCase))       props["Use Case"] = rt(f.useCase);
+  if (has(f.location))      props["Location"] = rt(f.location);
+  if (has(f.centreCoords))  props["Centre coordinates"] = rt(f.centreCoords);
+  if (has(f.sensor))        props["Sensor"] = sel(f.sensor);
+  if (has(f.bandset))       props["Bandset"] = sel(f.bandset);
+  if (has(f.version))       props["Version"] = sel(f.version);
+  if (has(f.region))        props["Region"] = sel(f.region);
+  if (Array.isArray(f.industry) && f.industry.length) props["Industry"] = { multi_select: f.industry.map((n) => ({ name: String(n) })) };
+  else if (has(f.industry)) props["Industry"] = { multi_select: String(f.industry).split(",").map((s) => s.trim()).filter(Boolean).map((n) => ({ name: n })) };
+  if (has(f.lbc))           props["LBC (10x10)"] = url(f.lbc);
+  if (has(f.s3Url))         props["S3 URL L2A"] = url(f.s3Url);
+  if (has(f.latitude))      props["Latitude"] = num(f.latitude);
+  if (has(f.longitude))     props["Longitude"] = num(f.longitude);
+  if (has(f.dateOfCapture)) props["Date of capture"] = date(f.dateOfCapture);
+  if (has(f.thumbnailUrl))  props["Thumbnail"] = { files: [{ name: "thumbnail", external: { url: String(f.thumbnailUrl) } }] };
+  return props;
+}
+
+// Build Satellite Imagery Customer Feedback properties from a customer_feedback row.
+// "Follow Up Assigned To" is a Notion people property (needs user IDs) so it's skipped.
+function feedbackProps(f, customerName) {
+  const has = (v) => v !== undefined && v !== null && String(v).trim() !== "";
+  const title = (v) => ({ title: [{ text: { content: String(v) } }] });
+  const rt = (v) => ({ rich_text: [{ text: { content: String(v) } }] });
+  const sel = (v) => ({ select: { name: String(v) } });
+  const date = (v) => ({ date: { start: String(v).slice(0, 10) } });
+  const joinArr = (v) => (Array.isArray(v) ? v.join(", ") : v);
+
+  const props = {};
+  props["Customer Name"] = title(has(customerName) ? customerName : (has(f.organization) ? f.organization : "Customer"));
+  if (has(f.feedback_type))      props["Type"] = sel(f.feedback_type);
+  if (has(f.feedback_date))      props["Feedback Date"] = date(f.feedback_date);
+  if (has(f.satisfaction))       props["Satisfaction Rating"] = sel(f.satisfaction);
+  if (has(f.key_insights))       props["Key Insights"] = rt(f.key_insights);
+  if (has(f.customer_expertise)) props["Customer Expertise"] = sel(f.customer_expertise);
+  if (has(f.image_ids))          props["Image IDs"] = rt(joinArr(f.image_ids));
+  if (has(f.image_bandsets))     props["Image Bandset(s)"] = rt(joinArr(f.image_bandsets));
+  if (has(f.follow_up_date))     props["Follow-up Date"] = date(f.follow_up_date);
+  const sw = f.software_used;
+  const swArr = Array.isArray(sw) ? sw : (has(sw) ? String(sw).split(",").map((s) => s.trim()).filter(Boolean) : []);
+  if (swArr.length) props["Software Used"] = { multi_select: swArr.map((n) => ({ name: String(n) })) };
+  return props;
+}
+
 // ── Stage helpers ─────────────────────────────────────────
 const STAGE_LABELS = ["Discovery","Technical Validation","Quote / Solution Scoping","Proposal","Contracting & Negotiation","Closed Won","Closed Lost"];
 function stageLabel(i) { return STAGE_LABELS[i] || "Discovery"; }
@@ -144,59 +263,86 @@ serve(async function(req) {
   // ── Push a passport briefing to PlanHat ───────────────────────
   // Creates the company if missing (matched by name), then attaches
   // the briefing as a conversation. Dormant until PLANHAT_TOKEN is set.
-  // ── Push an MVP image (QC entry) to the Notion "FF Sample Image Ammo" DB ──
-  // Dormant until NOTION_TOKEN + NOTION_MVP_DB_ID secrets are set.
+  // ── Push an MVP image to the Notion "FF Sample Image Ammo" DB ──
+  // Prefers explicit `fields` from the MVP popup (Notion is the source of truth);
+  // falls back to the stored QC row. Dormant until NOTION_TOKEN + NOTION_MVP_DB_ID set.
   if (body.action === "push_mvp_to_notion") {
     const notionToken = Deno.env.get("NOTION_TOKEN");
     const dbId = Deno.env.get("NOTION_MVP_DB_ID");
-    if (!notionToken || !dbId) {
-      return new Response(JSON.stringify({ ok: false, error: "Notion not configured — NOTION_TOKEN / NOTION_MVP_DB_ID not set yet." }), {
-        status: 400, headers: Object.assign({}, CORS, { "Content-Type": "application/json" }),
-      });
-    }
+    if (!notionToken || !dbId) return json({ ok: false, error: "Notion not configured — NOTION_TOKEN / NOTION_MVP_DB_ID not set yet." }, 400);
     const qcId = body.qc_id;
-    if (!qcId) {
-      return new Response(JSON.stringify({ ok: false, error: "qc_id required" }), {
-        status: 400, headers: Object.assign({}, CORS, { "Content-Type": "application/json" }),
-      });
+    if (!qcId) return json({ ok: false, error: "qc_id required" }, 400);
+
+    let fields = body.fields;
+    if (!fields) {
+      const { data: qc } = await sb.from("quality_checks").select("*").eq("id", qcId).single();
+      if (!qc) return json({ ok: false, error: "QC entry not found" }, 404);
+      fields = { imageId: qc.image_id, useCase: qc.usecase || qc.organization, location: qc.location, dateOfCapture: qc.created_at };
     }
-    const { data: qc } = await sb.from("quality_checks").select("*").eq("id", qcId).single();
-    if (!qc) {
-      return new Response(JSON.stringify({ ok: false, error: "QC entry not found" }), {
-        status: 404, headers: Object.assign({}, CORS, { "Content-Type": "application/json" }),
-      });
-    }
-    // Map QC fields → FF Sample Image Ammo properties. Property names must match
-    // the Notion DB exactly; adjust here if the DB columns differ.
-    const props = {
-      "Use Case": { title: [{ text: { content: qc.usecase || qc.organization || "MVP image" } }] },
-      "Location": { rich_text: [{ text: { content: qc.location || "" } }] },
-      "Version": { rich_text: [{ text: { content: qc.image_id || "" } }] },
-    };
+    const props = sampleAmmoProps(fields);
     try {
       const r = await fetch("https://api.notion.com/v1/pages", {
         method: "POST",
-        headers: {
-          "Authorization": "Bearer " + notionToken,
-          "Content-Type": "application/json",
-          "Notion-Version": "2022-06-28",
-        },
+        headers: { "Authorization": "Bearer " + notionToken, "Content-Type": "application/json", "Notion-Version": NOTION_VERSION },
         body: JSON.stringify({ parent: { database_id: dbId }, properties: props }),
       });
       const data = await r.json();
-      if (!r.ok) {
-        return new Response(JSON.stringify({ ok: false, error: data.message || "Notion API error" }), {
-          status: 502, headers: Object.assign({}, CORS, { "Content-Type": "application/json" }),
-        });
-      }
+      if (!r.ok) return json({ ok: false, error: data.message || "Notion API error" }, 502);
       await sb.from("quality_checks").update({ notion_page_id: data.id, synced_to_notion_at: new Date().toISOString() }).eq("id", qcId);
-      return new Response(JSON.stringify({ ok: true, notion_page_id: data.id }), {
-        headers: Object.assign({}, CORS, { "Content-Type": "application/json" }),
-      });
+      return json({ ok: true, notion_page_id: data.id });
     } catch (e) {
-      return new Response(JSON.stringify({ ok: false, error: String(e) }), {
-        status: 502, headers: Object.assign({}, CORS, { "Content-Type": "application/json" }),
+      return json({ ok: false, error: String(e) }, 502);
+    }
+  }
+
+  // ── List Sample Ammo images from Notion (feeds the Sample-Ready map) ──
+  if (body.action === "list_sample_ammo") {
+    const notionToken = Deno.env.get("NOTION_TOKEN");
+    const dbId = Deno.env.get("NOTION_MVP_DB_ID");
+    if (!notionToken || !dbId) return json({ ok: false, error: "Notion not configured — NOTION_TOKEN / NOTION_MVP_DB_ID not set." }, 400);
+    try {
+      const rows = (await notionQueryAll(dbId, notionToken)).map(notionRow);
+      return json({ ok: true, rows });
+    } catch (e) {
+      return json({ ok: false, error: String(e) }, 502);
+    }
+  }
+
+  // ── List Exhibits from Notion (feeds the Exhibits map, read-only) ──
+  if (body.action === "list_exhibits") {
+    const notionToken = Deno.env.get("NOTION_TOKEN");
+    const dbId = Deno.env.get("NOTION_EXHIBITS_DB_ID");
+    if (!notionToken || !dbId) return json({ ok: false, error: "Notion not configured — NOTION_EXHIBITS_DB_ID not set." }, 400);
+    try {
+      const rows = (await notionQueryAll(dbId, notionToken)).map(notionRow);
+      return json({ ok: true, rows });
+    } catch (e) {
+      return json({ ok: false, error: String(e) }, 502);
+    }
+  }
+
+  // ── Push a feedback entry to the Notion "Satellite Imagery Customer Feedback" DB ──
+  if (body.action === "push_feedback_to_notion") {
+    const notionToken = Deno.env.get("NOTION_TOKEN");
+    const dbId = Deno.env.get("NOTION_FEEDBACK_DB_ID");
+    if (!notionToken || !dbId) return json({ ok: false, error: "Notion not configured — NOTION_TOKEN / NOTION_FEEDBACK_DB_ID not set." }, 400);
+    const fbId = body.feedback_id;
+    if (!fbId) return json({ ok: false, error: "feedback_id required" }, 400);
+    const { data: fb } = await sb.from("customer_feedback").select("*").eq("id", fbId).single();
+    if (!fb) return json({ ok: false, error: "Feedback entry not found" }, 404);
+    const props = feedbackProps(fb, body.customer_name);
+    try {
+      const r = await fetch("https://api.notion.com/v1/pages", {
+        method: "POST",
+        headers: { "Authorization": "Bearer " + notionToken, "Content-Type": "application/json", "Notion-Version": NOTION_VERSION },
+        body: JSON.stringify({ parent: { database_id: dbId }, properties: props }),
       });
+      const data = await r.json();
+      if (!r.ok) return json({ ok: false, error: data.message || "Notion API error" }, 502);
+      await sb.from("customer_feedback").update({ notion_page_id: data.id }).eq("id", fbId);
+      return json({ ok: true, notion_page_id: data.id });
+    } catch (e) {
+      return json({ ok: false, error: String(e) }, 502);
     }
   }
 

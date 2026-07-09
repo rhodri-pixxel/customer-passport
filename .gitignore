@@ -10,3 +10,6 @@ dist/
 
 # Supabase CLI local state
 supabase/.temp/
+
+# Local editor workspace
+bizdev-se.code-workspace

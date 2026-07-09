@@ -11,6 +11,9 @@ import proj4 from "proj4";
 import { kml as kmlToGeoJson } from "@tmcw/togeojson";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
+import "leaflet.markercluster";
+import "leaflet.markercluster/dist/MarkerCluster.css";
+import "leaflet.markercluster/dist/MarkerCluster.Default.css";
 
 /* ------------------------------------------------------------------ */
 /*  Design system (spectral / Earth-observation theme)                */
@@ -2190,7 +2193,9 @@ function QcForm({ onSubmit, onCancel, defaultOrg, defaultPassportId, deals, init
           <input type="checkbox" checked={form.mvp_image} onChange={e => set("mvp_image", e.target.checked)} style={{ accentColor:"var(--accent)" }} />
           MVP image
         </label>
-        <div></div>
+        <div style={{ fontSize:11.5, color:"var(--muted2)", alignSelf:"center" }}>
+          {form.mvp_image ? "After saving, open the MVP Images tab to add details & sync this image to Notion." : ""}
+        </div>
       </div>
       <div style={{ marginBottom:10 }}>
         <div className="k" style={{ fontFamily:"var(--font-mono)", fontSize:"9.5px", letterSpacing:".1em", textTransform:"uppercase", color:"var(--muted2)", marginBottom:4 }}>Photo evidence</div>
@@ -2596,11 +2601,258 @@ function QcTab({ d, canEdit, toast }) {
   );
 }
 
+/* ------------------------------------------------------------------ */
+/*  Maps tab — Leaflet maps fed live from the Notion databases         */
+/* ------------------------------------------------------------------ */
+
+// Colored Leaflet pins (pointhi/leaflet-color-markers), cached per colour.
+const _leafletIconCache = {};
+function leafletColorIcon(color) {
+  if (_leafletIconCache[color]) return _leafletIconCache[color];
+  const icon = new L.Icon({
+    iconUrl: `https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-2x-${color}.png`,
+    shadowUrl: "https://cdnjs.cloudflare.com/ajax/libs/leaflet/0.7.7/images/marker-shadow.png",
+    iconSize: [25, 41], iconAnchor: [12, 41], popupAnchor: [1, -34], shadowSize: [41, 41],
+  });
+  _leafletIconCache[color] = icon;
+  return icon;
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+
+// Pick a pin colour from a row value (handles multi_select arrays), default blue.
+function pinColorFor(row, colorBy, rules) {
+  const raw = row[colorBy];
+  const v = Array.isArray(raw) ? (raw[0] || "") : (raw || "");
+  return rules[String(v).trim()] || "blue";
+}
+
+// Build a marker popup from a Notion row (inline-styled so it needs no extra CSS).
+function mapPopupHtml(row, titleFields, fields, thumbnailField) {
+  const title = titleFields.map((f) => row[f]).find((v) => v && String(v).trim()) || "Details";
+  let html = `<div style="max-height:240px;overflow-y:auto;font-size:12.5px;line-height:1.45;padding-right:4px;">`;
+  html += `<h3 style="margin:0 0 8px;font-size:15px;border-bottom:1px solid #e4e8ef;padding-bottom:4px;">${escapeHtml(title)}</h3>`;
+  if (thumbnailField && Array.isArray(row[thumbnailField]) && row[thumbnailField][0]) {
+    html += `<img src="${encodeURI(row[thumbnailField][0])}" alt="" style="width:100%;border-radius:6px;margin-bottom:8px;display:block;" />`;
+  }
+  fields.forEach((f) => {
+    let value = row[f];
+    if (Array.isArray(value)) value = value.join(", ");
+    if (value === null || value === undefined || String(value).trim() === "") return;
+    value = String(value);
+    const rendered = /^https?:\/\//.test(value)
+      ? `<a href="${encodeURI(value)}" target="_blank" rel="noreferrer">Open link</a>`
+      : escapeHtml(value);
+    html += `<div style="margin-bottom:3px;"><b>${escapeHtml(f)}:</b> ${rendered}</div>`;
+  });
+  return html + "</div>";
+}
+
+// One Leaflet map, clustered, fetched from a Notion-backed edge-function action.
+function NotionLeafletMap({ action, colorBy, colorRules, fields, titleFields, thumbnailField }) {
+  const containerRef = useRef(null);
+  const [status, setStatus] = useState("loading");
+  const [count, setCount] = useState(0);
+
+  useEffect(() => {
+    let cancelled = false;
+    const map = L.map(containerRef.current, { scrollWheelZoom: true }).setView([20, 0], 2);
+    L.tileLayer("https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png", {
+      maxZoom: 19, attribution: "&copy; OpenStreetMap contributors &copy; CARTO",
+    }).addTo(map);
+    // Container is sized by CSS after mount — recalc so tiles fill it.
+    setTimeout(() => { if (!cancelled) map.invalidateSize(); }, 0);
+
+    (async () => {
+      try {
+        const res = await fetch(`${SUPABASE_URL}/functions/v1/hubspot-sync`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "Authorization": `Bearer ${SUPABASE_ANON_KEY}` },
+          body: JSON.stringify({ action }),
+        });
+        const data = await res.json();
+        if (cancelled) return;
+        if (!data.ok) { setStatus("error"); return; }
+        const cluster = L.markerClusterGroup();
+        const bounds = [];
+        (data.rows || []).forEach((row) => {
+          const lat = parseFloat(row.Latitude), lng = parseFloat(row.Longitude);
+          if (!isFinite(lat) || !isFinite(lng)) return;
+          const marker = L.marker([lat, lng], { icon: leafletColorIcon(pinColorFor(row, colorBy, colorRules)) });
+          marker.bindPopup(mapPopupHtml(row, titleFields, fields, thumbnailField), { maxWidth: 300 });
+          cluster.addLayer(marker);
+          bounds.push([lat, lng]);
+        });
+        map.addLayer(cluster);
+        if (bounds.length) map.fitBounds(bounds, { padding: [40, 40], maxZoom: 8 });
+        setCount(bounds.length);
+        setStatus("ready");
+      } catch (e) {
+        if (!cancelled) setStatus("error");
+      }
+    })();
+
+    return () => { cancelled = true; map.remove(); };
+  }, [action]);
+
+  return (
+    <div style={{ position: "relative" }}>
+      <div ref={containerRef} style={{ height: "70vh", width: "100%", borderRadius: 12, overflow: "hidden", border: "1px solid var(--line)" }} />
+      <div style={{ position: "absolute", top: 12, left: 12, zIndex: 500, background: "#fff", border: "1px solid var(--line)", borderRadius: 8, padding: "6px 12px", fontSize: 12.5, color: "var(--muted)", display: "flex", alignItems: "center", gap: 7 }}>
+        {status === "loading" ? <><RefreshCw size={13} className="spin" /> Loading from Notion…</>
+          : status === "error" ? <><AlertTriangle size={13} color="var(--bad)" /> Couldn't load from Notion</>
+          : <>{count} location{count !== 1 ? "s" : ""}</>}
+      </div>
+    </div>
+  );
+}
+
+const SAMPLE_MAP_CONFIG = {
+  action: "list_sample_ammo",
+  colorBy: "Sensor",
+  colorRules: { FF01: "green", FF02: "red", FF03: "orange" },
+  titleFields: ["Location", "Image ID"],
+  thumbnailField: "Thumbnail",
+  fields: ["Image ID", "Bandset", "Centre coordinates", "Latitude", "Longitude", "Date of capture", "Industry", "LBC (10x10)", "Location", "Region", "S3 URL L2A", "Sensor", "Use Case", "Version"],
+  legend: [["Sensor FF01", "green"], ["FF02", "red"], ["FF03", "orange"], ["Other", "blue"]],
+};
+const EXHIBITS_MAP_CONFIG = {
+  action: "list_exhibits",
+  colorBy: "Vertical",
+  colorRules: { Agriculture: "green", Defense: "red", Mining: "orange", Energy: "yellow", Urban: "violet" },
+  titleFields: ["Site name", "Image ID"],
+  thumbnailField: null,
+  fields: ["Image ID", "Bandset", "Capture Date", "Latitude", "Longitude", "Description", "Marketing content", "Notes", "Overall Region", "POC", "Region", "SE Slide deck", "Satellite sensor", "Site name", "Spatial Resolution", "Use-case", "Vertical"],
+  legend: [["Agriculture", "green"], ["Defense", "red"], ["Mining", "orange"], ["Energy", "yellow"], ["Urban", "violet"], ["Other", "blue"]],
+};
+
+function MapsGlobal() {
+  const [which, setWhich] = useState("sample");
+  const cfg = which === "sample" ? SAMPLE_MAP_CONFIG : EXHIBITS_MAP_CONFIG;
+  const segBtn = (active) => ({
+    padding: "7px 14px", fontSize: 12.5, fontWeight: 500, cursor: "pointer", border: "none",
+    background: active ? "var(--ink)" : "#fff", color: active ? "#fff" : "var(--muted)",
+  });
+  return (
+    <div className="cp-page-inner">
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14, flexWrap: "wrap", gap: 10 }}>
+        <div>
+          <h2 className="section-title" style={{ marginBottom: 2 }}>Maps</h2>
+          <div style={{ fontSize: 13, color: "var(--muted)" }}>Live from Notion · {which === "sample" ? "FF Sample Image Ammo" : "FF Exhibits Directory"}</div>
+        </div>
+        <div style={{ display: "inline-flex", borderRadius: 9, overflow: "hidden", border: "1px solid var(--line)" }}>
+          <button style={{ ...segBtn(which === "sample"), borderRight: "1px solid var(--line)" }} onClick={() => setWhich("sample")}>Sample-Ready Images</button>
+          <button style={segBtn(which === "exhibits")} onClick={() => setWhich("exhibits")}>Exhibits</button>
+        </div>
+      </div>
+      <NotionLeafletMap key={cfg.action} {...cfg} />
+      <div style={{ display: "flex", gap: 14, flexWrap: "wrap", marginTop: 12, fontSize: 12, color: "var(--muted)" }}>
+        {cfg.legend.map(([label, color]) => (
+          <span key={label} style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+            <img src={`https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-${color}.png`} alt="" style={{ height: 16 }} /> {label}
+          </span>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// Modal: collect the full Sample Ammo field set (prefilled from the QC entry)
+// then push a complete row to the Notion DB. Notion is the source of truth, so
+// these values live in Notion — we only stamp notion_page_id back on the QC row.
+function MvpSyncModal({ row, deal, onClose, onDone, toast }) {
+  const evidenceUrl = row.photo_evidence_path
+    ? `${SUPABASE_URL}/storage/v1/object/public/${STORAGE_BUCKET}/${row.photo_evidence_path}`
+    : "";
+  const [f, setF] = useState({
+    imageId: row.image_id || "",
+    useCase: row.usecase || row.organization || "",
+    location: row.location || "",
+    version: "", region: "", sensor: "", bandset: "",
+    latitude: "", longitude: "", centreCoords: "",
+    industry: "", lbc: "", s3Url: "",
+    dateOfCapture: row.created_at ? String(row.created_at).slice(0, 10) : "",
+    thumbnailUrl: evidenceUrl,
+  });
+  const [saving, setSaving] = useState(false);
+  const set = (k, v) => setF((s) => ({ ...s, [k]: v }));
+
+  // Plain render helper (NOT a nested component — that would drop input focus each keystroke).
+  const field = (label, k, opts = {}) => (
+    <label style={{ display: "flex", flexDirection: "column", gap: 4, gridColumn: opts.wide ? "1 / -1" : "auto" }}>
+      <span style={{ fontSize: 11, fontWeight: 600, color: "var(--muted)" }}>{label}</span>
+      <input type={opts.type || "text"} value={f[k]} placeholder={opts.ph || ""}
+        onChange={(e) => set(k, e.target.value)}
+        style={{ padding: "7px 9px", border: "1px solid var(--line)", borderRadius: 7, fontSize: 12.5, fontFamily: "inherit" }} />
+    </label>
+  );
+
+  const submit = async () => {
+    setSaving(true);
+    try {
+      const res = await fetch(`${SUPABASE_URL}/functions/v1/hubspot-sync`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "Authorization": `Bearer ${SUPABASE_ANON_KEY}` },
+        body: JSON.stringify({ action: "push_mvp_to_notion", qc_id: row.id, fields: f }),
+      });
+      const data = await res.json();
+      if (data.ok) { toast("✓ Added to FF Sample Image Ammo in Notion"); onDone(); }
+      else toast("Notion: " + (data.error || "not configured yet"));
+    } catch (e) { toast("Notion push failed: " + e.message); }
+    finally { setSaving(false); }
+  };
+
+  return (
+    <div onClick={onClose} style={{ position: "fixed", inset: 0, background: "rgba(11,18,32,.45)", zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
+      <div onClick={(e) => e.stopPropagation()} style={{ background: "#fff", borderRadius: 16, width: "min(680px,100%)", maxHeight: "88vh", overflowY: "auto", boxShadow: "0 20px 60px -12px rgba(11,18,32,.4)" }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "18px 22px", borderBottom: "1px solid var(--line)" }}>
+          <div>
+            <h3 style={{ margin: 0, fontSize: 16, fontFamily: "var(--font-display)" }}>Sync image to Notion</h3>
+            <div style={{ fontSize: 12, color: "var(--muted)", marginTop: 2 }}>FF Sample Image Ammo{deal ? ` · ${deal.company}` : ""}</div>
+          </div>
+          <button onClick={onClose} style={{ border: "none", background: "none", cursor: "pointer", color: "var(--muted)" }}><X size={18} /></button>
+        </div>
+        <div style={{ padding: "18px 22px" }}>
+          <div style={{ fontSize: 12, color: "var(--muted)", marginBottom: 14 }}>
+            Fill in as much as you have — blanks are skipped. Fields match the Sample Ammo database; <b>Latitude &amp; Longitude</b> are needed for the image to show on the map.
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+            {field("Image ID", "imageId", { ph: "e.g. 15687" })}
+            {field("Version", "version")}
+            {field("Use Case", "useCase", { wide: true })}
+            {field("Location", "location")}
+            {field("Region", "region")}
+            {field("Latitude", "latitude", { type: "number", ph: "-13.57" })}
+            {field("Longitude", "longitude", { type: "number", ph: "-46.03" })}
+            {field("Sensor", "sensor", { ph: "FF01 / FF02 …" })}
+            {field("Bandset", "bandset")}
+            {field("Industry", "industry", { ph: "comma-separated", wide: true })}
+            {field("Centre coordinates", "centreCoords", { wide: true })}
+            {field("LBC (10x10) URL", "lbc", { wide: true })}
+            {field("S3 URL L2A", "s3Url", { wide: true })}
+            {field("Date of capture", "dateOfCapture", { type: "date" })}
+            {field("Thumbnail URL", "thumbnailUrl", { wide: true })}
+          </div>
+          {evidenceUrl && <div style={{ marginTop: 12, fontSize: 11.5, color: "var(--muted2)" }}>Thumbnail prefilled from the QC evidence image.</div>}
+        </div>
+        <div style={{ display: "flex", justifyContent: "flex-end", gap: 10, padding: "14px 22px", borderTop: "1px solid var(--line)" }}>
+          <button onClick={onClose} style={{ padding: "8px 16px", borderRadius: 8, border: "1px solid var(--line)", background: "#fff", color: "var(--muted)", fontSize: 12.5, fontWeight: 500, cursor: "pointer" }}>Cancel</button>
+          <button onClick={submit} disabled={saving} style={{ padding: "8px 18px", borderRadius: 8, border: "none", background: "var(--ink)", color: "#fff", fontSize: 12.5, fontWeight: 600, cursor: saving ? "wait" : "pointer", display: "inline-flex", alignItems: "center", gap: 6 }}>
+            {saving ? <><RefreshCw size={13} className="spin" /> Syncing…</> : <><Send size={13} /> Sync to Notion</>}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // MVP Images — QC entries flagged as MVP for this deal, with Notion push
 function MvpImagesGlobal({ deals, canEdit, onOpen, toast }) {
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [pushing, setPushing] = useState(null);
+  const [syncRow, setSyncRow] = useState(null);
 
   const dealById = {};
   (deals || []).forEach(d => { dealById[d.id] = d; });
@@ -2611,21 +2863,6 @@ function MvpImagesGlobal({ deals, canEdit, onOpen, toast }) {
     finally { setLoading(false); }
   };
   useEffect(() => { load(); }, []);
-
-  const pushToNotion = async (row) => {
-    setPushing(row.id);
-    try {
-      const res = await fetch(`${SUPABASE_URL}/functions/v1/hubspot-sync`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "Authorization": `Bearer ${SUPABASE_ANON_KEY}` },
-        body: JSON.stringify({ action: "push_mvp_to_notion", qc_id: row.id }),
-      });
-      const data = await res.json();
-      if (data.ok) { toast("✓ Added to FF Sample Image Ammo in Notion"); await load(); }
-      else toast("Notion: " + (data.error || "not configured yet"));
-    } catch (e) { toast("Notion push failed: " + e.message); }
-    finally { setPushing(null); }
-  };
 
   // Export the MVP table as a CSV shaped for the Notion "FF Sample Image Ammo"
   // database. Columns mirror that database so it imports/merges cleanly.
@@ -2721,12 +2958,16 @@ function MvpImagesGlobal({ deals, canEdit, onOpen, toast }) {
                       <td>{deal ? <button onClick={() => onOpen(deal.id)} style={{ border:"none", background:"none", color:"var(--accent-deep)", cursor:"pointer", fontSize:12.5, padding:0, textDecoration:"underline" }}>{deal.company}</button> : <span style={{ color:"var(--muted2)", fontSize:12 }}>—</span>}</td>
                       <td>
                         {canEdit && (
-                          <button onClick={() => pushToNotion(r)} disabled={pushing === r.id}
-                            style={{ display:"inline-flex", alignItems:"center", gap:5, padding:"5px 10px", borderRadius:7, border:"1px solid var(--line)", background: r.notion_page_id ? "var(--line-soft)" : "#fff", color: r.notion_page_id ? "var(--muted)" : "var(--accent-deep)", fontSize:11.5, fontWeight:500, cursor: pushing === r.id ? "wait" : "pointer", whiteSpace:"nowrap" }}>
-                            {pushing === r.id ? <><RefreshCw size={11} className="spin" /> …</>
-                              : r.notion_page_id ? <><CheckCircle2 size={11} /> In Notion</>
-                              : <><ExternalLink size={11} /> Push</>}
-                          </button>
+                          r.notion_page_id ? (
+                            <span style={{ display:"inline-flex", alignItems:"center", gap:5, fontSize:11.5, color:"var(--muted)", whiteSpace:"nowrap" }}>
+                              <CheckCircle2 size={11} color="var(--ok)" /> In Notion
+                            </span>
+                          ) : (
+                            <button onClick={() => setSyncRow(r)}
+                              style={{ display:"inline-flex", alignItems:"center", gap:5, padding:"5px 10px", borderRadius:7, border:"1px solid var(--line)", background:"#fff", color:"var(--accent-deep)", fontSize:11.5, fontWeight:500, cursor:"pointer", whiteSpace:"nowrap" }}>
+                              <ExternalLink size={11} /> Add details &amp; sync
+                            </button>
+                          )
                         )}
                       </td>
                     </tr>
@@ -2736,6 +2977,10 @@ function MvpImagesGlobal({ deals, canEdit, onOpen, toast }) {
             </table>
           </div>
         ) : <div className="empty"><Star size={15} /> No MVP images yet. Tick "MVP image" on a Quality Check entry to add one here.</div>
+      )}
+      {syncRow && (
+        <MvpSyncModal row={syncRow} deal={dealById[syncRow.passport_id] || null}
+          onClose={() => setSyncRow(null)} onDone={() => { setSyncRow(null); load(); }} toast={toast} />
       )}
     </div>
   );
@@ -4726,8 +4971,23 @@ function FeedbackTab({ d, canEdit, onUpdate, toast }) {
     followUpDate: "", followUpAssignedTo: "", type: "Client",
   });
 
+  const [syncingAll, setSyncingAll] = useState(false);
+  const [syncingId, setSyncingId] = useState(null);
+
   const items = (d.feedback || []).filter(f => filter === "all" || f.satisfaction === filter);
   const counts = Object.fromEntries(Object.keys(SAT_META).map(k => [k, (d.feedback || []).filter(f => f.satisfaction === k).length]));
+  const unsynced = (d.feedback || []).filter(f => !f.notionPageId);
+
+  const syncOne = async (fb) => {
+    setSyncingId(fb.id);
+    try { await onUpdate({ _syncFeedbackToNotion: { feedback_id: fb.id } }); }
+    finally { setSyncingId(null); }
+  };
+  const syncAll = async () => {
+    setSyncingAll(true);
+    try { for (const fb of unsynced) { await onUpdate({ _syncFeedbackToNotion: { feedback_id: fb.id } }); } }
+    finally { setSyncingAll(false); }
+  };
 
   const submitFeedback = () => {
     if (!form.keyInsights.trim()) { toast("Key insights are required"); return; }
@@ -4757,13 +5017,17 @@ function FeedbackTab({ d, canEdit, onUpdate, toast }) {
         <div>
           <div className="nb-title">Notion · Satellite Imagery Customer Feedback</div>
           <div className="nb-status">
-            <span className="notion-dot" />
-            <span>Not connected — entries entered here won't sync until Notion is linked</span>
+            <span className="notion-dot linked" />
+            <span>{unsynced.length === 0
+              ? "Connected — all entries synced to Notion"
+              : `Connected — ${unsynced.length} entr${unsynced.length === 1 ? "y" : "ies"} not yet synced`}</span>
           </div>
         </div>
-        <button className="connect-btn" onClick={() => toast("Connect Notion in Claude.ai Settings → Connectors, then entries will sync automatically")}>
-          Connect Notion →
-        </button>
+        {canEdit && unsynced.length > 0 && (
+          <button className="connect-btn" onClick={syncAll} disabled={syncingAll}>
+            {syncingAll ? <><RefreshCw size={13} className="spin" /> Syncing…</> : <>Sync all ({unsynced.length}) →</>}
+          </button>
+        )}
       </div>
 
       {/* Header + filters */}
@@ -4871,7 +5135,7 @@ function FeedbackTab({ d, canEdit, onUpdate, toast }) {
           <h4>{filter === "all" ? "No feedback yet" : `No ${filter} feedback`}</h4>
           <p style={{ fontSize:13, maxWidth:320, margin:"0 auto" }}>
             {filter === "all"
-              ? "Add the first feedback entry above, or connect Notion to pull entries from the Satellite Imagery Customer Feedback database."
+              ? "Add the first feedback entry above — you can then sync it to the Satellite Imagery Customer Feedback database in Notion."
               : "Try clearing the satisfaction filter."}
           </p>
         </div>
@@ -4931,6 +5195,13 @@ function FeedbackTab({ d, canEdit, onUpdate, toast }) {
                 {fb.notionPageId ? (
                   <div style={{ marginTop: 14 }}>
                     <span className="link"><ExternalLink size={12} /> View in Notion</span>
+                  </div>
+                ) : canEdit ? (
+                  <div style={{ marginTop: 14 }}>
+                    <button onClick={() => syncOne(fb)} disabled={syncingId === fb.id}
+                      style={{ display:"inline-flex", alignItems:"center", gap:6, padding:"6px 12px", borderRadius:8, border:"1px solid var(--line)", background:"#fff", color:"var(--accent-deep)", fontSize:12, fontWeight:500, cursor: syncingId === fb.id ? "wait" : "pointer" }}>
+                      {syncingId === fb.id ? <><RefreshCw size={12} className="spin" /> Syncing…</> : <><ExternalLink size={12} /> Sync to Notion</>}
+                    </button>
                   </div>
                 ) : (
                   <div style={{ marginTop: 14, fontSize: 11.5, color: "var(--muted2)", fontFamily: "var(--font-mono)", display:"flex", alignItems:"center", gap:6 }}>
@@ -5740,6 +6011,18 @@ function PassportDetail({ data, onBack, canEdit, onRefresh, onAssign, onNotifyAl
     if (updated._feedbackEntry) {
       await addFeedbackEntry(p.id, updated._feedbackEntry);
       await onRefresh();
+      return;
+    }
+    // Push a feedback entry to the Notion "Satellite Imagery Customer Feedback" DB
+    if (updated._syncFeedbackToNotion) {
+      const res = await fetch(`${SUPABASE_URL}/functions/v1/hubspot-sync`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "Authorization": `Bearer ${SUPABASE_ANON_KEY}` },
+        body: JSON.stringify({ action: "push_feedback_to_notion", feedback_id: updated._syncFeedbackToNotion.feedback_id, customer_name: p.company }),
+      });
+      const data = await res.json();
+      if (data.ok) { toast("✓ Feedback synced to Notion"); await onRefresh(); }
+      else toast("Notion: " + (data.error || "not configured yet"));
       return;
     }
     // ── New child records ──────────────────────────────────────
@@ -6569,6 +6852,9 @@ function AppMain({ currentUser, canEdit, onSignOut }) {
           <button className={view === "mvp" ? "on" : ""} onClick={() => { setView("mvp"); closePassport(); }}>
             <Star size={15} /> MVP Images
           </button>
+          <button className={view === "maps" ? "on" : ""} onClick={() => { setView("maps"); closePassport(); }}>
+            <MapPin size={15} /> Maps
+          </button>
         </div>
         <div className="cp-spacer" />
 
@@ -6707,7 +6993,9 @@ function AppMain({ currentUser, canEdit, onSignOut }) {
               ? <QualityChecksGlobal deals={deals} canEdit={canEdit} onOpen={openPassport} toast={toast} />
               : view === "mvp"
                 ? <MvpImagesGlobal deals={deals} canEdit={canEdit} onOpen={openPassport} toast={toast} />
-                : <DealListLive
+                : view === "maps"
+                  ? <MapsGlobal />
+                  : <DealListLive
                 deals={deals}
                 loading={loading}
                 onOpen={openPassport}
