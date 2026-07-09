@@ -1859,6 +1859,157 @@ async function updateQcEntry(id, entry) {
   return sbPatch("quality_checks", id, entry);
 }
 
+// ── IPR Image Status integration ──────────────────────────────
+// Pulls satellite-image metadata from the internal IPR portal so QC rows can be
+// created automatically (by ID/name, or auto-synced per deal) instead of typed
+// by hand. See supabase/functions/ipr-sync for the scheduled server-side twin.
+const IPR_API = "https://ipr-image-status.portals.pixxel.dev";
+// Processing states that mean an image is captured + ready for our team to QC.
+const IPR_QC_READY_STATUSES = ["Sent to Aurora", "Datahub upload completed"];
+
+// Low-level GET against the IPR metadata API. `params` = plain object of filters
+// (query, satImagePairs, processingStatus, startDate, …). Returns { items, total }.
+async function iprFetch(params = {}) {
+  const qs = new URLSearchParams();
+  qs.set("page", "1");
+  qs.set("pageSize", String(params.pageSize || 200));
+  Object.entries(params).forEach(([k, v]) => {
+    if (k === "pageSize") return;
+    if (v !== undefined && v !== null && v !== "") qs.set(k, String(v));
+  });
+  const r = await fetch(`${IPR_API}/api/metadata/detailed?${qs.toString()}`);
+  if (!r.ok) throw new Error(`IPR ${r.status}: ${(await r.text()).slice(0, 300)}`);
+  const data = await r.json();
+  const items = Array.isArray(data) ? data : (data.items || []);
+  return { items, total: Number(data && data.total != null ? data.total : items.length) };
+}
+
+// Parse free-form "FF03 4320", "FF03:4320", "FF01-456", comma/newline-separated
+// input into the API's satImagePairs param (e.g. "FF03:0000004320,FF01:0000000456").
+// Mirrors the IPR dashboard's own parser (pads numeric image ids to 10 digits).
+function iprParsePairs(raw) {
+  if (!raw) return "";
+  let s = String(raw).replace(/[\r\n,;:]+/g, " ").replace(/([a-zA-Z]+\d*)[_\-]+(\d+)/g, "$1 $2");
+  const parts = s.split(/\s+/).filter(Boolean);
+  const pairs = [];
+  for (let i = 0; i < parts.length - 1; i += 2) {
+    const sat = parts[i].toUpperCase();
+    const num = parts[i + 1];
+    const img = /^\d+$/.test(num) ? num.padStart(10, "0") : num;
+    if (sat && img) pairs.push(`${sat}:${img}`);
+  }
+  return pairs.join(",");
+}
+
+// Stable, human-readable image id: satellite + frame, e.g. "FF03 0000004320".
+function iprImageId(item) {
+  return [(item.satellite_id || "").trim(), (item.image_id || "").trim()].filter(Boolean).join(" ");
+}
+
+// Best-effort link of an IPR item to a deal by company name appearing in its AOI/
+// target text. Unreliable by design (AOI ids are generic) — accepted trade-off
+// until captures carry a shared customer id. Returns the matched deal or null.
+function iprMatchDeal(item, deals) {
+  const hay = `${item.aoi_id || ""} ${item.target || ""}`.toLowerCase();
+  if (!hay.trim()) return null;
+  return (deals || []).find(d => d.company && hay.includes(d.company.toLowerCase())) || null;
+}
+
+// Map one IPR metadata item → a quality_checks row payload. `deal` (optional)
+// links the row to a passport and seeds the SE as assignee.
+function mapIprItemToQc(item, deal) {
+  const assigneeName = deal && deal.owners ? deal.owners.se : null;
+  const assigneePerson = assigneeName
+    ? Object.values(TEAM_MEMBERS).flat().find(p => p.name === assigneeName) : null;
+  const cloud = item.cloud_cover_percentage != null ? `${Math.round(item.cloud_cover_percentage)}% cloud` : "";
+  const notes = [
+    item.processing_status ? `IPR: ${item.processing_status}` : "",
+    item.bandset ? `Bandset: ${item.bandset}` : "",
+    cloud,
+  ].filter(Boolean).join(" · ");
+  const location = item.aoi_id
+    || (item.latitude != null && item.longitude != null ? `${item.latitude.toFixed(3)}, ${item.longitude.toFixed(3)}` : "");
+  return {
+    organization: (deal && deal.company) || item.aoi_id || "Unknown",
+    passport_id: deal ? deal.id : null,
+    usecase: item.bandset || "",
+    qc_result: "Awaiting QC",
+    image_id: iprImageId(item),
+    type: "Sample",
+    assignee: assigneeName || null,
+    assignee_email: assigneePerson ? assigneePerson.email : null,
+    qc_notes: notes,
+    location,
+    mvp_image: false,
+    created_by: "IPR import",
+  };
+}
+
+// Existing image ids already in quality_checks (lowercased) — used to skip dups.
+async function existingQcImageIds() {
+  const rows = await sbGet("quality_checks", "?select=image_id&limit=5000");
+  return new Set(rows.map(r => (r.image_id || "").trim().toLowerCase()).filter(Boolean));
+}
+
+// Auto-populate: for each active deal, pull captured/QC-ready images whose AOI text
+// matches the company name, and create QC rows assigned to that deal's SE. Company
+// matching is intentionally loose. Inserts directly (not via addQcEntry) so the SE
+// gets ONE summary Slack ping per deal instead of one per image. Returns { added, skipped }.
+async function autoPopulateFromIpr(deals) {
+  let added = 0, skipped = 0;
+  const existing = await existingQcImageIds();
+  for (const deal of (deals || [])) {
+    if (!deal.company) continue;
+    let items = [];
+    try {
+      for (const status of IPR_QC_READY_STATUSES) {
+        const { items: got } = await iprFetch({ query: deal.company, processingStatus: status, pageSize: 200 });
+        items = items.concat(got);
+      }
+    } catch (_) { continue; }
+    let dealNew = 0;
+    for (const item of items) {
+      const id = iprImageId(item).toLowerCase();
+      if (!id || existing.has(id)) { skipped++; continue; }
+      await sbPost("quality_checks", mapIprItemToQc(item, deal));
+      existing.add(id);
+      added++; dealNew++;
+    }
+    // One summary DM to the deal's SE for the images just added (no SE → no ping).
+    const seName = deal.owners ? deal.owners.se : null;
+    if (dealNew && seName && slackFor(seName)) {
+      try {
+        await sendSlackNotification("mention", {
+          mentionedPerson: seName, mentioned_slack: slackFor(seName), mentionedBy: "IPR sync",
+          company: deal.company, dealId: deal.id,
+          noteText: `${dealNew} new image${dealNew === 1 ? "" : "s"} captured for ${deal.company} — awaiting your QC.`,
+        }, deal.id);
+      } catch (_) { /* best-effort */ }
+    }
+  }
+  return { added, skipped };
+}
+
+// Notify the linked deal's CS when a QC entry becomes complete (result set to
+// Pass/Fail from a non-complete state). No CS on the deal → no notification.
+async function notifyCsQcComplete({ prevResult, entry, csName }) {
+  const nowComplete = entry.qc_result === "Pass" || entry.qc_result === "Fail";
+  const wasComplete = prevResult === "Pass" || prevResult === "Fail";
+  if (!nowComplete || wasComplete || !csName) return;
+  const slackId = slackFor(csName);
+  if (!slackId) return;
+  try {
+    await sendSlackNotification("mention", {
+      mentionedPerson: csName,
+      mentioned_slack: slackId,
+      mentionedBy: "QC",
+      company: entry.organization,
+      dealId: entry.passport_id,
+      noteText: `QC ${entry.qc_result} — image ${entry.image_id || "(no id)"}${entry.usecase ? " · " + entry.usecase : ""}. ${entry.qc_notes || ""}`.trim(),
+    }, entry.passport_id);
+  } catch (_) { /* best-effort */ }
+}
+
 // Searchable deal picker — type to filter instead of scrolling a long dropdown
 function DealSearchPicker({ deals, value, onChange }) {
   const [open, setOpen] = useState(false);
@@ -2076,12 +2227,202 @@ function QcRow({ row, canEdit, onDelete, onEdit, showOrg }) {
   );
 }
 
+// Modal: manually pull images from the IPR portal by satellite/image ID or by a
+// name/AOI search, preview them, then create QC rows (Awaiting QC). Each imported
+// image is linked to a deal when its AOI text matches a company name; matched rows
+// inherit that deal's SE as assignee, unmatched rows get the chosen fallback (or none).
+function IprImportModal({ deals, onClose, onDone, toast }) {
+  const TEAM_FLAT = Object.values(TEAM_MEMBERS).flat();
+  const [mode, setMode] = useState("id");            // "id" | "name"
+  const [idInput, setIdInput] = useState("");
+  const [nameInput, setNameInput] = useState("");
+  const [readyOnly, setReadyOnly] = useState(true);  // name mode: only captured/QC-ready
+  const [loading, setLoading] = useState(false);
+  const [searched, setSearched] = useState(false);
+  const [items, setItems] = useState([]);
+  const [existing, setExisting] = useState(new Set());
+  const [selected, setSelected] = useState(new Set());
+  const [fallbackAssignee, setFallbackAssignee] = useState("");
+  const [importing, setImporting] = useState(false);
+
+  const rowsView = useMemo(() => items.map(it => {
+    const id = iprImageId(it);
+    const deal = iprMatchDeal(it, deals);
+    const isDup = existing.has(id.toLowerCase());
+    return { it, id, deal, isDup };
+  }), [items, deals, existing]);
+
+  const runSearch = async () => {
+    setLoading(true); setSearched(true);
+    try {
+      let res;
+      if (mode === "id") {
+        const pairs = iprParsePairs(idInput);
+        if (!pairs) {
+          // No sat:id pairs parsed — treat a bare number as a free-text id search
+          const bare = idInput.trim();
+          if (!bare) { toast("Enter an ID like 'FF03 4320'"); setLoading(false); return; }
+          res = await iprFetch({ query: bare, pageSize: 100 });
+        } else {
+          res = await iprFetch({ satImagePairs: pairs, pageSize: 100 });
+        }
+      } else {
+        if (!nameInput.trim()) { toast("Enter a name / AOI to search"); setLoading(false); return; }
+        const base = { query: nameInput.trim(), pageSize: 200 };
+        if (readyOnly) {
+          const acc = [];
+          for (const status of IPR_QC_READY_STATUSES) {
+            const { items: got } = await iprFetch({ ...base, processingStatus: status });
+            acc.push(...got);
+          }
+          res = { items: acc };
+        } else {
+          res = await iprFetch(base);
+        }
+      }
+      const dedupSeen = new Set();
+      const uniq = res.items.filter(it => { const k = iprImageId(it).toLowerCase(); if (dedupSeen.has(k)) return false; dedupSeen.add(k); return true; });
+      const existSet = await existingQcImageIds();
+      setExisting(existSet);
+      setItems(uniq);
+      // Pre-select everything not already imported
+      setSelected(new Set(uniq.map(iprImageId).filter(id => !existSet.has(id.toLowerCase()))));
+    } catch (e) {
+      toast("IPR search failed: " + e.message);
+      setItems([]); setSelected(new Set());
+    } finally { setLoading(false); }
+  };
+
+  const toggle = (id) => setSelected(s => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
+
+  const doImport = async () => {
+    const chosen = rowsView.filter(r => selected.has(r.id));
+    if (!chosen.length) { toast("Nothing selected"); return; }
+    setImporting(true);
+    let added = 0;
+    const fbPerson = TEAM_FLAT.find(p => p.name === fallbackAssignee);
+    try {
+      for (const r of chosen) {
+        const payload = mapIprItemToQc(r.it, r.deal);
+        if (!r.deal && fbPerson) { payload.assignee = fbPerson.name; payload.assignee_email = fbPerson.email; }
+        await addQcEntry(payload);
+        added++;
+      }
+      toast(`Imported ${added} image${added === 1 ? "" : "s"} into Quality Checks`);
+      onDone && onDone();
+      onClose();
+    } catch (e) {
+      toast(`Imported ${added}, then failed: ${e.message}`);
+      onDone && onDone();
+    } finally { setImporting(false); }
+  };
+
+  const selectableCount = rowsView.filter(r => !r.isDup).length;
+
+  return (
+    <div onClick={onClose} style={{ position:"fixed", inset:0, zIndex:200, background:"rgba(8,18,28,.45)", display:"flex", alignItems:"flex-start", justifyContent:"center", padding:"6vh 16px", overflowY:"auto" }}>
+      <div onClick={e => e.stopPropagation()} style={{ width:"100%", maxWidth:760, background:"#fff", borderRadius:16, border:"1px solid var(--line)", boxShadow:"0 30px 80px -20px rgba(11,18,32,.5)", overflow:"hidden" }}>
+        <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", padding:"16px 20px", borderBottom:"1px solid var(--line)" }}>
+          <div style={{ display:"flex", alignItems:"center", gap:9 }}>
+            <Satellite size={17} color="var(--accent-deep)" />
+            <h3 style={{ margin:0, fontSize:16 }}>Import images from IPR</h3>
+          </div>
+          <button onClick={onClose} style={{ border:"none", background:"none", cursor:"pointer", color:"var(--muted2)" }}><X size={18} /></button>
+        </div>
+
+        <div style={{ padding:"16px 20px" }}>
+          <div className="seg" style={{ marginBottom:12 }}>
+            <button className={mode==="id"?"on":""} onClick={() => { setMode("id"); setSearched(false); setItems([]); }}>By ID</button>
+            <button className={mode==="name"?"on":""} onClick={() => { setMode("name"); setSearched(false); setItems([]); }}>By Name / AOI</button>
+          </div>
+
+          {mode === "id" ? (
+            <div>
+              <div className="k" style={{ fontFamily:"var(--font-mono)", fontSize:"9.5px", letterSpacing:".1em", textTransform:"uppercase", color:"var(--muted2)", marginBottom:4 }}>Satellite + image ID(s)</div>
+              <textarea value={idInput} onChange={e => setIdInput(e.target.value)} placeholder="e.g. FF03 4320  ·  FF01:456, FF02-1289  (one or many)"
+                style={{ width:"100%", border:"1px solid var(--line)", borderRadius:9, padding:"9px 12px", fontFamily:"inherit", fontSize:13, resize:"vertical", minHeight:52, outline:"none" }} />
+            </div>
+          ) : (
+            <div>
+              <div className="k" style={{ fontFamily:"var(--font-mono)", fontSize:"9.5px", letterSpacing:".1em", textTransform:"uppercase", color:"var(--muted2)", marginBottom:4 }}>Name / AOI contains</div>
+              <input value={nameInput} onChange={e => setNameInput(e.target.value)} onKeyDown={e => e.key === "Enter" && runSearch()} placeholder="e.g. rhodri, Australia, FARMLAND_2476…"
+                style={{ width:"100%", border:"1px solid var(--line)", borderRadius:9, padding:"9px 12px", fontFamily:"inherit", fontSize:13, outline:"none" }} />
+              <label style={{ display:"flex", alignItems:"center", gap:7, fontSize:12.5, cursor:"pointer", marginTop:8, color:"var(--muted)" }}>
+                <input type="checkbox" checked={readyOnly} onChange={e => setReadyOnly(e.target.checked)} style={{ accentColor:"var(--accent)" }} />
+                Only captured &amp; QC-ready ({IPR_QC_READY_STATUSES.join(" / ")})
+              </label>
+            </div>
+          )}
+
+          <div style={{ display:"flex", justifyContent:"flex-end", marginTop:12 }}>
+            <button className="btn solid" onClick={runSearch} disabled={loading}>
+              {loading ? <><RefreshCw size={13} className="spin" /> Searching…</> : <><Search size={13} /> Search IPR</>}
+            </button>
+          </div>
+
+          {searched && !loading && (
+            <div style={{ marginTop:14 }}>
+              {rowsView.length === 0 ? (
+                <div className="empty"><Satellite size={15} /> No images found for that {mode === "id" ? "ID" : "search"}.</div>
+              ) : (
+                <>
+                  <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", flexWrap:"wrap", gap:8, marginBottom:8 }}>
+                    <div style={{ fontSize:12.5, color:"var(--muted)" }}>{rowsView.length} found · {selected.size} selected · {rowsView.length - selectableCount} already imported</div>
+                    <div style={{ display:"flex", alignItems:"center", gap:8 }}>
+                      <span style={{ fontSize:12, color:"var(--muted2)" }}>Assign unmatched to</span>
+                      <div className="cp-select" style={{ minWidth:170 }}>
+                        <select value={fallbackAssignee} onChange={e => setFallbackAssignee(e.target.value)}>
+                          <option value="">— none —</option>
+                          {TEAM_FLAT.map(p => <option key={p.email} value={p.name}>{p.name}</option>)}
+                        </select>
+                        <ChevronDown size={13} className="chev" />
+                      </div>
+                    </div>
+                  </div>
+                  <div style={{ maxHeight:300, overflowY:"auto", border:"1px solid var(--line)", borderRadius:10 }}>
+                    <table className="qc-table" style={{ margin:0 }}>
+                      <thead><tr><th></th><th>Image ID</th><th>AOI / location</th><th>Status</th><th>Deal → assignee</th></tr></thead>
+                      <tbody>
+                        {rowsView.map(r => {
+                          const assignee = r.deal ? (r.deal.owners && r.deal.owners.se) : (fallbackAssignee || null);
+                          return (
+                            <tr key={r.id} style={{ opacity: r.isDup ? .5 : 1 }}>
+                              <td><input type="checkbox" checked={selected.has(r.id)} disabled={r.isDup} onChange={() => toggle(r.id)} style={{ accentColor:"var(--accent)" }} /></td>
+                              <td style={{ fontFamily:"var(--font-mono)", fontSize:12 }}>{r.id}{r.isDup && <span style={{ marginLeft:6, fontSize:10, color:"var(--muted2)" }}>(exists)</span>}</td>
+                              <td style={{ fontSize:12, color:"var(--muted)", maxWidth:200, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{r.it.aoi_id || "—"}</td>
+                              <td style={{ fontSize:11.5 }}>{r.it.processing_status || "—"}</td>
+                              <td style={{ fontSize:12 }}>{r.deal ? <span><strong>{r.deal.company}</strong> → {assignee || "—"}</span> : <span style={{ color:"var(--muted2)" }}>no match → {assignee || "unassigned"}</span>}</td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                </>
+              )}
+            </div>
+          )}
+        </div>
+
+        <div style={{ display:"flex", gap:8, justifyContent:"flex-end", padding:"14px 20px", borderTop:"1px solid var(--line)" }}>
+          <button className="btn ghost" style={{ color:"var(--muted)", border:"1px solid var(--line)", background:"#fff" }} onClick={onClose}>Cancel</button>
+          <button className="btn solid" onClick={doImport} disabled={importing || selected.size === 0}>
+            {importing ? <><RefreshCw size={13} className="spin" /> Importing…</> : <><Plus size={13} /> Import {selected.size || ""} to QC</>}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function QualityChecksGlobal({ deals, canEdit, onOpen, toast }) {
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
   const [editRow, setEditRow] = useState(null); // the QC entry being edited, or null
   const [filter, setFilter] = useState("all"); // all | Pass | Fail
+  const [showImport, setShowImport] = useState(false); // IPR import modal
+  const [syncing, setSyncing] = useState(false);       // auto-populate in progress
 
   const load = async () => {
     setLoading(true);
@@ -2091,12 +2432,29 @@ function QualityChecksGlobal({ deals, canEdit, onOpen, toast }) {
 
   const submit = async (entry) => {
     try {
-      if (editRow) { await updateQcEntry(editRow.id, entry); toast("QC entry updated"); }
+      if (editRow) {
+        const prevResult = editRow.qc_result;
+        await updateQcEntry(editRow.id, entry);
+        toast("QC entry updated");
+        // Notify the linked deal's CS when this QC has just been completed
+        const deal = deals.find(d => d.id === (entry.passport_id || editRow.passport_id));
+        notifyCsQcComplete({ prevResult, entry: { ...editRow, ...entry }, csName: deal && deal.owners ? deal.owners.cs : null });
+      }
       else { await addQcEntry(entry); toast("QC entry saved"); }
       setShowForm(false); setEditRow(null);
       await load();
     }
     catch (e) { toast("Save failed: " + e.message); }
+  };
+
+  const syncCaptured = async () => {
+    setSyncing(true);
+    try {
+      const { added, skipped } = await autoPopulateFromIpr(deals);
+      toast(added ? `Synced ${added} new image${added === 1 ? "" : "s"} (${skipped} already present)` : `No new captured images to add (${skipped} already present)`);
+      await load();
+    } catch (e) { toast("Sync failed: " + e.message); }
+    finally { setSyncing(false); }
   };
   const remove = async (id) => {
     try { await deleteQcEntry(id); toast("QC entry deleted"); await load(); }
@@ -2123,10 +2481,21 @@ function QualityChecksGlobal({ deals, canEdit, onOpen, toast }) {
             <button className={filter==="Fail"?"on":""} onClick={() => setFilter("Fail")}>Fail</button>
           </div>
           {canEdit && !showForm && !editRow && (
-            <button className="btn solid" onClick={() => setShowForm(true)}><Plus size={14} /> New QC entry</button>
+            <>
+              <button className="btn ghost" style={{ color:"var(--accent-deep)", border:"1px solid var(--line)", background:"#fff" }} onClick={syncCaptured} disabled={syncing} title="Pull newly captured images (Sent to Aurora / Datahub upload completed) for all deals">
+                {syncing ? <><RefreshCw size={14} className="spin" /> Syncing…</> : <><RefreshCw size={14} /> Sync captured images</>}
+              </button>
+              <button className="btn ghost" style={{ color:"var(--accent-deep)", border:"1px solid var(--line)", background:"#fff" }} onClick={() => setShowImport(true)}><Satellite size={14} /> Import from IPR</button>
+              <button className="btn solid" onClick={() => setShowForm(true)}><Plus size={14} /> New QC entry</button>
+            </>
           )}
         </div>
       </div>
+
+      {showImport && (
+        <IprImportModal deals={deals} toast={toast}
+          onClose={() => setShowImport(false)} onDone={load} />
+      )}
 
       {(showForm || editRow) && (
         <QcForm key={editRow ? editRow.id : "new"} deals={deals} initial={editRow}
@@ -2170,7 +2539,13 @@ function QcTab({ d, canEdit, toast }) {
 
   const submit = async (entry) => {
     try {
-      if (editRow) { await updateQcEntry(editRow.id, entry); toast("QC entry updated"); }
+      if (editRow) {
+        const prevResult = editRow.qc_result;
+        await updateQcEntry(editRow.id, entry);
+        toast("QC entry updated");
+        // Notify this deal's CS when the QC has just been completed
+        notifyCsQcComplete({ prevResult, entry: { ...editRow, ...entry }, csName: d.owners ? d.owners.cs : null });
+      }
       else { await addQcEntry(entry); toast("QC entry saved"); }
       setShowForm(false); setEditRow(null);
       await load();
