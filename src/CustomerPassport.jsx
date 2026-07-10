@@ -5727,14 +5727,14 @@ function stampNow() {
 // Best-effort Slack ping to a set of passport owners. Reuses the "mention"
 // event the slack-notify function already handles (one message per owner so
 // each gets a direct, attributable notification).
-async function notifyOwnersOnSlack(owners, { company, dealId, text, by, channelId, passportId }) {
+async function notifyOwnersOnSlack(owners, { company, dealId, dealUrl, text, by, channelId, passportId }) {
   const recipients = [...new Set((owners || []).filter(Boolean))];
   let sent = 0;
   for (const name of recipients) {
     try {
       const r = await sendSlackNotification("mention", {
         mentionedPerson: name, mentioned_slack: slackFor(name),
-        mentionedBy: by, company, dealId, noteText: text,
+        mentionedBy: by, company, dealId, deal_url: dealUrl, noteText: text,
       }, passportId, channelId);
       if (r && r.ok) sent++;
     } catch (_) { /* best-effort */ }
@@ -6209,9 +6209,11 @@ function PassportDetail({ data, onBack, canEdit, onRefresh, onAssign, onNotifyAl
         const teamLabel = team === "cs" ? "Customer Success" : "Analytics";
         let sent = 0;
         if (owner) {
+          // Deep-link straight to this deal's passport (the app opens ?deal=<id> on load).
+          const dealUrl = `${window.location.origin}/?deal=${p.id}`;
           sent = await notifyOwnersOnSlack([owner], {
-            company: p.company, dealId: p.deal_id_display,
-            text: `:incoming_envelope: *${p.company}* has been handed over to ${teamLabel}. It's now on your radar.`,
+            company: p.company, dealId: p.deal_id_display, dealUrl,
+            text: `:incoming_envelope: <${dealUrl}|${p.company}> has been handed over to ${teamLabel}. It's now on your radar.`,
             by: currentUserName, channelId: slackChannel ? slackChannel.id : undefined, passportId: p.id });
           // Also email the owner
           const person = Object.values(TEAM_MEMBERS).flat().find(x => x.name === owner);
