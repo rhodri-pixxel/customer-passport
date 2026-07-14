@@ -9,8 +9,10 @@
 //   { action: "list" }
 //       → non-archived passports for the generator's picker.
 //   { action: "attach", passport_id, author?, pdf: {name, b64},
-//     gdoc_url?, note_body?, aoi?: {name, b64},
+//     gdoc_url?, note_body?, aoi?: {name, b64}, hubspot?: boolean,
 //     fields?: { bandset?, cadence?, data_sources?, window?: {start,end,label} } }
+//     hubspot: true also uploads the PDF to HubSpot Files and pins it to
+//     the passport's deal as a note attachment (uses HUBSPOT_TOKEN).
 //       → uploads the PDF to passport-files storage, appends it to
 //         feasibility_files (Profile → Technical requirements) and inserts an
 //         attachments row (CS Summary → Attachments); adds the AOI to
@@ -99,8 +101,8 @@ serve(async function (req) {
 
     const { data: p, error: pErr } = await sb
       .from("handover_passports")
-      .select("id,company,bandset,cadence,data_sources,time_of_interest," +
-              "feasibility_files,aoi_files")
+      .select("id,company,hubspot_deal_id,bandset,cadence,data_sources," +
+              "time_of_interest,feasibility_files,aoi_files")
       .eq("id", passportId).single();
     if (pErr || !p) return json({ ok: false, error: "passport not found" }, 404);
 
@@ -180,7 +182,72 @@ serve(async function (req) {
       if (upErr) throw upErr;
     }
 
-    // ── 4. Google Doc link → Notes tab (activity_feed) ─────────────────
+    // ── 4. PDF → HubSpot deal attachments (upload file + pin via note) ─
+    // HubSpot surfaces record "Attachments" through engagements, so the
+    // file is uploaded to the Files API and attached to a note that is
+    // associated with the deal (associationTypeId 214 = note→deal).
+    if (body.hubspot) {
+      const hsToken = Deno.env.get("HUBSPOT_TOKEN");
+      const dealId = p.hubspot_deal_id;
+      if (!hsToken) {
+        skipped.push("HubSpot: HUBSPOT_TOKEN not configured on the function");
+      } else if (!dealId) {
+        skipped.push("HubSpot: passport has no hubspot_deal_id");
+      } else {
+        try {
+          const form = new FormData();
+          form.append("file",
+                      new Blob([pdfBytes], { type: "application/pdf" }),
+                      body.pdf.name);
+          form.append("options", JSON.stringify(
+            { access: "PRIVATE", overwrite: false }));
+          form.append("folderPath", "/feasibility-reports");
+          const up = await fetch("https://api.hubapi.com/files/v3/files", {
+            method: "POST",
+            headers: { Authorization: `Bearer ${hsToken}` },
+            body: form,
+          });
+          if (!up.ok) {
+            throw new Error(`file upload ${up.status}: ` +
+                            (await up.text()).slice(0, 200));
+          }
+          const fileId = (await up.json()).id;
+          const note = await fetch(
+            "https://api.hubapi.com/crm/v3/objects/notes", {
+              method: "POST",
+              headers: {
+                Authorization: `Bearer ${hsToken}`,
+                "Content-Type": "application/json",
+              },
+              body: JSON.stringify({
+                properties: {
+                  hs_timestamp: new Date().toISOString(),
+                  hs_note_body:
+                    (body.note_body ? String(body.note_body).trim() :
+                     "Feasibility report attached.") +
+                    (body.gdoc_url ?
+                     `\nGoogle Doc: ${body.gdoc_url}` : ""),
+                  hs_attachment_ids: String(fileId),
+                },
+                associations: [{
+                  to: { id: String(dealId) },
+                  types: [{ associationCategory: "HUBSPOT_DEFINED",
+                            associationTypeId: 214 }],
+                }],
+              }),
+            });
+          if (!note.ok) {
+            throw new Error(`note create ${note.status}: ` +
+                            (await note.text()).slice(0, 200));
+          }
+          done.push("PDF attached to the HubSpot deal");
+        } catch (e) {
+          skipped.push(`HubSpot attach failed: ${String((e as any)?.message || e)}`);
+        }
+      }
+    }
+
+    // ── 5. Google Doc link → Notes tab (activity_feed) ─────────────────
     if (body.gdoc_url) {
       const noteBody = (body.note_body ? String(body.note_body).trim() + "\n" : "") +
         `Feasibility report (Google Doc): ${body.gdoc_url}`;
