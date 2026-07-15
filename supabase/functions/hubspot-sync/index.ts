@@ -1069,7 +1069,7 @@ serve(async function(req) {
       const cp = existing.id;
       const already = collabEmails[cp] && collabEmails[cp].has(pseEmail);
       if (!already && (collabCount[cp] || 0) < 3) {
-        collaboratorAdds.push({ passport_id: cp, name: nonSePseName, email: pseEmail });
+        collaboratorAdds.push({ passport_id: cp, name: nonSePseName, email: pseEmail, company: p.dealname || ("Deal " + d.id) });
         if (!collabEmails[cp]) collabEmails[cp] = new Set();
         collabEmails[cp].add(pseEmail);
         collabCount[cp] = (collabCount[cp] || 0) + 1;
@@ -1119,8 +1119,27 @@ serve(async function(req) {
   for (const c of collaboratorAdds) {
     const { error } = await sb.from("deal_collaborators")
       .insert({ passport_id: c.passport_id, name: c.name, email: c.email });
-    if (error) console.error("Collaborator add failed for " + c.passport_id, error);
-    else collaborators_added++;
+    if (error) { console.error("Collaborator add failed for " + c.passport_id, error); continue; }
+    collaborators_added++;
+    // Notify once — this only runs on a first-time add (later syncs skip them,
+    // since they're already collaborators and never re-queued).
+    if (SLACK_BOT_TOKEN) {
+      const slackId = SLACK_ID_BY_NAME[c.name];
+      const who = slackId ? "<@" + slackId + ">" : c.name;
+      const dealUrl = APP_BASE_URL + "/?deal=" + c.passport_id;
+      await fetch("https://slack.com/api/chat.postMessage", {
+        method: "POST",
+        headers: { Authorization: "Bearer " + SLACK_BOT_TOKEN, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          channel: CUSTOMER_PASSPORT_CHANNEL,
+          text: c.name + " added as an additional contact on " + c.company,
+          blocks: [
+            { type: "section", text: { type: "mrkdwn", text: "👋 " + who + " — you've been added as an additional contact on <" + dealUrl + "|" + c.company + ">" } },
+            { type: "context", elements: [{ type: "mrkdwn", text: "Auto-synced from HubSpot" }] },
+          ],
+        }),
+      }).catch(function () {});
+    }
   }
 
   // ── Archive detection ──────────────────────────────────────────

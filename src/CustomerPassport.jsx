@@ -6110,7 +6110,17 @@ function PassportDetail({ data, onBack, canEdit, canPostNote, onRefresh, onAssig
     if (updated._addRisk) { await addRisk(p.id, updated._addRisk); await onRefresh(); return; }
     if (updated._addSample) { await addSampleData(p.id, updated._addSample); await onRefresh(); return; }
     if (updated._addMeetingNote) { await addMeetingNote(p.id, updated._addMeetingNote); await onRefresh(); return; }
-    if (updated._addCollaborator) { await addCollaborator(p.id, updated._addCollaborator); await onRefresh(); return; }
+    if (updated._addCollaborator) {
+      await addCollaborator(p.id, updated._addCollaborator);
+      await onRefresh();
+      // Notify the newly-added additional contact (best-effort).
+      const person = updated._addCollaborator;
+      sendSlackNotification("collaborator", {
+        person: person.name, person_slack: slackFor(person.name),
+        company: p.company, dealId: p.deal_id_display, addedBy: currentUserName || "Team",
+      }, p.id, slackChannel ? slackChannel.id : undefined).catch(() => {});
+      return;
+    }
     // Attachment that's a link (e.g. Google Drive) rather than an uploaded file
     if (updated._addAttachmentLink) {
       const { name, url } = updated._addAttachmentLink;

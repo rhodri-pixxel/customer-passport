@@ -87,6 +87,19 @@ function mentionMessage(p) {
   };
 }
 
+function collaboratorMessage(p) {
+  const who = mention(p.person, p.person_slack);
+  const deal = p.deal_url ? `<${p.deal_url}|${p.company}>` : `*${p.company}*`;
+  return {
+    text: `${p.person} added as an additional contact on ${p.company}`,
+    blocks: [
+      { type: "section", text: { type: "mrkdwn", text: `👋 ${who} — you've been added as an additional contact on ${deal}` } },
+      ...(p.addedBy ? [{ type: "context", elements: [{ type: "mrkdwn", text: `Added by ${p.addedBy}` }] }] : []),
+      { type: "divider" },
+    ],
+  };
+}
+
 async function postToSlack(token, channelId, message) {
   const res = await fetch(SLACK_API, {
     method: "POST",
@@ -125,6 +138,8 @@ serve(async function(req) {
       message = dealSummaryMessage(body);
     } else if (event === "mention") {
       message = mentionMessage(body);
+    } else if (event === "collaborator") {
+      message = collaboratorMessage(body);
     } else {
       throw new Error("Unknown event type: " + event);
     }
