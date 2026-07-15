@@ -5576,7 +5576,20 @@ async function fetchPassports({ pipeline, stage, ownerFilter, search, archivedVi
   else if (archivedView === "archived") params += `&archived=eq.true`;
   let data = await sbGet("handover_passports", params);
   if (ownerFilter) {
-    data = data.filter(d => [d.owner_se, d.owner_cs, d.owner_analytics, d.owner_director].includes(ownerFilter));
+    // Match an assigned role OR someone under "Additional People" (deal_collaborators),
+    // so filtering by a person also surfaces deals where they're only a collaborator.
+    let collabByPassport = {};
+    try {
+      const collabs = await sbGet("deal_collaborators", `?select=passport_id,name`);
+      for (const c of (collabs || [])) {
+        if (!collabByPassport[c.passport_id]) collabByPassport[c.passport_id] = new Set();
+        collabByPassport[c.passport_id].add(c.name);
+      }
+    } catch (_) { /* best-effort — fall back to role-only matching */ }
+    data = data.filter(d =>
+      [d.owner_se, d.owner_cs, d.owner_analytics, d.owner_director].includes(ownerFilter) ||
+      (collabByPassport[d.id] && collabByPassport[d.id].has(ownerFilter))
+    );
   }
   if (search) {
     const s = search.toLowerCase();
