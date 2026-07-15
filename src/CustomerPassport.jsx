@@ -5623,7 +5623,14 @@ function calcReadiness(passport, contacts) {
 }
 
 async function assignOwner(passportId, role, name) {
-  await sbPatch("handover_passports", passportId, { [`owner_${role}`]: name });
+  const patch = { [`owner_${role}`]: name };
+  // SE mirrors HubSpot's PSE field. Any in-app change (assign OR remove) makes the
+  // app the source of truth, so the sync writes it back and won't re-import the PSE.
+  if (role === "se") {
+    patch.owner_se_source = "app";
+    patch.owner_se_updated_at = new Date().toISOString();
+  }
+  await sbPatch("handover_passports", passportId, patch);
 }
 
 async function addActivityEntry(passportId, author, body, mentions = []) {
@@ -6329,9 +6336,9 @@ function PassportDetail({ data, onBack, canEdit, canPostNote, onRefresh, onAssig
       if (updated.owners.owner !== deal.owners.owner) fields.owner_director = updated.owners.owner;
       if (updated.owners.se !== deal.owners.se) {
         fields.owner_se = updated.owners.se;
-        // Mark the app as the source so the sync writes this back to HubSpot
-        // and never overwrites it from the PSE field.
-        fields.owner_se_source = updated.owners.se ? "app" : "hubspot";
+        // Mark the app as the source (for assign OR remove) so the sync writes this
+        // back to HubSpot and never re-imports it from the PSE field.
+        fields.owner_se_source = "app";
         fields.owner_se_updated_at = new Date().toISOString();
       }
       if (updated.owners.cs !== deal.owners.cs) fields.owner_cs = updated.owners.cs;

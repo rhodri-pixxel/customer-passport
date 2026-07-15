@@ -11,6 +11,13 @@ const CORS = {
 
 const HS_BASE = "https://api.hubapi.com";
 const APP_BASE_URL = "https://customer-passport.vercel.app";
+// SE roster — mirrors the app's TEAM_MEMBERS.se group. Only these people may fill
+// the SE slot; anyone else in HubSpot's PSE field is routed to "Additional People".
+// Keep this in sync with the frontend `se` list.
+const SE_EMAILS = new Set([
+  "amy@pixxel.space", "megan@pixxel.space", "rhodri@pixxel.space",
+  "ryan@pixxel.space", "spencer@pixxel.space", "terence@pixxel.space",
+]);
 
 async function hsGet(path, token) {
   const res = await fetch(HS_BASE + path, {
@@ -1001,41 +1008,72 @@ serve(async function(req) {
     existingMap[row.hubspot_deal_id] = row;
   }
 
-  const se_changes = [];     // for Slack notifications (HubSpot -> app)
-  const writeBacks = [];     // app -> HubSpot PSE
+  // Existing "Additional People" so PSE-sourced non-SEs aren't duplicated / over cap.
+  const collabRes = await sb.from("deal_collaborators").select("passport_id,email");
+  const collabEmails = {};   // passport_id -> Set(lowercased email)
+  const collabCount = {};    // passport_id -> count
+  for (const c of (collabRes.data || [])) {
+    const cp = c.passport_id;
+    if (!collabEmails[cp]) { collabEmails[cp] = new Set(); collabCount[cp] = 0; }
+    collabEmails[cp].add((c.email || "").toLowerCase());
+    collabCount[cp]++;
+  }
+
+  const se_changes = [];       // for Slack notifications (HubSpot -> app)
+  const writeBacks = [];       // app -> HubSpot PSE
+  const collaboratorAdds = []; // non-SE PSE owners -> deal_collaborators
 
   const rows = deals.map(function(d) {
     const p = d.properties;
     const pid = p.pipeline;
     const stageId = p.dealstage || "";
     const idx = STAGE_TO_IDX[stageId] !== undefined ? STAGE_TO_IDX[stageId] : 0;
-    const hubspotPseName = p.pse ? (ownerMap[p.pse] || null) : null;
     const existing = existingMap[d.id];
+    // Only recognised SEs may fill the SE slot. A PSE owner who isn't on the SE
+    // roster (e.g. an SDR who sourced the deal) is routed to "Additional People".
+    const pseEmail = p.pse ? (ownerEmailMap[p.pse] || "") : "";
+    const pseIsSe = pseEmail !== "" && SE_EMAILS.has(pseEmail);
+    const hubspotPseName = (p.pse && pseIsSe) ? (ownerMap[p.pse] || null) : null;
+    const nonSePseName = (p.pse && !pseIsSe) ? (ownerMap[p.pse] || null) : null;
 
     // ── SE reconciliation ──────────────────────────────────────
-    // In-app assignment wins. If app value differs from HubSpot PSE,
-    // schedule a write-back so HubSpot matches the app.
     let owner_se_value;
     let owner_se_source;
-    if (existing && existing.owner_se_source === "app" && existing.owner_se) {
-      // App is source of truth
-      owner_se_value = existing.owner_se;
+    if (existing && existing.owner_se_source === "app") {
+      // In-app assignment OR removal wins. Write a real SE back to HubSpot's PSE.
+      owner_se_value = existing.owner_se || null;
       owner_se_source = "app";
-      if (hubspotPseName !== existing.owner_se) {
+      if (existing.owner_se) {
         const oid = ownerIdByName[existing.owner_se];
-        if (oid) writeBacks.push({ dealId: d.id, ownerId: oid });
+        if (oid && p.pse !== oid) writeBacks.push({ dealId: d.id, ownerId: oid });
       }
     } else if (hubspotPseName) {
-      // HubSpot is source of truth
+      // HubSpot's PSE holds a recognised SE.
       owner_se_value = hubspotPseName;
       owner_se_source = "hubspot";
-      // Notify if this is a new/changed SE coming from HubSpot
       if (existing && existing.owner_se !== hubspotPseName) {
         se_changes.push({ se_name: hubspotPseName, company: p.dealname || ("Deal "+d.id), deal_id: "PX-" + d.id.slice(-4), pipeline: ALLOWED_PIPELINES[pid], passport_id: existing.id });
       }
+    } else if (nonSePseName && existing && existing.owner_se === nonSePseName) {
+      // The SE slot currently holds a non-SE imported from the PSE field — vacate it
+      // (the person is added to Additional People below instead).
+      owner_se_value = null;
+      owner_se_source = "hubspot";
     } else {
       owner_se_value = existing ? existing.owner_se : null;
       owner_se_source = existing ? (existing.owner_se_source || "hubspot") : "hubspot";
+    }
+
+    // Route a non-SE PSE owner into "Additional People" (deduped, respects the cap).
+    if (nonSePseName && pseEmail && existing) {
+      const cp = existing.id;
+      const already = collabEmails[cp] && collabEmails[cp].has(pseEmail);
+      if (!already && (collabCount[cp] || 0) < 3) {
+        collaboratorAdds.push({ passport_id: cp, name: nonSePseName, email: pseEmail });
+        if (!collabEmails[cp]) collabEmails[cp] = new Set();
+        collabEmails[cp].add(pseEmail);
+        collabCount[cp] = (collabCount[cp] || 0) + 1;
+      }
     }
 
     const row = {
@@ -1074,6 +1112,15 @@ serve(async function(req) {
     const result = await sb.from("handover_passports").upsert(chunk, { onConflict: "hubspot_deal_id" });
     if (result.error) { console.error("Chunk error:", result.error); errors += chunk.length; }
     else synced += chunk.length;
+  }
+
+  // ── Route PSE-sourced non-SEs into "Additional People" ─────────
+  let collaborators_added = 0;
+  for (const c of collaboratorAdds) {
+    const { error } = await sb.from("deal_collaborators")
+      .insert({ passport_id: c.passport_id, name: c.name, email: c.email });
+    if (error) console.error("Collaborator add failed for " + c.passport_id, error);
+    else collaborators_added++;
   }
 
   // ── Archive detection ──────────────────────────────────────────
