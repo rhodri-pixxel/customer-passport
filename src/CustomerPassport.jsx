@@ -3101,7 +3101,7 @@ function HandoverStatus({ d, canEdit, onUpdate }) {
   );
 }
 
-function Passport({ deal, onBack, canEdit, onUpdate, onAssign, onNotifyAll, onPostToSlack, onPushPlanhat, slackChannel, slackSending, slackStatus, toast }) {
+function Passport({ deal, onBack, canEdit, canPostNote, onUpdate, onAssign, onNotifyAll, onPostToSlack, onPushPlanhat, slackChannel, slackSending, slackStatus, toast }) {
   const [tab, setTab] = useState("profile");
   const [showChecklist, setShowChecklist] = useState(false);
   const [assignOpen, setAssignOpen] = useState(null);
@@ -3294,7 +3294,7 @@ function Passport({ deal, onBack, canEdit, onUpdate, onAssign, onNotifyAll, onPo
       {tab === "context" && <ContextTab d={deal} canEdit={canEdit} onSaveField={(f,v) => onUpdate({ _fieldUpdate: { field: f, value: v } })} onUpdate={onUpdate} />}
       {tab === "execution" && <ExecutionTab d={deal} canEdit={canEdit} onUpdate={onUpdate} onSaveField={(f,v) => onUpdate({ _fieldUpdate: { field: f, value: v } })} />}
       {tab === "csummary" && <CSSummaryTab d={deal} canEdit={canEdit} onUpdate={onUpdate} onSaveField={(f,v) => onUpdate({ _fieldUpdate: { field: f, value: v } })} />}
-      {tab === "notes" && <NotesTab d={deal} canEdit={canEdit} onUpdate={onUpdate} toast={toast} />}
+      {tab === "notes" && <NotesTab d={deal} canEdit={canEdit} canPostNote={canPostNote} onUpdate={onUpdate} toast={toast} />}
       {tab === "qc" && <QcTab d={deal} canEdit={canEdit} toast={toast} />}
       {tab === "feedback" && <FeedbackTab d={deal} canEdit={canEdit} onUpdate={onUpdate} toast={toast} />}
     </>
@@ -4637,7 +4637,9 @@ function CSSummaryTab({ d, canEdit, onSaveField, onUpdate }) {
   );
 }
 
-function NotesTab({ d, canEdit, onUpdate, toast }) {
+function NotesTab({ d, canEdit, canPostNote, onUpdate, toast }) {
+  // Directors get the composer (post updates) even when read-only elsewhere.
+  const canCompose = canPostNote !== undefined ? canPostNote : canEdit;
   const [draft, setDraft] = useState("");
   const [mentionQuery, setMentionQuery] = useState(null); // null = no active mention
   const [mentionPos, setMentionPos] = useState(0);
@@ -4714,7 +4716,7 @@ function NotesTab({ d, canEdit, onUpdate, toast }) {
 
   return (
     <>
-      {canEdit && (
+      {canCompose && (
         <div className="composer">
           <div style={{ position: "relative" }}>
             <textarea ref={taRef} placeholder="Post an update… type @ to mention a teammate"
@@ -5379,8 +5381,11 @@ async function getUserFromToken(token) {
 // - Anything else → 'denied'
 function resolveRoleFromEmail(email) {
   const e = (email || "").toLowerCase();
-  const all = Object.values(TEAM_MEMBERS).flat();
-  if (all.some(p => p.email === e)) return "member";
+  // Return the person's team (owner = Sales Director, se, cs, analytics) so edit
+  // rights can differ by function; any other Pixxel email is a read-only viewer.
+  for (const [group, members] of Object.entries(TEAM_MEMBERS)) {
+    if (members.some(p => p.email === e)) return group;
+  }
   if (e.endsWith("@pixxel.space") || e.endsWith("@pixxel.co.in")) return "viewer";
   return "denied";
 }
@@ -5897,7 +5902,7 @@ function DealListLive({ deals, loading, onOpen, pipelineFilter, setPipelineFilte
    Maps Supabase shape → existing Passport component props
    ================================================================ */
 
-function PassportDetail({ data, onBack, canEdit, onRefresh, onAssign, onNotifyAll, onPostToSlack, slackChannel, slackSending, slackStatus, toast, currentUserName }) {
+function PassportDetail({ data, onBack, canEdit, canPostNote, onRefresh, onAssign, onNotifyAll, onPostToSlack, slackChannel, slackSending, slackStatus, toast, currentUserName }) {
   const { passport: p, contacts, pocs, risks, sampleData, captureLog, actionItems, meetingNotes, activityFeed, attachments, feedback, collaborators } = data;
   const { score, items: readinessItems } = calcReadiness(p, contacts);
 
@@ -6348,6 +6353,7 @@ function PassportDetail({ data, onBack, canEdit, onRefresh, onAssign, onNotifyAl
       deal={deal}
       onBack={onBack}
       canEdit={canEdit}
+      canPostNote={canPostNote}
       onUpdate={handleUpdate}
       onAssign={(r, name) => onAssign(r, name)}
       onNotifyAll={onNotifyAll}
@@ -6656,16 +6662,20 @@ export default function App() {
     );
   }
 
-  const canEdit = currentUser.role === "member";
+  // SE / CS / Analytics get full edit. Sales Directors (owner) are view-only,
+  // except they may post to the Notes activity feed. Everyone else is read-only.
+  const canEdit = ["se", "cs", "analytics"].includes(currentUser.role);
+  const canPostNote = canEdit || currentUser.role === "owner";
 
   return <AppMain
     currentUser={currentUser}
     canEdit={canEdit}
+    canPostNote={canPostNote}
     onSignOut={async () => { await signOut(); setCurrentUser(null); }}
   />;
 }
 
-function AppMain({ currentUser, canEdit, onSignOut }) {
+function AppMain({ currentUser, canEdit, canPostNote, onSignOut }) {
   const [deals, setDeals] = useState([]);
   const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
@@ -7032,6 +7042,7 @@ function AppMain({ currentUser, canEdit, onSignOut }) {
                   data={passportData}
                   onBack={closePassport}
                   canEdit={canEdit}
+                  canPostNote={canPostNote}
                   onRefresh={refreshDetail}
                   onAssign={(r, name) => handleAssign(openId, r, name)}
                   onNotifyAll={handleNotifyAll}
