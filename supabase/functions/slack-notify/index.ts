@@ -7,6 +7,7 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2.39.3";
 
 const SLACK_API = "https://slack.com/api/chat.postMessage";
 const DEFAULT_CHANNEL = "C0BB1DC6LNB"; // #customer-passport
+const APP_BASE_URL = "https://customer-passport.vercel.app";
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
@@ -21,11 +22,13 @@ function mention(name, slackId) {
 function assignmentMessage(p) {
   const acv = p.amount ? `$${(p.amount / 1000).toFixed(0)}k` : "TBD";
   const who = mention(p.person, p.person_slack);
+  const deal = p.deal_url ? `<${p.deal_url}|${p.company}>` : `*${p.company}*`;
+  const openCta = p.deal_url ? `Open the <${p.deal_url}|Customer Passport>` : "Open the Customer Passport";
   return {
     text: `${p.person} assigned as ${p.role} on ${p.company}`,
     blocks: [
       { type: "header", text: { type: "plain_text", text: "🛰️ New Assignment — Customer Passport", emoji: true } },
-      { type: "section", text: { type: "mrkdwn", text: `${who} has been assigned as *${p.role}* on *${p.company}*` } },
+      { type: "section", text: { type: "mrkdwn", text: `${who} has been assigned as *${p.role}* on ${deal}` } },
       { type: "section", fields: [
         { type: "mrkdwn", text: `*Deal ID*\n${p.dealId}` },
         { type: "mrkdwn", text: `*Stage*\n${p.stage}` },
@@ -33,7 +36,7 @@ function assignmentMessage(p) {
         { type: "mrkdwn", text: `*Handover Readiness*\n${p.readiness}%` },
       ]},
       { type: "context", elements: [
-        { type: "mrkdwn", text: `Assigned by ${p.assignedBy} · Open the Customer Passport to view the full briefing` },
+        { type: "mrkdwn", text: `Assigned by ${p.assignedBy} · ${openCta} to view the full briefing` },
       ]},
       { type: "divider" },
     ],
@@ -62,7 +65,7 @@ function dealSummaryMessage(p) {
       ]},
       { type: "section", text: { type: "mrkdwn", text: `*Owners*\n${ownerLines || "_None assigned_"}` } },
       { type: "context", elements: [
-        { type: "mrkdwn", text: `Posted by ${p.postedBy} from the Customer Passport` },
+        { type: "mrkdwn", text: `Posted by ${p.postedBy} from the ${p.deal_url ? `<${p.deal_url}|Customer Passport>` : "Customer Passport"}` },
       ]},
       { type: "divider" },
     ],
@@ -109,6 +112,9 @@ serve(async function(req) {
 
     const body = await req.json();
     const event = body.event;
+    // Deep-link to the deal's passport. Built from passport_id (canonical prod URL)
+    // so EVERY notification links the deal, regardless of which caller sent it.
+    body.deal_url = body.passport_id ? `${APP_BASE_URL}/?deal=${body.passport_id}` : (body.deal_url || null);
     // Always post to #customer-passport regardless of any channel_id passed in
     const targetChannel = DEFAULT_CHANNEL;
 
