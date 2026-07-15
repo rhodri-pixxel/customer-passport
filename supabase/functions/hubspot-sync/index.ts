@@ -10,6 +10,7 @@ const CORS = {
 };
 
 const HS_BASE = "https://api.hubapi.com";
+const APP_BASE_URL = "https://customer-passport.vercel.app";
 
 async function hsGet(path, token) {
   const res = await fetch(HS_BASE + path, {
@@ -994,7 +995,7 @@ serve(async function(req) {
   // Load existing passports to reconcile SE assignment direction
   const existingRes = await sb
     .from("handover_passports")
-    .select("hubspot_deal_id,owner_se,owner_se_source,company,pipeline,deal_id_display");
+    .select("id,hubspot_deal_id,owner_se,owner_se_source,company,pipeline,deal_id_display");
   const existingMap = {};
   for (const row of (existingRes.data || [])) {
     existingMap[row.hubspot_deal_id] = row;
@@ -1030,7 +1031,7 @@ serve(async function(req) {
       owner_se_source = "hubspot";
       // Notify if this is a new/changed SE coming from HubSpot
       if (existing && existing.owner_se !== hubspotPseName) {
-        se_changes.push({ se_name: hubspotPseName, company: p.dealname || ("Deal "+d.id), deal_id: "PX-" + d.id.slice(-4), pipeline: ALLOWED_PIPELINES[pid] });
+        se_changes.push({ se_name: hubspotPseName, company: p.dealname || ("Deal "+d.id), deal_id: "PX-" + d.id.slice(-4), pipeline: ALLOWED_PIPELINES[pid], passport_id: existing.id });
       }
     } else {
       owner_se_value = existing ? existing.owner_se : null;
@@ -1132,7 +1133,7 @@ serve(async function(req) {
         text: change.se_name + " assigned as Sales Engineer on " + change.company,
         blocks: [
           { type: "header", text: { type: "plain_text", text: "🛰️ SE Assignment — Customer Passport", emoji: true } },
-          { type: "section", text: { type: "mrkdwn", text: mention + " has been assigned as *Sales Engineer* on *" + change.company + "* (" + change.deal_id + ")" } },
+          { type: "section", text: { type: "mrkdwn", text: mention + " has been assigned as *Sales Engineer* on " + (change.passport_id ? "<" + APP_BASE_URL + "/?deal=" + change.passport_id + "|" + change.company + ">" : "*" + change.company + "*") + " (" + change.deal_id + ")" } },
           { type: "context", elements: [{ type: "mrkdwn", text: "Auto-synced from HubSpot PSE field · " + change.pipeline }] },
         ],
       };
