@@ -1,0 +1,74 @@
+/* Gooey search — locked dark chrome so bubble colour never matches the text */
+.goo-wrap {
+  --goo-bg: #0B1018;
+  --goo-fg: #ffffff;
+  --goo-icon: #03d4ff;
+  display: inline-flex;
+  align-items: center;
+  height: 44px;
+}
+.goo-btn {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  height: 44px;
+  padding: 0 16px;
+  border: none;
+  border-radius: 24px;
+  background: var(--goo-bg);
+  color: var(--goo-fg);
+  font: inherit;
+  font-size: 13.5px;
+  font-weight: 500;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  transition: width 0.42s cubic-bezier(0.2, 0.8, 0.25, 1), padding 0.42s;
+}
+.goo-wrap.open .goo-btn { cursor: text; }
+.goo-btn .goo-icon { flex-shrink: 0; color: var(--goo-icon); }
+.goo-btn input {
+  border: none;
+  background: none;
+  outline: none;
+  color: var(--goo-fg);
+  font: inherit;
+  font-size: 13.5px;
+  width: 0;
+  opacity: 0;
+  pointer-events: none;
+  transition: width 0.42s, opacity 0.3s;
+}
+.goo-wrap.open .goo-btn input {
+  width: 240px;
+  opacity: 1;
+  pointer-events: auto;
+}
+.goo-btn input::placeholder { color: rgba(255, 255, 255, 0.5); }
+/* hide native search clear/decorations for a clean pill */
+.goo-btn input::-webkit-search-decoration,
+.goo-btn input::-webkit-search-cancel-button { -webkit-appearance: none; }
+
+.goo-bubble {
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  background: var(--goo-bg);
+  color: var(--goo-icon);
+  display: grid;
+  place-items: center;
+  margin-left: -14px;
+  border: none;
+  cursor: pointer;
+  transform: scale(0);
+  opacity: 0;
+  transition: transform 0.42s cubic-bezier(0.2, 0.8, 0.25, 1), opacity 0.3s;
+}
+.goo-wrap.open .goo-bubble { transform: scale(1); opacity: 1; }
+
+@media (prefers-reduced-motion: reduce) {
+  .goo-btn, .goo-btn input, .goo-bubble { transition: none; }
+}
+@media (max-width: 560px) {
+  .goo-wrap.open .goo-btn input { width: 150px; }
+}

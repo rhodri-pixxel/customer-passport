@@ -1,0 +1,137 @@
+/* MagicBento — Pixxel brand build (electric-blue neon glow on dark space cards) */
+.magic-bento-scope {
+  --mb-glow: 3, 212, 255;            /* electric blue */
+  --mb-glow-strong: rgba(3, 212, 255, 1);
+  --mb-glow-soft: rgba(3, 212, 255, 0.2);
+  --mb-border: #1C2430;
+  --mb-bg: #0E121B;
+  --mb-white: #F2FAFD;
+}
+
+.card-grid {
+  display: grid;
+  gap: 0.5em;
+  padding: 0.5em 0;
+  width: 100%;
+  font-size: clamp(1rem, 0.9rem + 0.5vw, 1.5rem);
+}
+
+.magic-bento-card {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  position: relative;
+  min-height: 170px;
+  width: 100%;
+  padding: 1.1em;
+  border-radius: 16px;
+  border: 1px solid var(--mb-border, #1C2430);
+  background: var(--mb-bg, #0E121B);
+  font-weight: 300;
+  overflow: hidden;
+  transition: transform 0.3s ease, box-shadow 0.3s ease;
+  --glow-x: 50%;
+  --glow-y: 50%;
+  --glow-intensity: 0;
+  --glow-radius: 200px;
+}
+
+.magic-bento-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 8px 25px rgba(0, 0, 0, 0.35);
+}
+
+.magic-bento-card__header,
+.magic-bento-card__content {
+  display: flex;
+  position: relative;
+  color: var(--mb-white, #F2FAFD);
+  z-index: 2;
+}
+.magic-bento-card__header { gap: 0.75em; justify-content: space-between; }
+.magic-bento-card__content { flex-direction: column; margin-top: auto; }
+
+.magic-bento-card__label {
+  font-size: 11px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: rgba(3, 212, 255, 0.95);
+  font-family: 'IBM Plex Mono', ui-monospace, monospace;
+}
+
+.magic-bento-card__title {
+  font-family: 'Barlow', 'Inter', ui-sans-serif, system-ui, sans-serif;
+  font-weight: 600;
+  font-size: 17px;
+  margin: 0 0 0.25em;
+}
+.magic-bento-card__description {
+  font-size: 12.5px;
+  line-height: 1.35;
+  opacity: 0.75;
+  margin: 0;
+}
+
+.magic-bento-card--text-autohide .magic-bento-card__title,
+.magic-bento-card--text-autohide .magic-bento-card__description {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.magic-bento-card--text-autohide .magic-bento-card__title { -webkit-line-clamp: 1; line-clamp: 1; }
+.magic-bento-card--text-autohide .magic-bento-card__description { -webkit-line-clamp: 2; line-clamp: 2; }
+
+/* responsive bento layout */
+@media (min-width: 600px) {
+  .card-grid { grid-template-columns: repeat(2, 1fr); }
+}
+@media (min-width: 1024px) {
+  .card-grid { grid-template-columns: repeat(4, 1fr); }
+  .magic-bento-card:nth-child(3) { grid-column: span 2; grid-row: span 2; }
+  .magic-bento-card:nth-child(4) { grid-column: 1 / span 2; grid-row: 2 / span 2; }
+  .magic-bento-card:nth-child(6) { grid-column: 4; grid-row: 3; }
+}
+
+/* Border glow — electric blue */
+.magic-bento-card--border-glow::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  padding: 1.5px;
+  background: radial-gradient(
+    var(--glow-radius) circle at var(--glow-x) var(--glow-y),
+    rgba(3, 212, 255, calc(var(--glow-intensity) * 0.8)) 0%,
+    rgba(3, 212, 255, calc(var(--glow-intensity) * 0.4)) 30%,
+    transparent 60%
+  );
+  border-radius: inherit;
+  -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+  -webkit-mask-composite: xor;
+  mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+  mask-composite: exclude;
+  pointer-events: none;
+  transition: opacity 0.3s ease;
+  z-index: 1;
+}
+.magic-bento-card--border-glow:hover {
+  box-shadow: 0 4px 20px rgba(3, 20, 40, 0.5), 0 0 30px rgba(3, 212, 255, 0.2);
+}
+
+.particle-container { position: relative; overflow: hidden; }
+.particle-container:hover {
+  box-shadow: 0 4px 20px rgba(3, 20, 40, 0.4), 0 0 30px rgba(3, 212, 255, 0.2);
+}
+
+.global-spotlight {
+  mix-blend-mode: screen;
+  will-change: transform, opacity;
+  z-index: 200 !important;
+  pointer-events: none;
+}
+
+.bento-section { position: relative; user-select: none; }
+
+@media (prefers-reduced-motion: reduce) {
+  .magic-bento-card, .magic-bento-card--border-glow::after { transition: none; }
+}

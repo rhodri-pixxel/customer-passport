@@ -14,25 +14,38 @@ import "leaflet/dist/leaflet.css";
 import "leaflet.markercluster";
 import "leaflet.markercluster/dist/MarkerCluster.css";
 import "leaflet.markercluster/dist/MarkerCluster.Default.css";
+import PrototypesView from "./components/PrototypesView.jsx";
 
 /* ------------------------------------------------------------------ */
 /*  Design system (spectral / Earth-observation theme)                */
 /* ------------------------------------------------------------------ */
 const CSS = `
-@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Inter:wght@400;450;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Barlow:wght@400;500;600;700&family=Inter:wght@400;450;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap');
 
 .cp-root{
+  /* ── Pixxel brand: electric blue on a light canvas (deepened for legible text) ── */
   --ink:#0B1220; --ink2:#1B2433; --muted:#5A6577; --muted2:#929BAB;
   --line:#E4E8EF; --line-soft:#EEF1F6; --surface:#F5F7FB; --card:#FFFFFF;
-  --accent:#0EA5B7; --accent-deep:#0B7E8C; --accent-soft:#E3F6F8;
+  --accent:#0399C9; --accent-deep:#036E8C; --accent-soft:#E1F7FE; --accent-bright:#03d4ff; --sky:#06bdff;
   --se:#2D7FF9; --se-soft:#E7F0FE; --cs:#E07A2B; --cs-soft:#FBEEDF;
   --an:#7A5AF5; --an-soft:#EDE8FE;
   --ok:#2FB67A; --warn:#E0B02B; --bad:#E5564B;
-  --font-display:'Space Grotesk',ui-sans-serif,system-ui,sans-serif;
+  /* industry-wise sector colours (from brand guidelines) */
+  --agri:#98eb00; --energy:#ecb423; --mining:#f76e2f; --env:#00ffbb; --gov:#06bdff; --forest:#00c030;
+  --font-display:'Barlow',ui-sans-serif,system-ui,sans-serif;
   --font-body:'Inter',ui-sans-serif,system-ui,sans-serif;
   --font-mono:'IBM Plex Mono',ui-monospace,monospace;
   font-family:var(--font-body); color:var(--ink); background:var(--surface);
   min-height:100vh; -webkit-font-smoothing:antialiased;
+}
+/* Dark "space canvas" — brand-forward theme, scoped to a wrapper for now
+   (preview it on the Prototypes route before making it the global default). */
+.space-canvas{
+  --ink:#F2FAFD; --ink2:#C4D2DA; --muted:#8A97A4; --muted2:#5C6773;
+  --line:#1C2430; --line-soft:#141A24; --surface:#04060B; --card:#0E121B;
+  --accent:#03d4ff; --accent-deep:#5FE6FF; --accent-soft:rgba(3,212,255,.12); --accent-bright:#03d4ff; --sky:#06bdff;
+  --se-soft:rgba(45,127,249,.16); --an-soft:rgba(122,90,245,.18);
+  color:var(--ink); background:var(--surface);
 }
 .cp-root *{box-sizing:border-box;}
 .cp-root button{font-family:inherit; cursor:pointer; border:none; background:none;}
@@ -6951,6 +6964,9 @@ function AppMain({ currentUser, canEdit, canPostNote, onSignOut }) {
           <button className={view === "maps" ? "on" : ""} onClick={() => { setView("maps"); closePassport(); }}>
             <MapPin size={15} /> Maps
           </button>
+          <button className={view === "prototypes" ? "on" : ""} onClick={() => { setView("prototypes"); closePassport(); }}>
+            <Zap size={15} /> Prototypes
+          </button>
         </div>
         <div className="cp-spacer" />
 
@@ -7090,8 +7106,10 @@ function AppMain({ currentUser, canEdit, canPostNote, onSignOut }) {
               ? <QualityChecksGlobal deals={deals} canEdit={canEdit} onOpen={openPassport} toast={toast} />
               : view === "mvp"
                 ? <MvpImagesGlobal deals={deals} canEdit={canEdit} onOpen={openPassport} toast={toast} />
-                : view === "maps"
-                  ? <MapsGlobal />
+                : view === "prototypes"
+                  ? <PrototypesView />
+                  : view === "maps"
+                    ? <MapsGlobal />
                   : <DealListLive
                 deals={deals}
                 loading={loading}
