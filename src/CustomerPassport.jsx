@@ -112,6 +112,22 @@ const CSS = `
 .cp-select .chev{position:absolute;right:11px;top:50%;transform:translateY(-50%);
   pointer-events:none;color:var(--muted2);}
 
+/* mono eyebrow used throughout the fused system */
+.klabel{font-family:var(--font-mono);font-size:9.5px;letter-spacing:.16em;text-transform:uppercase;
+  color:var(--muted);}
+
+/* D4 — split master list + live peek */
+.deals-split{display:grid;grid-template-columns:300px 1fr;min-height:460px;
+  border:1px solid var(--line);border-radius:var(--r-container);background:var(--card);overflow:hidden;}
+.deals-list{border-right:1px solid var(--line);padding:12px;overflow-y:auto;max-height:72vh;}
+.deal-row{padding:11px 12px;border-radius:12px;cursor:pointer;margin-bottom:6px;
+  border:1px solid transparent;background:transparent;}
+.deal-row:hover{background:rgba(3,212,255,.05);}
+.deal-row.on{border-color:rgba(3,212,255,.55);background:var(--raised);}
+.deals-peek{padding:24px;min-width:0;}
+@media(max-width:900px){.deals-split{grid-template-columns:1fr;}
+  .deals-list{border-right:none;border-bottom:1px solid var(--line);max-height:340px;}}
+
 /* deal grid */
 .cp-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));gap:16px;}
 .cp-card{background:var(--card);border:1px solid var(--line);border-radius:18px;padding:18px;
@@ -289,6 +305,24 @@ const CSS = `
 @media(max-width:620px){.checklist .items{grid-template-columns:1fr;}}
 .cl-item{display:flex;align-items:center;gap:9px;font-size:13px;color:var(--ink2);}
 .cl-item.miss{color:var(--muted2);}
+
+/* P4 — split subnav rail + detail pane */
+.p4{display:grid;grid-template-columns:190px 1fr;border:1px solid var(--line);
+  border-radius:var(--r-container);background:var(--card);overflow:hidden;min-height:320px;}
+.p4-rail{border-right:1px solid var(--line);padding:12px;}
+.p4-item{display:flex;align-items:center;gap:9px;padding:9px 12px;border-radius:10px;
+  cursor:pointer;margin-bottom:4px;font-size:13px;color:var(--ink2);
+  border-left:2px solid transparent;background:transparent;}
+.p4-item:hover{background:rgba(3,212,255,.05);}
+.p4-item.on{color:var(--ink);border-left-color:var(--accent);background:var(--raised);}
+.p4-detail{padding:22px;min-width:0;}
+/* inside the rail layout the section blocks shed their own chrome */
+.p4-detail .block{background:transparent;border:none;padding:0;margin-bottom:22px;}
+.p4-detail .cols{gap:22px;}
+@media(max-width:900px){.p4{grid-template-columns:1fr;}
+  .p4-rail{border-right:none;border-bottom:1px solid var(--line);display:flex;flex-wrap:wrap;gap:4px;}
+  .p4-item{margin-bottom:0;border-left:none;border-bottom:2px solid transparent;}
+  .p4-item.on{border-left:none;border-bottom-color:var(--accent);}}
 
 /* tabs */
 .cp-tabs{display:flex;gap:26px;border-bottom:1px solid var(--line);margin-bottom:22px;flex-wrap:wrap;}
@@ -3440,19 +3474,26 @@ function Passport({ deal, onBack, canEdit, canPostNote, onUpdate, onAssign, onNo
       )}
 
       {/* tabs */}
-      <div className="cp-tabs">
-        {[["profile", Building2, "Profile"], ["context", Target, "Context"], ["execution", Activity, "Execution"], ["csummary", LayoutGrid, "CS Summary"], ["qc", Camera, "Quality Checks"], ["notes", FileText, "Notes"], ["feedback", MessageSquare, "Customer Feedback"]].map(([k, Ic, lbl]) => (
-          <button key={k} className={tab === k ? "on" : ""} onClick={() => setTab(k)}><Ic size={15} />{lbl}</button>
-        ))}
+      {/* P4 — split subnav rail + detail pane */}
+      <div className="klabel" style={{ margin: "26px 0 12px" }}>Sections</div>
+      <div className="p4">
+        <div className="p4-rail">
+          {[["profile", Building2, "Profile"], ["context", Target, "Context"], ["execution", Activity, "Execution"], ["csummary", LayoutGrid, "CS Summary"], ["qc", Camera, "Quality Checks"], ["notes", FileText, "Notes"], ["feedback", MessageSquare, "Customer Feedback"]].map(([k, Ic, lbl]) => (
+            <div key={k} className={"p4-item" + (tab === k ? " on" : "")} onClick={() => setTab(k)}>
+              <Ic size={14} />{lbl}
+            </div>
+          ))}
+        </div>
+        <div className="p4-detail">
+          {tab === "profile" && <ProfileTab d={deal} canEdit={canEdit} onSaveField={(f,v) => onUpdate({ _fieldUpdate: { field: f, value: v } })} onUpdate={onUpdate} />}
+          {tab === "context" && <ContextTab d={deal} canEdit={canEdit} onSaveField={(f,v) => onUpdate({ _fieldUpdate: { field: f, value: v } })} onUpdate={onUpdate} />}
+          {tab === "execution" && <ExecutionTab d={deal} canEdit={canEdit} onUpdate={onUpdate} onSaveField={(f,v) => onUpdate({ _fieldUpdate: { field: f, value: v } })} />}
+          {tab === "csummary" && <CSSummaryTab d={deal} canEdit={canEdit} onUpdate={onUpdate} onSaveField={(f,v) => onUpdate({ _fieldUpdate: { field: f, value: v } })} />}
+          {tab === "notes" && <NotesTab d={deal} canEdit={canEdit} canPostNote={canPostNote} onUpdate={onUpdate} toast={toast} />}
+          {tab === "qc" && <QcTab d={deal} canEdit={canEdit} toast={toast} />}
+          {tab === "feedback" && <FeedbackTab d={deal} canEdit={canEdit} onUpdate={onUpdate} toast={toast} />}
+        </div>
       </div>
-
-      {tab === "profile" && <ProfileTab d={deal} canEdit={canEdit} onSaveField={(f,v) => onUpdate({ _fieldUpdate: { field: f, value: v } })} onUpdate={onUpdate} />}
-      {tab === "context" && <ContextTab d={deal} canEdit={canEdit} onSaveField={(f,v) => onUpdate({ _fieldUpdate: { field: f, value: v } })} onUpdate={onUpdate} />}
-      {tab === "execution" && <ExecutionTab d={deal} canEdit={canEdit} onUpdate={onUpdate} onSaveField={(f,v) => onUpdate({ _fieldUpdate: { field: f, value: v } })} />}
-      {tab === "csummary" && <CSSummaryTab d={deal} canEdit={canEdit} onUpdate={onUpdate} onSaveField={(f,v) => onUpdate({ _fieldUpdate: { field: f, value: v } })} />}
-      {tab === "notes" && <NotesTab d={deal} canEdit={canEdit} canPostNote={canPostNote} onUpdate={onUpdate} toast={toast} />}
-      {tab === "qc" && <QcTab d={deal} canEdit={canEdit} toast={toast} />}
-      {tab === "feedback" && <FeedbackTab d={deal} canEdit={canEdit} onUpdate={onUpdate} toast={toast} />}
     </>
   );
 }
@@ -6017,73 +6058,123 @@ function DealListLive({ deals, loading, onOpen, pipelineFilter, setPipelineFilte
       )}
 
       {loading && deals.length === 0 ? (
-        <div className="cp-grid">
-          {Array.from({ length: 6 }).map((_, i) => (
-            <div key={i} className="cp-card" style={{ pointerEvents:"none" }}>
-              <div className="sk-row">
-                <div className="sk" style={{ width:34, height:34, borderRadius:"50%" }} />
-                <div style={{ flex:1 }}>
-                  <div className="sk" style={{ height:12, width:"62%" }} />
-                  <div className="sk" style={{ height:10, width:"38%", marginTop:8 }} />
-                </div>
+        <div className="deals-split">
+          <div className="deals-list">
+            {Array.from({ length: 7 }).map((_, i) => (
+              <div key={i} style={{ padding: "11px 12px" }}>
+                <div className="sk" style={{ height: 12, width: "70%" }} />
+                <div className="sk" style={{ height: 10, width: "45%", marginTop: 7 }} />
               </div>
-              <div className="sk" style={{ height:12, width:"100%" }} />
-              <div className="sk" style={{ height:12, width:"84%", marginTop:9 }} />
-              <div className="sk" style={{ height:12, width:"58%", marginTop:9 }} />
-            </div>
-          ))}
+            ))}
+          </div>
+          <div className="deals-peek">
+            <div className="sk" style={{ height: 14, width: 160 }} />
+            <div className="sk" style={{ height: 28, width: "60%", marginTop: 14 }} />
+            <div className="sk" style={{ height: 76, width: 76, borderRadius: "50%", marginTop: 22 }} />
+          </div>
         </div>
       ) : deals.length === 0 ? (
-        <div className="empty">No deals match these filters.</div>
-      ) : (
-        <div className="cp-grid">
-          {deals.map(d => {
-            const { score } = calcReadiness(d, []);
-            const pipeColor = PIPE_COLORS[d.pipeline] || "#929BAB";
-            const warmth = d.hubspot_last_contacted
-              ? Math.floor((Date.now() - new Date(d.hubspot_last_contacted).getTime()) / 86400000)
-              : null;
-            return (
-              <div key={d.id} className="cp-card" onClick={() => onOpen(d.id)} style={d.archived ? { opacity: 0.72 } : undefined}>
-                <div className="row">
-                  <div style={{ flex:1, minWidth:0 }}>
-                    <div style={{ display:"flex", alignItems:"center", gap:7, marginBottom:4 }}>
-                      <span style={{ width:8, height:8, borderRadius:"50%", background:pipeColor, flex:"none" }} />
-                      <span style={{ fontSize:10.5, color:"var(--muted2)", fontFamily:"var(--font-mono)", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{d.pipeline}</span>
-                      {d.archived && <span className="tag" style={{ background:"rgba(247,110,47,.14)", color:"var(--mining)", fontSize:10, marginLeft:"auto", flex:"none" }}>Archived</span>}
-                      {d.is_eap && <span style={{ fontSize:10, color:"var(--energy)" }}><Star size={10} fill="#F0A429" color="#F0A429" style={{ verticalAlign:-1 }} /></span>}
-                    </div>
-                    <h3 style={{ margin:0, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{d.company}</h3>
-                  </div>
-                  <Ring value={score} size={46} stroke={5} />
-                </div>
-                <div style={{ marginTop:14, display:"flex", justifyContent:"space-between", alignItems:"center" }}>
-                  <StageChip stage={d.hubspot_stage_idx} />
-                  <span className="cp-amount">{d.hubspot_amount ? "$" + (d.hubspot_amount/1000).toFixed(0) + "k" : "—"}</span>
-                </div>
-                <div className="owners" style={{ marginTop:14 }}>
-                  <OwnerAvatar name={d.owner_director} role="dir" />
-                  <OwnerAvatar name={d.owner_se} role="se" />
-                  <OwnerAvatar name={d.owner_cs} role="cs" />
-                  <OwnerAvatar name={d.owner_analytics} role="an" />
-                  <div style={{ flex:1 }} />
-                  <span className="cp-amount" style={{ color:"var(--muted2)", fontSize:11 }}>{d.deal_id_display}</span>
-                </div>
-                <div className="meta" style={{ marginTop:10 }}>
-                  <Clock size={12} />
-                  {d.last_activity_label || "Unknown"}
-                  {warmth !== null && (
-                    <span style={{ marginLeft:6, color: warmth <= 3 ? "var(--ok)" : warmth <= 14 ? "var(--warn)" : "var(--bad)", fontSize:11 }}>
-                      · contacted {warmth}d ago
-                    </span>
-                  )}
-                </div>
-              </div>
-            );
-          })}
+        <div className="empty">
+          <Search size={16} />
+          <span>No deals match these filters.</span>
+          <button onClick={() => { setSearchQ(""); setOwnerFilter(""); setPipelineFilter("all"); setStageFilter("all"); }}>Clear filters</button>
         </div>
+      ) : (
+        <DealsSplit deals={deals} onOpen={onOpen} ownerFilter={ownerFilter} setOwnerFilter={setOwnerFilter} />
       )}
     </>
+  );
+}
+
+/* D4 — split master list + live passport peek */
+function DealsSplit({ deals, onOpen, ownerFilter, setOwnerFilter }) {
+  const [selId, setSelId] = useState(deals[0] ? deals[0].id : null);
+  const sel = deals.find(d => d.id === selId) || deals[0];
+
+  // keep selection valid as filters change
+  useEffect(() => {
+    if (!deals.find(d => d.id === selId) && deals[0]) setSelId(deals[0].id);
+  }, [deals, selId]);
+
+  const peopleNames = useMemo(() => Object.values(TEAM_MEMBERS).flat().map(p => p.name).sort(), []);
+
+  if (!sel) return <div className="empty">No deals match these filters.</div>;
+
+  const { score } = calcReadiness(sel, []);
+  const owners = {
+    se: sel.owner_se || null,
+    cs: sel.owner_cs || null,
+    analytics: sel.owner_analytics || null,
+  };
+  const route = routeFor({ owners, handover: sel.handover || {} });
+
+  return (
+    <div className="deals-split">
+      <div className="deals-list">
+        <PeopleFilter
+          value={ownerFilter || "all"}
+          names={peopleNames}
+          onChange={(v) => setOwnerFilter(v === "all" ? "" : v)}
+        />
+        {deals.map(d => (
+          <div
+            key={d.id}
+            className={"deal-row" + (d.id === selId ? " on" : "")}
+            onClick={() => setSelId(d.id)}
+            onDoubleClick={() => onOpen(d.id)}
+            style={d.archived ? { opacity: 0.7 } : undefined}
+          >
+            <div style={{ display: "flex", alignItems: "center", gap: 7, minWidth: 0 }}>
+              <span style={{ width: 7, height: 7, borderRadius: "50%", flex: "none", background: PIPE_COLORS[d.pipeline] || "#929BAB" }} />
+              <span style={{ fontSize: 13, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{d.company}</span>
+              {d.is_eap && <Star size={10} fill="var(--energy)" color="var(--energy)" style={{ flex: "none" }} />}
+            </div>
+            <div className="mono" style={{ fontSize: 10, color: "var(--muted)", marginTop: 3 }}>
+              {d.deal_id_display || d.id} · {d.hubspot_amount ? "$" + Math.round(d.hubspot_amount / 1000) + "k" : "—"} · {STAGES[d.hubspot_stage_idx] || "—"}
+            </div>
+          </div>
+        ))}
+      </div>
+
+      <div className="deals-peek">
+        <div className="klabel" style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+          <span style={{ color: "var(--accent)" }}>● {STAGES[sel.hubspot_stage_idx] || "—"}</span>
+          <span>{sel.deal_id_display || sel.id}</span>
+          {sel.archived && <span style={{ color: "var(--mining)" }}>Archived</span>}
+        </div>
+        <div style={{ fontFamily: "var(--font-display)", fontWeight: 500, fontSize: 27, letterSpacing: "-.02em", margin: "10px 0 18px" }}>
+          {sel.company}
+        </div>
+
+        <div style={{ display: "flex", gap: 26, alignItems: "center", marginBottom: 22, flexWrap: "wrap" }}>
+          <ReadinessRing value={score} size={72} />
+          <div>
+            <div className="klabel">ACV</div>
+            <div className="mono" style={{ fontSize: 22, fontWeight: 500 }}>
+              {sel.hubspot_amount ? "$" + Math.round(sel.hubspot_amount / 1000) + "k" : "—"}
+            </div>
+          </div>
+          <div>
+            <div className="klabel">Owners</div>
+            <div style={{ display: "flex", gap: 6, alignItems: "center", marginTop: 6 }}>
+              {[sel.owner_director, sel.owner_se, sel.owner_cs, sel.owner_analytics].filter(Boolean).map((n, i) => (
+                <FxAvatar key={n + i} name={n} size={26} />
+              ))}
+              {![sel.owner_director, sel.owner_se, sel.owner_cs, sel.owner_analytics].some(Boolean) && (
+                <span style={{ fontSize: 12.5, color: "var(--muted)" }}>None assigned</span>
+              )}
+            </div>
+          </div>
+        </div>
+
+        <div className="klabel" style={{ marginBottom: 14 }}>Handover route</div>
+        <RoutedTimeline nodes={route} />
+
+        <div style={{ marginTop: 24, display: "flex", gap: 8, flexWrap: "wrap" }}>
+          <button className="fx-pill solid" onClick={() => onOpen(sel.id)}>Open passport →</button>
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -6710,7 +6801,24 @@ function DashboardLive({ deals, onOpen }) {
         ))}
       </div>
 
-      <div className="cols">
+      {/* Deals dashboard — sortable table, moved here from Deals (locked decision) */}
+      <div className="klabel" style={{ margin: "26px 0 12px" }}>Deals dashboard</div>
+      <div style={{ border: "1px solid var(--line)", borderRadius: "var(--r-container)", background: "var(--card)", padding: "16px 14px" }}>
+        <FxDealsTable
+          rows={deals.slice(0, 40).map(d => ({
+            id: d.id,
+            company: d.company,
+            sector: d.pipeline,
+            acv: d.hubspot_amount,
+            readiness: calcReadiness(d, []).score,
+            stage: STAGES[d.hubspot_stage_idx] || "—",
+            owner: d.owner_se || d.owner_director || null,
+          }))}
+          onOpen={(r) => onOpen(r.id)}
+        />
+      </div>
+
+      <div className="cols" style={{ marginTop: 22 }}>
         <Block icon={BarChart3} title="Deals by stage">
           <div className="barlist">
             {byStage.map((b, i) => (

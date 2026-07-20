@@ -66,20 +66,25 @@ export function ReadinessRing({ value = 0, size = 76, stroke = 6 }) {
   const C = 2 * Math.PI * R;
 
   useEffect(() => {
+    const to = Math.round(pct * 100);
     if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
-      setDisp(Math.round(pct * 100));
+      setDisp(to);
       return;
     }
     let raf;
+    const DUR = 650;
     const t0 = performance.now();
-    const to = Math.round(pct * 100);
     const step = (n) => {
-      const k = Math.min(1, (n - t0) / 650);
+      const k = Math.min(1, (n - t0) / DUR);
       setDisp(Math.round(to * k));
       if (k < 1) raf = requestAnimationFrame(step);
     };
     raf = requestAnimationFrame(step);
-    return () => cancelAnimationFrame(raf);
+    // rAF is throttled to zero in background tabs (and in headless panes), which
+    // would leave the number frozen at 0 while the arc shows the real value.
+    // Snap to the target once the animation window has elapsed regardless.
+    const settle = setTimeout(() => setDisp(to), DUR + 80);
+    return () => { cancelAnimationFrame(raf); clearTimeout(settle); };
   }, [pct]);
 
   return (
