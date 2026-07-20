@@ -4,7 +4,15 @@
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#04050A" />
     <title>Pixxel Customer Passport</title>
+    <style>
+      /* The app is a dark single-theme "space canvas". Without this the browser
+         default body margin + white canvas shows as a white frame around the app. */
+      html, body { margin: 0; padding: 0; background: #04050A; }
+      html { color-scheme: dark; }
+      #root { min-height: 100vh; background: #04050A; }
+    </style>
   </head>
   <body>
     <div id="root"></div>

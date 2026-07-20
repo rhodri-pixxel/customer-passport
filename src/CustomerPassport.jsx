@@ -306,6 +306,16 @@ const CSS = `
 .cl-item{display:flex;align-items:center;gap:9px;font-size:13px;color:var(--ink2);}
 .cl-item.miss{color:var(--muted2);}
 
+/* explanatory note at the head of a section — plain language, one line */
+.sec-note{display:flex;align-items:flex-start;gap:9px;padding:11px 14px;margin-bottom:18px;
+  border:1px solid var(--line);border-left:2px solid var(--accent);border-radius:12px;
+  background:var(--raised);font-size:12.5px;color:var(--ink2);line-height:1.5;}
+.sec-note svg{flex:none;margin-top:2px;color:var(--accent);}
+/* section intro: title + what this section is for */
+.sec-head{margin-bottom:20px;padding-bottom:14px;border-bottom:1px solid var(--line);}
+.sec-head h2{font-family:var(--font-display);font-weight:500;font-size:19px;letter-spacing:-.02em;margin:0;}
+.sec-head p{font-size:12.5px;color:var(--muted);margin:5px 0 0;max-width:64ch;line-height:1.5;}
+
 /* P4 — split subnav rail + detail pane */
 .p4{display:grid;grid-template-columns:190px 1fr;border:1px solid var(--line);
   border-radius:var(--r-container);background:var(--card);overflow:hidden;min-height:320px;}
@@ -3479,17 +3489,42 @@ function Passport({ deal, onBack, canEdit, canPostNote, onUpdate, onAssign, onNo
       <div className="klabel" style={{ margin: "26px 0 12px" }}>Sections</div>
       <div className="p4">
         <div className="p4-rail">
-          {[["profile", Building2, "Profile"], ["context", Target, "Context"], ["execution", Activity, "Execution"], ["csummary", LayoutGrid, "CS Summary"], ["qc", Camera, "Quality Checks"], ["notes", FileText, "Notes"], ["feedback", MessageSquare, "Customer Feedback"]].map(([k, Ic, lbl]) => (
+          {[
+            ["profile", Building2, "Customer Profile"],
+            ["context", Target, "Objectives"],
+            ["csummary", LayoutGrid, "CS Summary"],
+            ["analytics", BarChart3, "Analytics Summary"],
+            ["execution", Activity, "Execution"],
+            ["qc", Camera, "Quality Checks"],
+            ["notes", FileText, "Notes"],
+            ["feedback", MessageSquare, "Customer Feedback"],
+          ].map(([k, Ic, lbl]) => (
             <div key={k} className={"p4-item" + (tab === k ? " on" : "")} onClick={() => setTab(k)}>
               <Ic size={14} />{lbl}
             </div>
           ))}
         </div>
         <div className="p4-detail">
+          {(() => {
+            const intro = {
+              profile:   ["Customer Profile", "Who they are, what they do, and what they need from Pixxel. Owned by Sales & SE."],
+              context:   ["Objectives", "The problem the customer is solving and what success looks like for them."],
+              csummary:  ["CS Summary", "The handover roll-up for Customer Success — everything CS needs in one place."],
+              analytics: ["Analytics Summary", "The handover roll-up for the Analytics team."],
+              execution: ["Execution", "Delivery: tasking, captures, samples, risks and the commercial pathway."],
+              qc:        ["Quality Checks", "Image QC evidence for this deal."],
+              notes:     ["Notes", "Running commentary. Anything that doesn't belong in a field above."],
+              feedback:  ["Customer Feedback", "What the customer told us, and how happy they are."],
+            }[tab];
+            return intro ? (
+              <div className="sec-head"><h2>{intro[0]}</h2><p>{intro[1]}</p></div>
+            ) : null;
+          })()}
           {tab === "profile" && <ProfileTab d={deal} canEdit={canEdit} onSaveField={(f,v) => onUpdate({ _fieldUpdate: { field: f, value: v } })} onUpdate={onUpdate} />}
           {tab === "context" && <ContextTab d={deal} canEdit={canEdit} onSaveField={(f,v) => onUpdate({ _fieldUpdate: { field: f, value: v } })} onUpdate={onUpdate} />}
           {tab === "execution" && <ExecutionTab d={deal} canEdit={canEdit} onUpdate={onUpdate} onSaveField={(f,v) => onUpdate({ _fieldUpdate: { field: f, value: v } })} />}
           {tab === "csummary" && <CSSummaryTab d={deal} canEdit={canEdit} onUpdate={onUpdate} onSaveField={(f,v) => onUpdate({ _fieldUpdate: { field: f, value: v } })} />}
+          {tab === "analytics" && <AnalyticsSummaryTab d={deal} canEdit={canEdit} onUpdate={onUpdate} onSaveField={(f,v) => onUpdate({ _fieldUpdate: { field: f, value: v } })} />}
           {tab === "notes" && <NotesTab d={deal} canEdit={canEdit} canPostNote={canPostNote} onUpdate={onUpdate} toast={toast} />}
           {tab === "qc" && <QcTab d={deal} canEdit={canEdit} toast={toast} />}
           {tab === "feedback" && <FeedbackTab d={deal} canEdit={canEdit} onUpdate={onUpdate} toast={toast} />}
@@ -4735,6 +4770,23 @@ function SummaryKV({ k, v, mono }) {
 // CS Summary — a read-oriented digest that pulls the fields a CS needs to run the
 // account, aggregated from the Profile / Context / Execution tabs. Files remain
 // downloadable; cadence and commercial/legal are editable here since CS owns them.
+/* Analytics Summary — a dedicated section for the Analytics team.
+   For now it mirrors the CS Summary roll-up (per the brief). NOTE: because it
+   renders the same blocks, any editable field here writes to the SAME record as
+   CS Summary. If Analytics needs its own independently-editable notes, this
+   needs its own fields — flagged with Rhodri. */
+function AnalyticsSummaryTab(props) {
+  return (
+    <>
+      <div className="sec-note">
+        <BarChart3 size={14} />
+        <span>Analytics roll-up. Mirrors the CS Summary view for now — shared fields, so edits here also update CS Summary.</span>
+      </div>
+      <CSSummaryTab {...props} />
+    </>
+  );
+}
+
 function CSSummaryTab({ d, canEdit, onSaveField, onUpdate }) {
   const t = d.profile.tech;
   const e = d.execution;
