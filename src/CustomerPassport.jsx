@@ -44,10 +44,15 @@ const CSS = `
   --font-display:'Familjen Grotesk',ui-sans-serif,system-ui,sans-serif;
   --font-body:'Hanken Grotesk',ui-sans-serif,system-ui,sans-serif;
   --font-mono:'Fragment Mono',ui-monospace,'SFMono-Regular',monospace;
-  font-family:var(--font-body); font-weight:300; color:var(--ink); background:var(--surface);
+  font-family:var(--font-body); font-weight:300; line-height:1.65; color:var(--ink); background:var(--surface);
   min-height:100vh; -webkit-font-smoothing:antialiased;
 }
 .cp-root b,.cp-root strong{font-weight:600;}
+/* skeletons shimmer the card→raised ramp so loading never reads as broken */
+@keyframes cp-shimmer{0%{background-position:-260px 0;}100%{background-position:260px 0;}}
+.sk{border-radius:7px;background:linear-gradient(90deg,var(--card),var(--raised),var(--card));
+  background-size:260px 100%;animation:cp-shimmer 1.3s linear infinite;}
+.sk-row{display:flex;align-items:center;gap:12px;margin-bottom:14px;}
 /* Dark "space canvas" — brand-forward theme, scoped to a wrapper for now
    (preview it on the Prototypes route before making it the global default). */
 .space-canvas{
@@ -126,8 +131,12 @@ const CSS = `
 /* avatar / owner chip */
 .av{width:26px;height:26px;border-radius:50%;display:grid;place-items:center;font-size:10px;
   font-weight:600;font-family:var(--font-mono);color:#fff;flex:none;}
-.av.empty{background:var(--card);border:1.5px dashed var(--line);color:var(--muted2);}
-.av.se{background:var(--se);} .av.cs{background:var(--cs);} .av.an{background:var(--an);}
+.av.empty{background:transparent;border:1.5px dashed var(--hair2);color:var(--muted2);}
+/* per-role gradient avatars (handoff: each person gets a stable gradient) */
+.av.se{background:linear-gradient(135deg,var(--sky),var(--turq));color:#001018;}
+.av.cs{background:linear-gradient(135deg,#ff8a3d,var(--mining));color:#001018;}
+.av.an{background:linear-gradient(135deg,#7c5cff,var(--accent));color:#001018;}
+.av.dir{background:linear-gradient(135deg,var(--energy),#ff8a3d);color:#001018;}
 .role-tag{font-size:9px;font-family:var(--font-mono);letter-spacing:.1em;text-transform:uppercase;
   font-weight:600;}
 
@@ -143,7 +152,16 @@ const CSS = `
 .ring-val{position:absolute;font-family:var(--font-mono);font-weight:600;}
 
 /* ---- passport detail ---- */
-.cp-back{display:inline-flex;align-items:center;gap:6px;font-size:13px;color:var(--muted);
+/* echo of the header search, shown in the filter row */
+.filter-echo{display:inline-flex;align-items:center;gap:8px;height:40px;padding:0 8px 0 14px;
+  border-radius:var(--r-control);border:1px solid rgba(3,212,255,.4);background:var(--accent-soft);
+  color:var(--accent);font-size:12.5px;}
+.filter-echo .mono{font-family:var(--font-mono);font-size:11.5px;}
+.filter-echo button{display:grid;place-items:center;width:20px;height:20px;border-radius:50%;
+  color:var(--accent);background:transparent;}
+.filter-echo button:hover{background:rgba(3,212,255,.15);}
+
+.cp-back{display:inline-flex;align-items:center;gap:6px;font-family:var(--font-mono);font-size:12px;color:var(--muted);
   font-weight:500;margin-bottom:16px;}
 .cp-back:hover{color:var(--ink);}
 
@@ -212,12 +230,15 @@ const CSS = `
 .owner-slot .assign{font-size:12px;color:var(--accent-deep);font-weight:500;}
 .assign-menu{position:absolute;top:42px;left:0;z-index:20;background:var(--card);border:1px solid var(--line);
   border-radius:11px;box-shadow:0 14px 40px -16px rgba(11,18,32,.35);padding:6px;min-width:170px;}
-.assign-menu button{display:block;width:100%;text-align:left;padding:8px 10px;border-radius:8px;
-  font-size:13px;color:var(--ink);}
-.assign-menu button:hover{background:var(--line-soft);}
+.assign-menu button{display:block;width:100%;text-align:left;padding:9px 11px;border-radius:10px;
+  font-size:13px;color:var(--ink2);}
+.assign-menu button:hover{background:var(--raised);color:var(--ink);}
+/* selected row carries the only electric in the menu */
+.assign-menu button.sel{background:var(--accent-soft);color:var(--accent);}
 
-.add-row{display:inline-flex;align-items:center;gap:7px;padding:8px 12px;border:1px dashed var(--line);
-  border-radius:9px;background:transparent;color:var(--accent-deep);font-size:12.5px;font-weight:500;
+/* unassigned / add affordances: dashed electric, quiet but obvious */
+.add-row{display:inline-flex;align-items:center;gap:7px;padding:8px 14px;border:1px dashed rgba(3,212,255,.5);
+  border-radius:var(--r-control);background:transparent;color:var(--accent);font-size:12.5px;font-weight:400;
   cursor:pointer;margin-top:6px;width:100%;justify-content:center;}
 .add-row:hover{border-color:var(--accent);background:var(--accent-soft);}
 
@@ -226,6 +247,13 @@ const CSS = `
 .cp-root button:focus-visible,.cp-root input:focus-visible,.cp-root select:focus-visible,
 .cp-root textarea:focus-visible,.cp-root label:focus-visible{
   outline:2px solid var(--accent);outline-offset:2px;border-radius:6px;}
+/* inline-edit: invisible until hover, focus draws the one electric ring */
+.cp-root input[type=text],.cp-root input[type=date],.cp-root input[type=search],
+.cp-root input:not([type]),.cp-root textarea,.cp-root select{
+  background:var(--raised);color:var(--ink);border-color:var(--line);}
+.cp-root input[type=text]:focus,.cp-root input:not([type]):focus,.cp-root textarea:focus{
+  outline:none;border-color:var(--accent);box-shadow:0 0 0 2px rgba(3,212,255,.18);}
+.cp-root input::placeholder,.cp-root textarea::placeholder{color:var(--muted2);}
 .readiness-panel{transition:border-color .2s;}
 .fb-card{transition:border-color .2s;}
 .fb-card:hover{border-color:rgba(3,212,255,.45);}
@@ -296,10 +324,13 @@ const CSS = `
   background:var(--accent);}
 .link{display:inline-flex;align-items:center;gap:6px;font-size:13px;color:var(--accent-deep);
   font-weight:500;}
-.empty{display:flex;align-items:center;gap:10px;font-size:13px;color:var(--muted2);
-  border:1px dashed var(--line);border-radius:11px;padding:13px 14px;}
-.empty button{margin-left:auto;font-size:12px;color:var(--accent-deep);font-weight:500;
-  display:inline-flex;align-items:center;gap:5px;}
+/* empty is a state, not a bug: icon + one-line why + exactly one action */
+.empty{display:flex;align-items:center;gap:11px;font-size:13px;color:var(--muted);
+  border:1px dashed var(--hair2);border-radius:var(--r-container);padding:15px 16px;}
+.empty button{margin-left:auto;display:inline-flex;align-items:center;gap:6px;
+  height:32px;padding:0 14px;border-radius:var(--r-control);
+  border:1px solid var(--hair2);background:transparent;color:var(--ink2);font-size:12px;}
+.empty button:hover{border-color:var(--hairline-hover);color:var(--ink);}
 
 /* AOI map */
 .aoi{border-radius:14px;overflow:hidden;border:1px solid var(--line);position:relative;
@@ -3125,9 +3156,9 @@ function HandoverStatus({ d, canEdit, onUpdate }) {
       {canEdit && (
         <button onClick={() => toggle(team, on)}
           style={{
-            flex: "none", padding: "6px 12px", borderRadius: 8, fontSize: 12, fontWeight: 600, cursor: "pointer",
-            border: "1px solid " + (on ? "var(--line)" : "var(--accent)"),
-            background: on ? "var(--card)" : "var(--accent)", color: on ? "var(--muted)" : "#001018",
+            flex: "none", height: 30, padding: "0 14px", borderRadius: "var(--r-control)", fontSize: 12,
+            fontWeight: 400, cursor: "pointer", border: "1px solid var(--hair2)",
+            background: "transparent", color: on ? "var(--muted)" : "var(--ink2)",
           }}>
           {on ? "Undo" : "Mark handed over"}
         </button>
@@ -3137,7 +3168,7 @@ function HandoverStatus({ d, canEdit, onUpdate }) {
 
   return (
     <div style={{ marginBottom: 18 }}>
-      <div style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: ".08em", textTransform: "uppercase", color: "var(--muted2)", marginBottom: 8 }}>
+      <div style={{ fontFamily: "var(--font-mono)", fontSize: 10, fontWeight: 400, letterSpacing: ".18em", textTransform: "uppercase", color: "var(--muted)", margin: "26px 0 12px" }}>
         Handover status
       </div>
       <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
@@ -5921,13 +5952,13 @@ function DealListLive({ deals, loading, onOpen, pipelineFilter, setPipelineFilte
       </p>
 
       <div className="cp-filters">
-        <GooeySearch
-          value={searchQ}
-          onChange={setSearchQ}
-          placeholder="Search company or deal ID…"
-          collapsedWidth={132}
-          expandedWidth={330}
-        />
+        {/* search lives in the global header (A5) — filters only here */}
+        {searchQ && (
+          <span className="filter-echo">
+            <span className="mono">“{searchQ}”</span>
+            <button onClick={() => setSearchQ("")} title="Clear search"><X size={12} /></button>
+          </span>
+        )}
 
         {/* Pipeline filter */}
         <div className="cp-select">
@@ -5985,9 +6016,21 @@ function DealListLive({ deals, loading, onOpen, pipelineFilter, setPipelineFilte
       )}
 
       {loading && deals.length === 0 ? (
-        <div style={{ textAlign:"center", padding:"60px 0", color:"var(--muted)" }}>
-          <Satellite size={32} color="var(--accent)" style={{ display:"block", margin:"0 auto 12px", opacity:.5 }} />
-          Loading deals from HubSpot…
+        <div className="cp-grid">
+          {Array.from({ length: 6 }).map((_, i) => (
+            <div key={i} className="cp-card" style={{ pointerEvents:"none" }}>
+              <div className="sk-row">
+                <div className="sk" style={{ width:34, height:34, borderRadius:"50%" }} />
+                <div style={{ flex:1 }}>
+                  <div className="sk" style={{ height:12, width:"62%" }} />
+                  <div className="sk" style={{ height:10, width:"38%", marginTop:8 }} />
+                </div>
+              </div>
+              <div className="sk" style={{ height:12, width:"100%" }} />
+              <div className="sk" style={{ height:12, width:"84%", marginTop:9 }} />
+              <div className="sk" style={{ height:12, width:"58%", marginTop:9 }} />
+            </div>
+          ))}
         </div>
       ) : deals.length === 0 ? (
         <div className="empty">No deals match these filters.</div>
@@ -7071,6 +7114,18 @@ function AppMain({ currentUser, canEdit, canPostNote, onSignOut }) {
           </button>
         </div>
         <div className="cp-spacer" />
+
+        {/* Search pill — the header's one glow (A5). Typing jumps to Deals. */}
+        <GooeySearch
+          value={searchQ}
+          onChange={(v) => {
+            setSearchQ(v);
+            if (v && (view !== "deals" || openId)) { setView("deals"); closePassport(); }
+          }}
+          placeholder="Search company or deal ID…"
+          collapsedWidth={118}
+          expandedWidth={300}
+        />
 
         {/* Slack channel picker */}
         <div className="slack-pill">
