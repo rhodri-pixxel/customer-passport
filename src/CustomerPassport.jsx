@@ -18,6 +18,7 @@ import GooeySearch from "./components/GooeySearch.jsx";
 import FileDropzone from "./components/FileDropzone.jsx";
 import AuroraBackground from "./components/AuroraBackground.jsx";
 import { ParticleCard, GlobalSpotlight } from "./components/MagicBento.jsx";
+import { CommandPalette, ReadinessRing, RoutedTimeline, routeFor, Avatar as FxAvatar, PeopleFilter, DealsTable as FxDealsTable, Spark, PresenceBar } from "./components/Fused.jsx";
 
 /* ------------------------------------------------------------------ */
 /*  Design system (spectral / Earth-observation theme)                */
@@ -7086,7 +7087,7 @@ function AppMain({ currentUser, canEdit, canPostNote, onSignOut }) {
     <div className="cp-root">
       <style>{CSS}</style>
       {/* Ambient aurora — the brand liquid backdrop behind every view */}
-      <AuroraBackground opacity={0.55} style={{ position: "fixed", zIndex: 0 }} />
+      <AuroraBackground opacity={0.36} style={{ position: "fixed", zIndex: 0 }} />
 
       <div className="cp-top">
         <div className="cp-brand">
@@ -7115,16 +7116,17 @@ function AppMain({ currentUser, canEdit, canPostNote, onSignOut }) {
         </div>
         <div className="cp-spacer" />
 
-        {/* Search pill — the header's one glow (A5). Typing jumps to Deals. */}
-        <GooeySearch
-          value={searchQ}
-          onChange={(v) => {
-            setSearchQ(v);
-            if (v && (view !== "deals" || openId)) { setView("deals"); closePassport(); }
-          }}
-          placeholder="Search company or deal ID…"
-          collapsedWidth={118}
-          expandedWidth={300}
+        {/* ⌘K command palette — the header's one glow (A5) */}
+        <CommandPalette
+          deals={deals.slice(0, 60).map(d => ({ ...d, company: d.company, id: d.id }))}
+          people={Object.values(TEAM_MEMBERS).flat().map(p => ({ name: p.name, role: p.role || "Team" }))}
+          actions={[
+            { label: "Sync HubSpot now", run: () => syncHubspot() },
+            { label: "Go to Leadership", run: () => { setView("dashboard"); closePassport(); } },
+            { label: "Go to Quality Checks", run: () => { setView("qc"); closePassport(); } },
+            { label: "Go to Maps", run: () => { setView("maps"); closePassport(); } },
+          ]}
+          onOpenDeal={(d) => openPassport(d.id)}
         />
 
         {/* Slack channel picker */}
