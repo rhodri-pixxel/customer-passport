@@ -16,6 +16,7 @@ export default function FileDropzone({
   title = "Upload AOI file",
   hint = "Drag & drop, or click to browse",
   showList = true,
+  compact = false,
 }) {
   const inputRef = useRef(null);
   const [drag, setDrag] = useState(false);
@@ -38,7 +39,7 @@ export default function FileDropzone({
 
   return (
     <div
-      className={`fdz ${drag ? "drag" : ""}`}
+      className={`fdz ${compact ? "compact" : ""} ${drag ? "drag" : ""}`}
       onClick={() => inputRef.current?.click()}
       onDragOver={(e) => { stop(e); setDrag(true); }}
       onDragEnter={(e) => { stop(e); setDrag(true); }}

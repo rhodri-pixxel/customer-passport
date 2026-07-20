@@ -16,18 +16,10 @@
   font-size: clamp(1rem, 0.9rem + 0.5vw, 1.5rem);
 }
 
+/* Effect carrier — safe to add to any app card (dashboard stats, etc.).
+   Only the glow plumbing lives here; demo-tile layout is scoped below. */
 .magic-bento-card {
-  display: flex;
-  flex-direction: column;
-  justify-content: space-between;
   position: relative;
-  min-height: 170px;
-  width: 100%;
-  padding: 1.1em;
-  border-radius: 16px;
-  border: 1px solid var(--mb-border, #1C2430);
-  background: var(--mb-bg, #0E121B);
-  font-weight: 300;
   overflow: hidden;
   transition: transform 0.3s ease, box-shadow 0.3s ease;
   --glow-x: 50%;
@@ -39,6 +31,20 @@
 .magic-bento-card:hover {
   transform: translateY(-2px);
   box-shadow: 0 8px 25px rgba(0, 0, 0, 0.35);
+}
+
+/* Demo-tile layout (standalone <MagicBento /> grid only) */
+.card-grid .magic-bento-card {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  min-height: 170px;
+  width: 100%;
+  padding: 1.1em;
+  border-radius: 16px;
+  border: 1px solid var(--mb-border, #1C2430);
+  background: var(--mb-bg, #0E121B);
+  font-weight: 300;
 }
 
 .magic-bento-card__header,
@@ -88,9 +94,11 @@
 }
 @media (min-width: 1024px) {
   .card-grid { grid-template-columns: repeat(4, 1fr); }
-  .magic-bento-card:nth-child(3) { grid-column: span 2; grid-row: span 2; }
-  .magic-bento-card:nth-child(4) { grid-column: 1 / span 2; grid-row: 2 / span 2; }
-  .magic-bento-card:nth-child(6) { grid-column: 4; grid-row: 3; }
+  /* scoped to .card-grid so the spans never leak onto app grids that reuse
+     .magic-bento-card for the glow/particle effects (e.g. the dashboard) */
+  .card-grid .magic-bento-card:nth-child(3) { grid-column: span 2; grid-row: span 2; }
+  .card-grid .magic-bento-card:nth-child(4) { grid-column: 1 / span 2; grid-row: 2 / span 2; }
+  .card-grid .magic-bento-card:nth-child(6) { grid-column: 4; grid-row: 3; }
 }
 
 /* Border glow — electric blue */

@@ -14,7 +14,10 @@ import "leaflet/dist/leaflet.css";
 import "leaflet.markercluster";
 import "leaflet.markercluster/dist/MarkerCluster.css";
 import "leaflet.markercluster/dist/MarkerCluster.Default.css";
-import PrototypesView from "./components/PrototypesView.jsx";
+import GooeySearch from "./components/GooeySearch.jsx";
+import FileDropzone from "./components/FileDropzone.jsx";
+import AuroraBackground from "./components/AuroraBackground.jsx";
+import { ParticleCard, GlobalSpotlight } from "./components/MagicBento.jsx";
 
 /* ------------------------------------------------------------------ */
 /*  Design system (spectral / Earth-observation theme)                */
@@ -97,8 +100,14 @@ const CSS = `
 .cp-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));gap:16px;}
 .cp-card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:18px;
   cursor:pointer;transition:transform .12s ease,box-shadow .12s ease,border-color .12s ease;}
-.cp-card:hover{transform:translateY(-2px);box-shadow:0 10px 28px -14px rgba(11,18,32,.28);
-  border-color:#D4DAE4;}
+.cp-card{position:relative;}
+.cp-card::before{content:"";position:absolute;inset:-6px;border-radius:20px;z-index:-1;
+  background:radial-gradient(circle at 50% 0%,var(--accent-soft),transparent 70%);
+  opacity:0;transform:scale(.96);transition:opacity .25s,transform .25s;pointer-events:none;}
+.cp-card:hover{transform:translateY(-2px);
+  box-shadow:0 0 26px rgba(3,212,255,.16),0 10px 28px -14px rgba(0,0,0,.5);
+  border-color:rgba(3,212,255,.55);}
+.cp-card:hover::before{opacity:1;transform:scale(1);}
 .cp-card .row{display:flex;justify-content:space-between;gap:12px;}
 .cp-card h3{font-family:var(--font-display);font-size:16.5px;font-weight:600;margin:0;
   letter-spacing:-.01em;line-height:1.2;}
@@ -203,7 +212,7 @@ const CSS = `
 
 .readiness-panel{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:14px 20px;
   display:flex;align-items:center;gap:16px;cursor:pointer;min-width:230px;}
-.readiness-panel:hover{border-color:#D4DAE4;}
+.readiness-panel:hover{border-color:rgba(3,212,255,.45);}
 .readiness-panel .txt .k{font-family:var(--font-mono);font-size:9.5px;letter-spacing:.12em;
   text-transform:uppercase;color:var(--muted2);}
 .readiness-panel .txt .v{font-family:var(--font-display);font-size:15px;font-weight:600;margin-top:2px;}
@@ -355,7 +364,7 @@ const CSS = `
 .bell{position:relative;}
 .bell .btn-bell{width:38px;height:38px;border-radius:10px;display:grid;place-items:center;
   color:var(--muted);border:1px solid var(--line);background:var(--card);}
-.bell .btn-bell:hover{color:var(--ink);border-color:#D4DAE4;}
+.bell .btn-bell:hover{color:var(--ink);border-color:rgba(3,212,255,.45);}
 .bell .badge{position:absolute;top:-5px;right:-5px;min-width:17px;height:17px;padding:0 4px;
   border-radius:9px;background:var(--bad);color:#fff;font-size:10px;font-weight:700;
   display:grid;place-items:center;font-family:var(--font-mono);border:2px solid var(--card);}
@@ -412,7 +421,7 @@ const CSS = `
 .sat-chip.neu{background:var(--line-soft);color:var(--muted);} .sat-chip.neu.on{border-color:var(--muted);}
 .fb-notion-btn{display:inline-flex;align-items:center;gap:7px;font-size:12px;font-weight:500;
   color:var(--muted);border:1px solid var(--line);border-radius:9px;padding:7px 13px;background:var(--card);}
-.fb-notion-btn:hover{color:var(--ink);border-color:#D4DAE4;}
+.fb-notion-btn:hover{color:var(--ink);border-color:rgba(3,212,255,.45);}
 .fb-card{background:var(--card);border:1px solid var(--line);border-radius:16px;margin-bottom:14px;overflow:hidden;}
 .fb-card-head{display:flex;align-items:center;gap:14px;padding:16px 20px;cursor:pointer;}
 .fb-card-head:hover{background:var(--line-soft);}
@@ -498,7 +507,7 @@ const CSS = `
   box-shadow:0 1px 3px rgba(11,18,32,.07);}
 .ap-item{display:flex;align-items:flex-start;gap:12px;padding:12px 14px;border-radius:12px;
   margin-bottom:8px;border:1px solid var(--line);background:var(--card);transition:.12s;}
-.ap-item:hover{border-color:#D4DAE4;}
+.ap-item:hover{border-color:rgba(3,212,255,.45);}
 .ap-item.done-item{opacity:.55;}
 .ap-check{width:20px;height:20px;border-radius:6px;border:2px solid var(--line);
   display:grid;place-items:center;cursor:pointer;flex:none;margin-top:1px;}
@@ -1529,8 +1538,7 @@ function AoiUploader({ aoi, canEdit, which, onSetAoi, multi, overlay }) {
   const isGeoJson = aoi && (aoi.type === "FeatureCollection" || aoi.type === "Feature" || aoi.type === "Polygon" || aoi.type === "MultiPolygon");
   const count = isGeoJson ? toFeatures(aoi).length : 0;
 
-  const handleFile = async (e) => {
-    const file = e.target.files[0];
+  const parseAndSet = async (file) => {
     if (!file) return;
     setBusy(true); setErr("");
     try {
@@ -1544,12 +1552,36 @@ function AoiUploader({ aoi, canEdit, which, onSetAoi, multi, overlay }) {
       setErr(ex.message || "Failed to parse file");
     } finally {
       setBusy(false);
-      e.target.value = "";
     }
+  };
+  const handleFile = async (e) => {
+    await parseAndSet(e.target.files[0]);
+    e.target.value = "";
   };
 
   // Legacy mock {poly} shape → keep the old SVG renderer
   if (aoi && aoi.poly && !isGeoJson) return <AoiMap aoi={aoi} />;
+
+  // Empty state (nothing mapped, nothing to overlay): show the drag-and-drop
+  // zone in place of the bare basemap. Once an AOI exists, render the map with
+  // the compact add-another control.
+  if (canEdit && !isGeoJson && !overlay) {
+    return (
+      <div>
+        <FileDropzone
+          onFiles={(files) => parseAndSet(files[0])}
+          accept=".geojson,.json,.kml,.zip"
+          title={busy ? "Parsing…" : "Upload AOI file"}
+          hint="Drag & drop, or click to browse"
+          showList={false}
+        />
+        {err && (
+          <div style={{ marginTop:8, background:"rgba(229,86,75,0.14)", border:"1px solid rgba(229,86,75,0.4)",
+            color:"var(--bad)", fontSize:12, padding:"7px 11px", borderRadius:8 }}>{err}</div>
+        )}
+      </div>
+    );
+  }
 
   // Always render the basemap. Show the upload control when there's no AOI yet,
   // and also keep it visible in multi mode so more AOI files can be added.
@@ -2101,12 +2133,11 @@ function QcForm({ onSubmit, onCancel, defaultOrg, defaultPassportId, deals, init
     if (!initial) payload.created_by = "You"; // don't overwrite original author on edit
     onSubmit(payload);
   };
-  const handleShot = async (e) => {
-    const file = e.target.files[0];
+  const handleShot = async (file) => {
     if (!file) return;
     setUploading(true);
     try { const path = await uploadFile(form.passport_id || "general", file); setShotPath(path); }
-    finally { setUploading(false); e.target.value = ""; }
+    finally { setUploading(false); }
   };
   return (
     <div className="clog-form" style={{ marginBottom: 16 }}>
@@ -2218,12 +2249,14 @@ function QcForm({ onSubmit, onCancel, defaultOrg, defaultPassportId, deals, init
             <button onClick={() => setShotPath("")} style={{ border:"none", background:"none", color:"var(--muted2)", cursor:"pointer" }}>✕</button>
           </div>
         ) : (
-          <>
-            <label htmlFor="qc-shot" style={{ display:"inline-flex", alignItems:"center", gap:7, cursor: uploading?"wait":"pointer", padding:"7px 13px", borderRadius:8, border:"1px solid var(--line)", fontSize:12.5, color:"var(--accent-deep)" }}>
-              <Upload size={13} /> {uploading ? "Uploading…" : "Attach or drop a file"}
-            </label>
-            <input id="qc-shot" type="file" accept=".jpg,.jpeg,.png" style={{ display:"none" }} onChange={handleShot} />
-          </>
+          <FileDropzone
+            compact
+            onFiles={(files) => handleShot(files[0])}
+            accept=".jpg,.jpeg,.png"
+            title={uploading ? "Uploading…" : "Attach photo evidence"}
+            hint="Drag & drop, or click to browse"
+            showList={false}
+          />
         )}
       </div>
       <div style={{ display:"flex", gap:8, justifyContent:"flex-end" }}>
@@ -4018,12 +4051,11 @@ function CaptureLog({ entries, canEdit, onAdd, onEdit, onDelete, onUploadShot })
     if (editId) onEdit(editId, payload); else onAdd(payload);
     closeForm();
   };
-  const handleShot = async (e) => {
-    const file = e.target.files[0];
+  const handleShot = async (file) => {
     if (!file || !onUploadShot) return;
     setUploading(true);
     try { const path = await onUploadShot(file); setForm(f => ({ ...f, shotPath: path })); }
-    finally { setUploading(false); e.target.value = ""; }
+    finally { setUploading(false); }
   };
   return (
     <div className="clog-wrap">
@@ -4105,12 +4137,14 @@ function CaptureLog({ entries, canEdit, onAdd, onEdit, onDelete, onUploadShot })
                   <button onClick={() => setForm(f => ({ ...f, shotPath:"" }))} style={{ border:"none", background:"none", color:"var(--muted2)", cursor:"pointer" }}>✕</button>
                 </div>
               ) : (
-                <>
-                  <label htmlFor="clog-shot" style={{ display:"inline-flex", alignItems:"center", gap:7, cursor: uploading?"wait":"pointer", padding:"7px 13px", borderRadius:8, border:"1px solid var(--line)", fontSize:12.5, color:"var(--accent-deep)" }}>
-                    <Upload size={13} /> {uploading ? "Uploading…" : "Upload screenshot (JPG/PNG)"}
-                  </label>
-                  <input id="clog-shot" type="file" accept=".jpg,.jpeg,.png" style={{ display:"none" }} onChange={handleShot} />
-                </>
+                <FileDropzone
+                  compact
+                  onFiles={(files) => handleShot(files[0])}
+                  accept=".jpg,.jpeg,.png"
+                  title={uploading ? "Uploading…" : "Upload screenshot"}
+                  hint="Drag & drop, or click to browse · JPG/PNG"
+                  showList={false}
+                />
               )}
             </div>
           )}
@@ -5512,14 +5546,16 @@ function SignInScreen({ loading }) {
     <div style={{
       minHeight: "100vh", background: INK, display: "flex",
       alignItems: "center", justifyContent: "center", flexDirection: "column",
-      fontFamily: "Inter, sans-serif",
+      fontFamily: "Inter, sans-serif", position: "relative", overflow: "hidden",
     }}>
+      {/* Aurora — soft brand-cyan liquid backdrop */}
+      <AuroraBackground opacity={0.9} />
       {/* Spectral header line */}
       <div style={{
-        position: "fixed", top: 0, left: 0, right: 0, height: 3,
-        background: "linear-gradient(90deg,#7B2FBE,#2D7FF9,#0EA5B7,#2FB67A,#F0A429,#E5564B)",
+        position: "fixed", top: 0, left: 0, right: 0, height: 3, zIndex: 2,
+        background: "linear-gradient(90deg,#03d4ff,#06bdff,#00ffbb,#98eb00,#ecb423,#f76e2f)",
       }} />
-      <div style={{ textAlign: "center", maxWidth: 400, padding: "0 24px" }}>
+      <div style={{ textAlign: "center", maxWidth: 400, padding: "0 24px", position: "relative", zIndex: 1 }}>
         {/* Logo */}
         <div style={{ marginBottom: 32 }}>
           <PassportSignInLogo />
@@ -5806,15 +5842,13 @@ function DealListLive({ deals, loading, onOpen, pipelineFilter, setPipelineFilte
       </p>
 
       <div className="cp-filters">
-        <div className="cp-search">
-          <Search size={17} color="var(--muted2)" />
-          <input
-            placeholder="Search company or deal ID…"
-            value={searchQ}
-            onChange={e => setSearchQ(e.target.value)}
-          />
-          {searchQ && <button onClick={() => setSearchQ("")} style={{ color:"var(--muted2)", padding:2 }}><X size={14}/></button>}
-        </div>
+        <GooeySearch
+          value={searchQ}
+          onChange={setSearchQ}
+          placeholder="Search company or deal ID…"
+          collapsedWidth={132}
+          expandedWidth={330}
+        />
 
         {/* Pipeline filter */}
         <div className="cp-select">
@@ -6459,6 +6493,7 @@ function StatSource({ children }) {
 function DashboardLive({ deals, onOpen }) {
   const [feedbackCounts, setFeedbackCounts] = useState({}); // passport_id -> count
   const [feedbackLoading, setFeedbackLoading] = useState(true);
+  const bentoRef = useRef(null); // MagicBento spotlight targets the stat grid
 
   useEffect(() => {
     (async () => {
@@ -6524,43 +6559,31 @@ function DashboardLive({ deals, onOpen }) {
         <span><span style={{ color:"#7A5AF5", fontWeight:600 }}>●</span> App — readiness, feedback entries, SE/CS assignment</span>
       </div>
 
-      <div className="dash-grid">
-        <div className="stat">
-          <div className="k">Active deals</div>
-          <div className="v">{active.length}</div>
-          <div className="d"><Activity size={13} /> across core pipelines</div>
-          <StatSource>HubSpot · stage</StatSource>
-        </div>
-        <div className="stat">
-          <div className="k">Pipeline ACV</div>
-          <div className="v">${(pipeline/1000000).toFixed(1)}M</div>
-          <div className="d"><TrendingUp size={13} /> live from HubSpot</div>
-          <StatSource>HubSpot · amount</StatSource>
-        </div>
-        <div className="stat">
-          <div className="k">Closed Won</div>
-          <div className="v">{closedWon}</div>
-          <div className="d"><CheckCircle2 size={13} color="var(--ok)" /> active customers</div>
-          <StatSource>HubSpot · stage</StatSource>
-        </div>
-        <div className="stat">
-          <div className="k">Needs SE/CS</div>
-          <div className="v">{noOwner}</div>
-          <div className="d"><AlertTriangle size={13} color="var(--warn)" /> unassigned owners</div>
-          <StatSource>App · owner fields</StatSource>
-        </div>
-        <div className="stat">
-          <div className="k">Deals with feedback</div>
-          <div className="v">{feedbackLoading ? "…" : withFeedback.length}</div>
-          <div className="d"><MessageSquare size={13} color="var(--accent-deep)" /> {totalFeedbackEntries} entries logged</div>
-          <StatSource>App · Customer Feedback tab</StatSource>
-        </div>
-        <div className="stat">
-          <div className="k">EAP customers</div>
-          <div className="v">{eapDeals.length}</div>
-          <div className="d"><Star size={13} color="#F0A429" /> Early Access Program</div>
-          <StatSource>App · EAP flag</StatSource>
-        </div>
+      <GlobalSpotlight gridRef={bentoRef} spotlightRadius={300} glowColor="3, 212, 255" />
+      <div className="dash-grid bento-section" ref={bentoRef}>
+        {[
+          { k: "Active deals", v: active.length, d: <><Activity size={13} /> across core pipelines</>, src: "HubSpot · stage" },
+          { k: "Pipeline ACV", v: `$${(pipeline/1000000).toFixed(1)}M`, d: <><TrendingUp size={13} /> live from HubSpot</>, src: "HubSpot · amount" },
+          { k: "Closed Won", v: closedWon, d: <><CheckCircle2 size={13} color="var(--ok)" /> active customers</>, src: "HubSpot · stage" },
+          { k: "Needs SE/CS", v: noOwner, d: <><AlertTriangle size={13} color="var(--warn)" /> unassigned owners</>, src: "App · owner fields" },
+          { k: "Deals with feedback", v: feedbackLoading ? "…" : withFeedback.length, d: <><MessageSquare size={13} color="var(--accent-deep)" /> {totalFeedbackEntries} entries logged</>, src: "App · Customer Feedback tab" },
+          { k: "EAP customers", v: eapDeals.length, d: <><Star size={13} color="#F0A429" /> Early Access Program</>, src: "App · EAP flag" },
+        ].map((s) => (
+          <ParticleCard
+            key={s.k}
+            className="stat magic-bento-card magic-bento-card--border-glow"
+            glowColor="3, 212, 255"
+            particleCount={10}
+            enableTilt
+            clickEffect
+            enableMagnetism
+          >
+            <div className="k">{s.k}</div>
+            <div className="v">{s.v}</div>
+            <div className="d">{s.d}</div>
+            <StatSource>{s.src}</StatSource>
+          </ParticleCard>
+        ))}
       </div>
 
       <div className="cols">
@@ -6964,9 +6987,6 @@ function AppMain({ currentUser, canEdit, canPostNote, onSignOut }) {
           <button className={view === "maps" ? "on" : ""} onClick={() => { setView("maps"); closePassport(); }}>
             <MapPin size={15} /> Maps
           </button>
-          <button className={view === "prototypes" ? "on" : ""} onClick={() => { setView("prototypes"); closePassport(); }}>
-            <Zap size={15} /> Prototypes
-          </button>
         </div>
         <div className="cp-spacer" />
 
@@ -7106,10 +7126,8 @@ function AppMain({ currentUser, canEdit, canPostNote, onSignOut }) {
               ? <QualityChecksGlobal deals={deals} canEdit={canEdit} onOpen={openPassport} toast={toast} />
               : view === "mvp"
                 ? <MvpImagesGlobal deals={deals} canEdit={canEdit} onOpen={openPassport} toast={toast} />
-                : view === "prototypes"
-                  ? <PrototypesView />
-                  : view === "maps"
-                    ? <MapsGlobal />
+                : view === "maps"
+                  ? <MapsGlobal />
                   : <DealListLive
                 deals={deals}
                 loading={loading}

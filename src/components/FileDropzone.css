@@ -97,6 +97,14 @@
 .fdz-file .r2 { display: flex; justify-content: space-between; gap: 8px; margin-top: 6px; font-size: 11px; color: var(--muted2); }
 .fdz-file .ty { font-family: var(--font-mono); background: var(--line-soft); padding: 1px 6px; border-radius: 5px; color: var(--accent); }
 
+/* Compact variant — inline forms (QC photo evidence, etc.) */
+.fdz.compact { padding: 16px 14px; max-width: 100%; }
+.fdz.compact .fdz-stage { height: 64px; margin-top: 10px; }
+.fdz.compact .fdz-plate { width: 72px; height: 60px; border-radius: 10px; }
+.fdz.compact .fdz-title { font-size: 13px; }
+.fdz.compact .fdz-sub { font-size: 11.5px; }
+.fdz.compact:hover .fdz-plate { transform: translateX(-50%) translate(8px, -8px); }
+
 @keyframes fdz-pop { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
 @media (prefers-reduced-motion: reduce) {
   .fdz, .fdz-plate, .fdz-file { transition: none; animation: none; }
