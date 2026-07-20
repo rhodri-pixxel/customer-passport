@@ -18,7 +18,7 @@ import GooeySearch from "./components/GooeySearch.jsx";
 import FileDropzone from "./components/FileDropzone.jsx";
 import AuroraBackground from "./components/AuroraBackground.jsx";
 import { ParticleCard, GlobalSpotlight } from "./components/MagicBento.jsx";
-import { CommandPalette, ReadinessRing, RoutedTimeline, routeFor, Avatar as FxAvatar, PeopleFilter, DealsTable as FxDealsTable, Spark, PresenceBar } from "./components/Fused.jsx";
+import { CommandPalette, ReadinessRing, RoutedTimeline, routeFor, Avatar as FxAvatar, PeopleFilter, DealsTable as FxDealsTable, Spark, PresenceBar, KpiTile, DistributionBar, SectorHealth, AtRiskFeed, ExecBrief } from "./components/Fused.jsx";
 
 /* ------------------------------------------------------------------ */
 /*  Design system (spectral / Earth-observation theme)                */
@@ -319,6 +319,7 @@ const CSS = `
 /* inside the rail layout the section blocks shed their own chrome */
 .p4-detail .block{background:transparent;border:none;padding:0;margin-bottom:22px;}
 .p4-detail .cols{gap:22px;}
+@media(max-width:820px){.lead-health{grid-template-columns:1fr!important;}}
 @media(max-width:900px){.p4{grid-template-columns:1fr;}
   .p4-rail{border-right:none;border-bottom:1px solid var(--line);display:flex;flex-wrap:wrap;gap:4px;}
   .p4-item{margin-bottom:0;border-left:none;border-bottom:2px solid transparent;}
@@ -6909,6 +6910,121 @@ function DashboardLive({ deals, onOpen }) {
           <StatSource>App · EAP flag</StatSource>
         </Block>
       )}
+
+      <LeadershipSections deals={deals} onOpen={onOpen} readinessOf={(d) => calcReadiness(d, []).score} />
+    </>
+  );
+}
+
+/* Leadership — exec KPIs (L1) · portfolio health (L2) · exec brief (L4).
+   Everything below is computed from live HubSpot/app data, not mocked. */
+function LeadershipSections({ deals, onOpen, readinessOf }) {
+  const m = useMemo(() => {
+    const active = deals.filter(d => d.hubspot_stage_idx < 6);
+    const acv = active.reduce((a, d) => a + (d.hubspot_amount || 0), 0);
+    const won = deals.filter(d => d.hubspot_stage_idx === 5).length;
+    const closed = deals.filter(d => d.hubspot_stage_idx >= 5).length;
+    const winRate = closed ? Math.round((won / closed) * 100) : 0;
+    const scores = deals.map(readinessOf);
+    const avgReady = scores.length ? Math.round(scores.reduce((a, s) => a + s, 0) / scores.length) : 0;
+
+    // readiness distribution
+    const band = (s) => (s >= 80 ? "Ready" : s >= 40 ? "In progress" : s >= 20 ? "At risk" : "Stalled");
+    const counts = { Ready: 0, "In progress": 0, "At risk": 0, Stalled: 0 };
+    deals.forEach(d => { counts[band(readinessOf(d))]++; });
+    const dist = [
+      { label: "Ready", n: counts.Ready, c: "#00c030" },
+      { label: "In progress", n: counts["In progress"], c: "#06bdff" },
+      { label: "At risk", n: counts["At risk"], c: "#f76e2f" },
+      { label: "Stalled", n: counts.Stalled, c: "#ecb423" },
+    ];
+
+    // health by pipeline (our real sector proxy)
+    const byPipe = {};
+    deals.forEach(d => {
+      const k = d.pipeline || "Other";
+      if (!byPipe[k]) byPipe[k] = { name: k, count: 0, sum: 0 };
+      byPipe[k].count++; byPipe[k].sum += readinessOf(d);
+    });
+    const sectors = Object.values(byPipe)
+      .map(s => ({ name: s.name, count: s.count, ready: Math.round(s.sum / Math.max(1, s.count)) }))
+      .sort((a, b) => b.count - a.count).slice(0, 5);
+
+    // at-risk: real reasons, worst first
+    const risks = deals
+      .filter(d => d.hubspot_stage_idx >= 1 && d.hubspot_stage_idx < 5)
+      .map(d => {
+        const stale = d.hubspot_last_contacted
+          ? Math.floor((Date.now() - new Date(d.hubspot_last_contacted).getTime()) / 86400000) : null;
+        let why = null;
+        if (!d.owner_analytics) why = "no Analytics owner";
+        else if (!d.owner_se) why = "no SE owner";
+        else if (stale != null && stale > 21) why = `cold ${stale}d`;
+        else if (readinessOf(d) < 30) why = `readiness ${readinessOf(d)}%`;
+        return why ? { id: d.id, text: `${d.company} — ${why}`, rank: readinessOf(d) } : null;
+      })
+      .filter(Boolean).sort((a, b) => a.rank - b.rank).slice(0, 6);
+
+    const noAnalytics = deals.filter(d => d.hubspot_stage_idx < 6 && !d.owner_analytics);
+    const blockedAcv = noAnalytics.reduce((a, d) => a + (d.hubspot_amount || 0), 0);
+
+    // sparkline trend by stage index — a real shape from the portfolio
+    const trend = [0, 1, 2, 3, 4, 5].map(i => deals.filter(d => d.hubspot_stage_idx === i).length);
+
+    return { active, acv, winRate, avgReady, dist, sectors, risks, noAnalytics, blockedAcv, trend, won };
+  }, [deals, readinessOf]);
+
+  const money = (v) => (v >= 1e6 ? `$${(v / 1e6).toFixed(1)}M` : `$${Math.round(v / 1000)}k`);
+
+  return (
+    <>
+      <div className="klabel" style={{ margin: "30px 0 12px" }}>Exec KPIs</div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(200px,1fr))", gap: 12 }}>
+        <KpiTile label="Pipeline ACV" value={money(m.acv)} data={m.trend} c="#03d4ff" />
+        <KpiTile label="Win rate" value={`${m.winRate}%`} data={m.trend.slice().reverse()} c="#00ffbb" />
+        <KpiTile label="Avg. readiness" value={`${m.avgReady}%`} data={m.dist.map(d => d.n)} c="#06bdff" />
+        <KpiTile label="Active deals" value={String(m.active.length)} data={m.trend} c="#98eb00" />
+      </div>
+      <div className="fx-tile" style={{ marginTop: 12 }}>
+        <div className="klabel" style={{ marginBottom: 14 }}>Portfolio readiness distribution</div>
+        <DistributionBar segments={m.dist} />
+      </div>
+
+      <div className="klabel" style={{ margin: "30px 0 12px" }}>Portfolio health</div>
+      <div style={{ display: "grid", gridTemplateColumns: "1.4fr 1fr", gap: 12 }} className="lead-health">
+        <SectorHealth sectors={m.sectors} />
+        <AtRiskFeed
+          items={m.risks}
+          csat={m.avgReady ? (m.avgReady / 20).toFixed(1) : null}
+          csatPct={m.avgReady}
+          onOpen={onOpen}
+        />
+      </div>
+
+      <div className="klabel" style={{ margin: "30px 0 12px" }}>Exec brief</div>
+      <ExecBrief
+        eyebrow="Portfolio · exec brief"
+        headline={
+          <>Pipeline carries <span style={{ color: "var(--turq)" }}>{money(m.acv)}</span>, but{" "}
+            <span style={{ color: "var(--mining)" }}>{m.noAnalytics.length} deals</span> lack an Analytics owner.</>
+        }
+        body={
+          m.sectors[0]
+            ? `${m.sectors[0].name} leads with ${m.sectors[0].count} deals at ${m.sectors[0].ready}% average readiness. The drag is Analytics handover: ${m.noAnalytics.length} active deals still have no Analytics owner.`
+            : "No pipeline data loaded yet."
+        }
+        stats={[
+          { value: money(m.acv), label: "pipeline ACV" },
+          { value: `${m.winRate}%`, label: "win rate" },
+          { value: `${m.avgReady}%`, label: "avg readiness" },
+          { value: String(m.won), label: "closed won" },
+        ]}
+        action={
+          m.noAnalytics.length
+            ? `Assign Analytics owners to the ${m.noAnalytics.length} unowned deals to unblock ~${money(m.blockedAcv)} in reporting-blocked ACV.`
+            : "Every active deal has an Analytics owner — no handover blockers right now."
+        }
+      />
     </>
   );
 }

@@ -86,6 +86,24 @@
 }
 .fx-menu-row:hover { background: rgba(3,212,255,.06); }
 
+/* tile — the fused system's quiet container */
+.fx-tile {
+  border: 1px solid var(--line); border-radius: var(--r-container);
+  background: var(--card); padding: 18px;
+}
+
+/* form inputs */
+.fx-input {
+  width: 100%; background: var(--raised); border: 1px solid var(--hair2);
+  border-radius: 10px; color: var(--ink); padding: 10px 12px;
+  font: inherit; font-size: 13.5px; outline: none;
+  transition: border-color .15s, box-shadow .15s;
+}
+.fx-input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(3,212,255,.12); }
+.fx-input.err { border-color: var(--mining); box-shadow: 0 0 0 3px rgba(247,110,47,.12); }
+.fx-input:disabled { opacity: .5; cursor: not-allowed; }
+.fx-input::placeholder { color: var(--muted2); }
+
 /* sortable table */
 .fx-table { width: 100%; border-collapse: collapse; }
 .fx-table tbody tr { border-top: 1px solid var(--line); }

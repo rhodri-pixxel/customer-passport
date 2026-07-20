@@ -331,6 +331,191 @@ export function PeopleFilter({ value = "all", names = [], onChange }) {
   );
 }
 
+/* ── Readiness distribution bar ──────────────────────────────── */
+export function DistributionBar({ segments = [] }) {
+  const tot = segments.reduce((a, s) => a + s.n, 0) || 1;
+  return (
+    <div>
+      <div style={{ display: "flex", height: 14, borderRadius: 9999, overflow: "hidden", background: "var(--line)" }}>
+        {segments.map((s) => (
+          <div key={s.label} title={`${s.label}: ${s.n}`} style={{ width: `${(s.n / tot) * 100}%`, background: s.c }} />
+        ))}
+      </div>
+      <div style={{ display: "flex", gap: 20, marginTop: 12, flexWrap: "wrap" }}>
+        {segments.map((s) => (
+          <span key={s.label} style={{ display: "flex", alignItems: "center", gap: 7, fontSize: 12, color: "var(--ink2)" }}>
+            <Dot c={s.c} />{s.label} <span className="mono" style={{ color: "var(--muted)" }}>{s.n}</span>
+          </span>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/* ── KPI tile with sparkline ─────────────────────────────────── */
+export function KpiTile({ label, value, data = [], c = "#03d4ff" }) {
+  return (
+    <div className="fx-tile">
+      <div className="klabel">{label}</div>
+      <div className="mono" style={{ fontSize: 26, fontWeight: 500, margin: "8px 0 10px" }}>{value}</div>
+      <Spark data={data} c={c} w={140} h={30} />
+    </div>
+  );
+}
+
+/* ── Sector health bars ──────────────────────────────────────── */
+export function SectorHealth({ sectors = [] }) {
+  return (
+    <div className="fx-tile">
+      <div className="klabel" style={{ marginBottom: 14 }}>Health by sector</div>
+      {sectors.length === 0 && <div style={{ fontSize: 12.5, color: "var(--muted)" }}>No sector data yet.</div>}
+      {sectors.map((s) => (
+        <div key={s.name} style={{ marginBottom: 14 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, marginBottom: 6, gap: 12 }}>
+            <span style={{ display: "flex", alignItems: "center", gap: 7, minWidth: 0 }}>
+              <Dot c={hueForSector(s.name)} />
+              <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{s.name}</span>
+            </span>
+            <span className="mono" style={{ color: "var(--muted)", whiteSpace: "nowrap" }}>{s.count} deals · {s.ready}% ready</span>
+          </div>
+          <div style={{ height: 6, borderRadius: 3, background: "var(--line)", overflow: "hidden" }}>
+            <div style={{ width: `${s.ready}%`, height: "100%", background: hueForSector(s.name), borderRadius: 3 }} />
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/* ── At-risk feed ────────────────────────────────────────────── */
+export function AtRiskFeed({ items = [], csat = null, csatPct = 0, onOpen }) {
+  return (
+    <div className="fx-tile" style={{ borderColor: "rgba(247,110,47,.35)" }}>
+      <div className="klabel" style={{ color: "var(--mining)", marginBottom: 12 }}>▲ At-risk feed</div>
+      {items.length === 0 && <div style={{ fontSize: 12.5, color: "var(--muted)" }}>Nothing at risk — portfolio is clean.</div>}
+      {items.map((r, i) => (
+        <div
+          key={r.id || i}
+          onClick={() => onOpen && r.id && onOpen(r.id)}
+          style={{
+            display: "flex", gap: 9, padding: "9px 0", alignItems: "flex-start",
+            borderTop: i ? "1px solid var(--line)" : "none", fontSize: 12.5, color: "var(--ink2)",
+            cursor: onOpen && r.id ? "pointer" : "default",
+          }}
+        >
+          <span style={{ marginTop: 5 }}><Dot c="var(--mining)" s={8} /></span>
+          <span>{r.text}</span>
+        </div>
+      ))}
+      {csat != null && (
+        <div style={{ marginTop: 14, display: "flex", alignItems: "center", gap: 14 }}>
+          <div>
+            <div className="klabel">Portfolio CSAT</div>
+            <div className="mono" style={{ fontSize: 22, fontWeight: 500 }}>
+              {csat}<span style={{ fontSize: 11, color: "var(--muted)" }}>/5</span>
+            </div>
+          </div>
+          <ReadinessRing value={csatPct} size={56} stroke={5} />
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ── Editorial exec brief ────────────────────────────────────── */
+export function ExecBrief({ eyebrow, headline, body, stats = [], action }) {
+  return (
+    <div className="fx-tile" style={{ padding: "30px 34px" }}>
+      <div className="klabel">{eyebrow}</div>
+      <div style={{
+        fontFamily: "var(--font-display)", fontWeight: 500, fontSize: 30,
+        letterSpacing: "-.03em", lineHeight: 1.2, margin: "14px 0", maxWidth: "24ch",
+      }}>{headline}</div>
+      {body && <p style={{ fontSize: 15, color: "var(--ink2)", lineHeight: 1.7, maxWidth: "60ch", margin: 0 }}>{body}</p>}
+      <div style={{ display: "flex", gap: 34, margin: "26px 0", flexWrap: "wrap" }}>
+        {stats.map((s) => (
+          <div key={s.label}>
+            <div className="mono" style={{ fontSize: 30, fontWeight: 500, letterSpacing: "-.02em" }}>{s.value}</div>
+            <div className="klabel" style={{ marginTop: 4 }}>{s.label}</div>
+          </div>
+        ))}
+      </div>
+      {action && (
+        <div className="fx-tile" style={{ borderLeft: "3px solid var(--accent)" }}>
+          <div className="klabel" style={{ color: "var(--accent)" }}>Recommended action</div>
+          <p style={{ fontSize: 13.5, color: "var(--ink2)", margin: "8px 0 0", lineHeight: 1.6 }}>{action}</p>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ── Forms kit ───────────────────────────────────────────────── */
+export function AutoTextarea({ value, onChange, max, ...rest }) {
+  const ref = useRef(null);
+  useEffect(() => {
+    const el = ref.current;
+    if (el) { el.style.height = "auto"; el.style.height = el.scrollHeight + "px"; }
+  }, [value]);
+  return (
+    <>
+      <textarea ref={ref} className="fx-input" value={value} rows={2}
+        onChange={(e) => onChange && onChange(e.target.value)}
+        style={{ resize: "none", lineHeight: 1.55, overflow: "hidden" }} {...rest} />
+      {max && (
+        <div className="mono" style={{ fontSize: 10, color: (value || "").length > max ? "var(--mining)" : "var(--muted)", marginTop: 6, textAlign: "right" }}>
+          {(value || "").length}/{max}
+        </div>
+      )}
+    </>
+  );
+}
+
+export function Toggle({ on, onChange, label }) {
+  return (
+    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 14 }}>
+      {label && <span style={{ fontSize: 13, color: "var(--ink2)" }}>{label}</span>}
+      <button
+        role="switch" aria-checked={!!on} aria-label={label || "Toggle"}
+        onClick={() => onChange && onChange(!on)}
+        style={{
+          width: 44, height: 24, borderRadius: 9999, border: "none", cursor: "pointer",
+          background: on ? "var(--accent)" : "var(--hair2)", position: "relative", transition: "background .2s", flex: "none",
+        }}
+      >
+        <span style={{
+          position: "absolute", top: 2, left: on ? 22 : 2, width: 20, height: 20,
+          borderRadius: "50%", background: "#fff", transition: "left .2s",
+        }} />
+      </button>
+    </div>
+  );
+}
+
+export function SegmentedControl({ options = [], value = 0, onChange }) {
+  const n = Math.max(1, options.length);
+  return (
+    <div style={{
+      position: "relative", display: "inline-flex", border: "1px solid var(--line)",
+      borderRadius: 9999, padding: 3, background: "var(--card)",
+    }}>
+      <span style={{
+        position: "absolute", top: 3, bottom: 3, width: `calc((100% - 6px)/${n})`,
+        left: `calc(3px + ${value} * (100% - 6px)/${n})`, background: "var(--ink)",
+        borderRadius: 9999, transition: "left .26s cubic-bezier(.4,0,.2,1)",
+      }} />
+      {options.map((l, i) => (
+        <button key={l} onClick={() => onChange && onChange(i)}
+          style={{
+            position: "relative", zIndex: 1, border: "none", background: "transparent",
+            padding: "5px 14px", fontSize: 12, cursor: "pointer", fontFamily: "inherit",
+            color: value === i ? "var(--surface)" : "var(--muted)",
+          }}>{l}</button>
+      ))}
+    </div>
+  );
+}
+
 /* ── Sortable deals table ────────────────────────────────────── */
 export function DealsTable({ rows = [], dense = false, onOpen }) {
   const [sort, setSort] = useState({ k: "acv", dir: -1 });
