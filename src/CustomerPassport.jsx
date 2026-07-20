@@ -306,6 +306,16 @@ const CSS = `
 .cl-item{display:flex;align-items:center;gap:9px;font-size:13px;color:var(--ink2);}
 .cl-item.miss{color:var(--muted2);}
 
+/* one-line helper under a block title — plain language, for non-daily users */
+.field-help{font-size:12px;color:var(--muted);margin:-4px 0 14px;max-width:66ch;line-height:1.5;}
+/* pointer to the section that owns a field (single source of truth) */
+.src-link{font-family:var(--font-mono);font-size:10px;letter-spacing:.08em;text-transform:uppercase;
+  color:var(--accent);border:1px solid rgba(3,212,255,.35);border-radius:var(--r-control);
+  padding:4px 10px;white-space:nowrap;}
+/* legacy value awaiting merge */
+.legacy-note{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;flex-wrap:wrap;
+  margin-top:14px;padding:13px 15px;border:1px dashed var(--hair2);border-radius:12px;background:var(--raised);}
+
 /* explanatory note at the head of a section — plain language, one line */
 .sec-note{display:flex;align-items:flex-start;gap:9px;padding:11px 14px;margin-bottom:18px;
   border:1px solid var(--line);border-left:2px solid var(--accent);border-radius:12px;
@@ -4073,10 +4083,10 @@ function ProfileTab({ d, canEdit, onSaveField, onUpdate }) {
         </Block>
       </div>
 
-      <Block icon={Target} title="Use case · pain points · support needs">
+      <Block icon={Target} title="Use case & support needs">
+        <div className="field-help">What they use Pixxel for, and what they need from us to succeed. The problem behind it lives in Objectives.</div>
         <div className="kv">
           <EditableField k="Use case" value={d.profile.useCase} field="use_case" canEdit={canEdit} onSave={onSaveField} />
-          <EditableField k="Pain points" value={d.profile.painPoints} field="pain_points" canEdit={canEdit} onSave={onSaveField} />
           <EditableField k="Support needs" value={d.profile.supportNeeds} field="support_needs" canEdit={canEdit} onSave={onSaveField} />
         </div>
       </Block>
@@ -4180,18 +4190,53 @@ function ContextAoi({ d, canEdit, onUpdate }) {
   );
 }
 
+/* "Pain points" used to live in Customer Profile and duplicated the problem
+   statement. It's merged into Objectives now — but existing text must not be
+   orphaned, so surface any legacy value here with a one-click merge. */
+function LegacyPainPoints({ d, canEdit, onSaveField }) {
+  const legacy = (d.profile.painPoints || "").trim();
+  const [merging, setMerging] = useState(false);
+  if (!legacy) return null;
+
+  const merge = async () => {
+    setMerging(true);
+    const problem = (d.context.problem || "").trim();
+    const combined = problem && !problem.includes(legacy) ? `${problem}\n\n${legacy}` : (problem || legacy);
+    await onSaveField("problem_statement", combined);
+    await onSaveField("pain_points", "");
+    setMerging(false);
+  };
+
+  return (
+    <div className="legacy-note">
+      <div>
+        <div className="klabel" style={{ marginBottom: 6 }}>Previously captured as “Pain points”</div>
+        <div style={{ fontSize: 13, color: "var(--ink2)", lineHeight: 1.55 }}>{legacy}</div>
+      </div>
+      {canEdit && (
+        <button className="fx-pill" onClick={merge} disabled={merging} style={{ flex: "none", height: 32 }}>
+          {merging ? "Merging…" : "Merge into problem statement"}
+        </button>
+      )}
+    </div>
+  );
+}
+
 function ContextTab({ d, canEdit, onSaveField, onUpdate }) {
   return (
     <>
       <Block icon={Target} title="Problem statement">
+        <div className="field-help">The problem the customer is trying to solve — their pain points, in their words. This is the single home for it.</div>
         <div className="kv"><EditableField k="What the customer is trying to solve" value={d.context.problem} field="problem_statement" canEdit={canEdit} onSave={onSaveField} /></div>
+        <LegacyPainPoints d={d} canEdit={canEdit} onSaveField={onSaveField} />
       </Block>
       <div className="cols">
         <Block icon={CheckCircle2} title="Objectives">
           <EditableList items={d.context.objectives} field="objectives" canEdit={canEdit} onSave={onSaveField} emptyIcon={Target} emptyText="No objectives defined." />
         </Block>
-        <Block icon={MapPin} title="Area of interest">
-          <ContextAoi d={d} canEdit={canEdit} onUpdate={onUpdate} />
+        <Block icon={MapPin} title="Area of interest" action={<SourceLink to="Customer Profile" />}>
+          <div className="field-help">Shown here for context. The AOI is owned by Customer Profile — upload and edit it there so there's only ever one version.</div>
+          <ContextAoi d={d} canEdit={false} onUpdate={onUpdate} />
         </Block>
       </div>
     </>
@@ -4770,20 +4815,68 @@ function SummaryKV({ k, v, mono }) {
 // CS Summary — a read-oriented digest that pulls the fields a CS needs to run the
 // account, aggregated from the Profile / Context / Execution tabs. Files remain
 // downloadable; cadence and commercial/legal are editable here since CS owns them.
-/* Analytics Summary — a dedicated section for the Analytics team.
-   For now it mirrors the CS Summary roll-up (per the brief). NOTE: because it
-   renders the same blocks, any editable field here writes to the SAME record as
-   CS Summary. If Analytics needs its own independently-editable notes, this
-   needs its own fields — flagged with Rhodri. */
-function AnalyticsSummaryTab(props) {
+/* Analytics Summary — the Analytics team's OWN record.
+   Its cadence / summary / next steps are independent columns so CS and
+   Analytics never overwrite each other. Shared customer facts (what they
+   want, technical requirements, AOI) are shown read-only with a pointer to
+   the section that owns them. */
+function AnalyticsSummaryTab({ d, canEdit, onSaveField }) {
+  const t = d.profile.tech || {};
+  const p = d.profile;
   return (
     <>
-      <div className="sec-note">
-        <BarChart3 size={14} />
-        <span>Analytics roll-up. Mirrors the CS Summary view for now — shared fields, so edits here also update CS Summary.</span>
-      </div>
-      <CSSummaryTab {...props} />
+      <Block icon={CalendarClock} title="Analytics engagement">
+        <div className="field-help">How often does Analytics engage this customer, and what do they own next? These are Analytics' own fields — separate from CS.</div>
+        <div className="kv">
+          <EditableSelect k="Analytics cadence" value={p.analyticsCadence} field="analytics_cadence"
+            canEdit={canEdit} onSave={onSaveField} options={CADENCE_OPTIONS} customLabel="Custom" />
+          <EditableField k="Analytics next steps" value={p.analyticsNextSteps} field="analytics_next_steps"
+            canEdit={canEdit} onSave={onSaveField} placeholder="What Analytics owns next…" />
+        </div>
+      </Block>
+
+      <Block icon={BarChart3} title="Analytics summary">
+        <div className="field-help">The Analytics team's handover notes for this customer.</div>
+        <EditableField k="Summary" value={p.analyticsSummary} field="analytics_summary"
+          canEdit={canEdit} onSave={onSaveField} placeholder="Reporting approach, data cadence, models in play…" />
+      </Block>
+
+      {/* Shared customer facts — read here, edited where they're owned */}
+      <Block icon={Target} title="What the customer wants" action={<SourceLink to="Customer Profile" />}>
+        <ReadOnlyKv rows={[
+          ["Use case", p.useCase],
+          ["Imagery priorities", p.imageryPriorities],
+          ["Expected value from Pixxel", p.expectedValue],
+        ]} />
+      </Block>
+
+      <Block icon={Layers} title="Technical requirements" action={<SourceLink to="Customer Profile" />}>
+        <ReadOnlyKv rows={[
+          ["Data sources", (t.dataSources || []).join(", ")],
+          ["Bandset", t.bandset],
+          ["Cadence / revisit", t.cadence],
+        ]} />
+      </Block>
     </>
+  );
+}
+
+/* "owned elsewhere" pointer — keeps one source of truth per field */
+function SourceLink({ to }) {
+  return <span className="src-link">Edit in {to}</span>;
+}
+
+/* compact read-only label/value rows */
+function ReadOnlyKv({ rows = [] }) {
+  return (
+    <div className="kv">
+      {rows.map(([k, v]) => (
+        <div key={k}>
+          <div className="k">{k}</div>
+          <div className="v">{v ? v : <span style={{ color: "var(--muted2)" }}>Not captured yet</span>}</div>
+        </div>
+      ))}
+    </div>
   );
 }
 
@@ -6274,6 +6367,10 @@ function PassportDetail({ data, onBack, canEdit, canPostNote, onRefresh, onAssig
       imageryPriorities: p.imagery_priorities || [],
       expectedValue: p.expected_value || "",
       customerCadence: p.customer_cadence || "",
+      // Analytics Summary — its own record (see 20260720_analytics_summary_fields.sql)
+      analyticsCadence: p.analytics_cadence || "",
+      analyticsSummary: p.analytics_summary || "",
+      analyticsNextSteps: p.analytics_next_steps || "",
       tech: {
         dataSources: p.data_sources || [],
         bandset: p.bandset || "",
@@ -6654,6 +6751,8 @@ function PassportDetail({ data, onBack, canEdit, canPostNote, onRefresh, onAssig
         "next_steps","commercial_model","expertise_level","tasked_aois",
         "imagery_priorities","expected_value","aurora_workspace","aurora_url","commercial_legal",
         "customer_cadence",
+        // Analytics Summary — its own record, independent of CS Summary
+        "analytics_cadence","analytics_summary","analytics_next_steps",
       ];
       if (ALLOWED.includes(field)) {
         // Record this field as app-edited so the HubSpot sync won't overwrite it
