@@ -142,7 +142,7 @@ const CSS = `
   font-weight:500;margin-bottom:16px;}
 .cp-back:hover{color:var(--ink);}
 
-.cp-head{position:relative;overflow:hidden;background:linear-gradient(180deg,#0B1220,#10243a);
+.cp-head{position:relative;overflow:hidden;background:linear-gradient(180deg,#0A0F1A,#0D1B28);
   border-radius:20px;padding:24px 26px;color:#fff;margin-bottom:18px;}
 .cp-head .grat{position:absolute;inset:0;opacity:.5;pointer-events:none;
   background-image:linear-gradient(rgba(255,255,255,.05) 1px,transparent 1px),
@@ -150,7 +150,7 @@ const CSS = `
   background-size:34px 34px;
   mask-image:radial-gradient(120% 120% at 80% -10%,#000,transparent 70%);}
 .cp-head .spectral{position:absolute;top:0;left:0;right:0;height:3px;
-  background:linear-gradient(90deg,#03d4ff,#06bdff,#00ffbb,#98eb00,#ecb423,#f76e2f);}
+  background:linear-gradient(90deg,#03d4ff,#06bdff,#00ffbb);}
 .cp-head .htop{display:flex;justify-content:space-between;align-items:flex-start;gap:20px;
   position:relative;}
 .cp-head h1{font-family:var(--font-display);font-size:24px;font-weight:600;margin:0;
@@ -415,8 +415,10 @@ const CSS = `
   font-size:11.5px;padding:4px 8px;border-radius:7px;background:rgba(74,21,75,.06);}
 .slack-btn:hover{background:rgba(74,21,75,.12);}
 .slack-btn.sending{opacity:.55;pointer-events:none;}
-.btn.slack{background:#4A154B;color:#fff;font-weight:600;}
-.btn.slack:hover{background:#3d1040;}
+.btn.slack{background:rgba(255,255,255,.08);color:#dbe6f2;font-weight:500;
+  border:1px solid rgba(255,255,255,.12);}
+.btn.slack:hover{background:rgba(255,255,255,.15);border-color:rgba(3,212,255,.5);
+  box-shadow:0 0 12px rgba(3,212,255,.22);}
 .btn.slack.sending{opacity:.55;pointer-events:none;}
 .slack-status{display:flex;align-items:center;gap:8px;padding:10px 14px;background:#F9F5FA;
   border:1px solid #e5d5e6;border-radius:11px;font-size:12.5px;color:#4A154B;margin-top:10px;}
@@ -3095,8 +3097,9 @@ function HandoverStatus({ d, canEdit, onUpdate }) {
         <button onClick={() => toggle(team, on)}
           style={{
             flex: "none", padding: "6px 12px", borderRadius: 8, fontSize: 12, fontWeight: 600, cursor: "pointer",
-            border: "1px solid " + (on ? "var(--line)" : accent),
-            background: on ? "var(--card)" : accent, color: on ? "var(--muted)" : "#fff",
+            border: "1px solid " + (on ? "var(--line)" : "var(--accent)"),
+            background: on ? "var(--card)" : "var(--accent)", color: on ? "var(--muted)" : "#001018",
+            boxShadow: on ? "none" : "0 0 12px rgba(3,212,255,.3)",
           }}>
           {on ? "Undo" : "Mark handed over"}
         </button>
@@ -3146,7 +3149,7 @@ function HandoverStatus({ d, canEdit, onUpdate }) {
             ? <button onClick={() => onUpdate({ _handbackToSe: { value: false } })}
                 style={{ flex: "none", padding: "6px 12px", borderRadius: 8, fontSize: 12, fontWeight: 600, cursor: "pointer", border: "1px solid var(--line)", background: "var(--card)", color: "var(--muted)" }}>Clear</button>
             : <button onClick={() => setHandbackOpen(o => !o)}
-                style={{ flex: "none", padding: "6px 12px", borderRadius: 8, fontSize: 12, fontWeight: 600, cursor: "pointer", border: "1px solid #C77C1E", background: "#C77C1E", color: "#fff" }}>Hand back to SE</button>
+                style={{ flex: "none", padding: "6px 12px", borderRadius: 8, fontSize: 12, fontWeight: 600, cursor: "pointer", border: "1px solid rgba(236,180,35,.55)", background: "rgba(236,180,35,.12)", color: "var(--energy)" }}>Hand back to SE</button>
           )}
         </div>
       </div>
@@ -3158,7 +3161,7 @@ function HandoverStatus({ d, canEdit, onUpdate }) {
             onKeyDown={e => { if (e.key === "Enter") { onUpdate({ _handbackToSe: { value: true, note: handbackNote.trim() } }); setHandbackOpen(false); setHandbackNote(""); } }}
             style={{ flex: 1, minWidth: 260, border: "1px solid var(--accent)", borderRadius: 8, padding: "8px 11px", fontFamily: "inherit", fontSize: 13, outline: "none" }} />
           <button onClick={() => { onUpdate({ _handbackToSe: { value: true, note: handbackNote.trim() } }); setHandbackOpen(false); setHandbackNote(""); }}
-            style={{ padding: "8px 14px", borderRadius: 8, border: "none", background: "#C77C1E", color: "#fff", fontSize: 12.5, fontWeight: 600, cursor: "pointer" }}>Confirm hand-back</button>
+            style={{ padding: "8px 14px", borderRadius: 8, border: "1px solid rgba(236,180,35,.55)", background: "rgba(236,180,35,.16)", color: "var(--energy)", fontSize: 12.5, fontWeight: 600, cursor: "pointer" }}>Confirm hand-back</button>
           <button onClick={() => { setHandbackOpen(false); setHandbackNote(""); }}
             style={{ padding: "8px 14px", borderRadius: 8, border: "1px solid var(--line)", background: "var(--card)", color: "var(--muted)", fontSize: 12.5, cursor: "pointer" }}>Cancel</button>
         </div>

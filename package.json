@@ -21,5 +21,8 @@
     "react-dom": "^18.2.0",
     "shpjs": "^4.0.4",
     "vite": "^5.1.0"
+  },
+  "devDependencies": {
+    "shadcn": "^4.13.1"
   }
 }

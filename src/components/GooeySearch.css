@@ -1,8 +1,9 @@
-/* Gooey search — locked dark chrome so bubble colour never matches the text */
+/* Gooey search — electric chrome (brand CTA) so the pill is unmissable on the
+   dark space canvas; dark ink text keeps bubble ≠ text in every state */
 .goo-wrap {
-  --goo-bg: #0B1018;
-  --goo-fg: #ffffff;
-  --goo-icon: #03d4ff;
+  --goo-bg: #03d4ff;
+  --goo-fg: #001018;
+  --goo-icon: #001018;
   display: inline-flex;
   align-items: center;
   height: 44px;
@@ -23,8 +24,10 @@
   cursor: pointer;
   white-space: nowrap;
   overflow: hidden;
-  transition: width 0.42s cubic-bezier(0.2, 0.8, 0.25, 1), padding 0.42s;
+  box-shadow: 0 0 16px rgba(3, 212, 255, 0.35);
+  transition: width 0.42s cubic-bezier(0.2, 0.8, 0.25, 1), padding 0.42s, box-shadow 0.3s;
 }
+.goo-btn:hover { box-shadow: 0 0 24px rgba(3, 212, 255, 0.55); }
 .goo-wrap.open .goo-btn { cursor: text; }
 .goo-btn .goo-icon { flex-shrink: 0; color: var(--goo-icon); }
 .goo-btn input {
@@ -44,7 +47,7 @@
   opacity: 1;
   pointer-events: auto;
 }
-.goo-btn input::placeholder { color: rgba(255, 255, 255, 0.5); }
+.goo-btn input::placeholder { color: rgba(0, 16, 24, 0.55); }
 /* hide native search clear/decorations for a clean pill */
 .goo-btn input::-webkit-search-decoration,
 .goo-btn input::-webkit-search-cancel-button { -webkit-appearance: none; }
@@ -60,6 +63,7 @@
   margin-left: -14px;
   border: none;
   cursor: pointer;
+  box-shadow: 0 0 16px rgba(3, 212, 255, 0.35);
   transform: scale(0);
   opacity: 0;
   transition: transform 0.42s cubic-bezier(0.2, 0.8, 0.25, 1), opacity 0.3s;
