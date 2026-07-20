@@ -23,12 +23,12 @@ const CSS = `
 @import url('https://fonts.googleapis.com/css2?family=Barlow:wght@400;500;600;700&family=Inter:wght@400;450;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap');
 
 .cp-root{
-  /* ── Pixxel brand: electric blue on a light canvas (deepened for legible text) ── */
-  --ink:#0B1220; --ink2:#1B2433; --muted:#5A6577; --muted2:#929BAB;
-  --line:#E4E8EF; --line-soft:#EEF1F6; --surface:#F5F7FB; --card:#FFFFFF;
-  --accent:#0399C9; --accent-deep:#036E8C; --accent-soft:#E1F7FE; --accent-bright:#03d4ff; --sky:#06bdff;
-  --se:#2D7FF9; --se-soft:#E7F0FE; --cs:#E07A2B; --cs-soft:#FBEEDF;
-  --an:#7A5AF5; --an-soft:#EDE8FE;
+  /* ── Pixxel brand: electric blue on a dark "space" canvas (global default) ── */
+  --ink:#F2FAFD; --ink2:#C4D2DA; --muted:#8A97A4; --muted2:#5C6773;
+  --line:#1C2430; --line-soft:#141A24; --surface:#04060B; --card:#0E121B;
+  --accent:#03d4ff; --accent-deep:#5FE6FF; --accent-soft:rgba(3,212,255,.12); --accent-bright:#03d4ff; --sky:#06bdff;
+  --se:#2D7FF9; --se-soft:rgba(45,127,249,.16); --cs:#E07A2B; --cs-soft:rgba(224,122,43,.16);
+  --an:#7A5AF5; --an-soft:rgba(122,90,245,.18);
   --ok:#2FB67A; --warn:#E0B02B; --bad:#E5564B;
   /* industry-wise sector colours (from brand guidelines) */
   --agri:#98eb00; --energy:#ecb423; --mining:#f76e2f; --env:#00ffbb; --gov:#06bdff; --forest:#00c030;
@@ -54,7 +54,7 @@ const CSS = `
 
 /* top bar */
 .cp-top{position:sticky;top:0;z-index:30;display:flex;align-items:center;gap:18px;
-  padding:12px 24px;background:rgba(255,255,255,.82);backdrop-filter:blur(10px);
+  padding:12px 24px;background:color-mix(in srgb,var(--surface) 82%,transparent);backdrop-filter:blur(10px);
   border-bottom:1px solid var(--line);}
 .cp-brand{display:flex;align-items:center;gap:10px;font-family:var(--font-display);
   font-weight:600;font-size:15px;letter-spacing:-.01em;}
@@ -65,30 +65,30 @@ const CSS = `
 .cp-nav{display:flex;gap:4px;margin-left:6px;}
 .cp-nav button{display:flex;align-items:center;gap:7px;padding:7px 13px;border-radius:8px;
   font-size:13px;font-weight:500;color:var(--muted);}
-.cp-nav button.on{background:var(--ink);color:#fff;}
+.cp-nav button.on{background:var(--ink);color:var(--surface);}
 .cp-nav button:not(.on):hover{background:var(--line-soft);color:var(--ink);}
 .cp-spacer{flex:1;}
 .cp-viewtoggle{display:flex;align-items:center;background:var(--line-soft);border-radius:9px;
   padding:3px;gap:2px;}
 .cp-viewtoggle button{display:flex;align-items:center;gap:6px;padding:6px 11px;border-radius:7px;
   font-size:12px;font-weight:500;color:var(--muted);}
-.cp-viewtoggle button.on{background:#fff;color:var(--ink);box-shadow:0 1px 2px rgba(11,18,32,.08);}
+.cp-viewtoggle button.on{background:var(--card);color:var(--ink);box-shadow:0 1px 2px rgba(0,0,0,.3);}
 
 .cp-page{max-width:1180px;margin:0 auto;padding:26px 24px 80px;}
 
 /* readonly banner */
-.cp-banner{display:flex;align-items:center;gap:10px;background:var(--cs-soft);
-  border:1px solid #F0D9BE;color:#8a571f;border-radius:11px;padding:10px 14px;
+.cp-banner{display:flex;align-items:center;gap:10px;background:rgba(224,176,43,.1);
+  border:1px solid rgba(224,176,43,.32);color:var(--warn);border-radius:11px;padding:10px 14px;
   font-size:13px;margin-bottom:18px;}
 
 /* filters */
 .cp-filters{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:20px;}
-.cp-search{flex:1;min-width:240px;display:flex;align-items:center;gap:9px;background:#fff;
+.cp-search{flex:1;min-width:240px;display:flex;align-items:center;gap:9px;background:var(--card);
   border:1px solid var(--line);border-radius:11px;padding:10px 14px;}
 .cp-search input{border:none;outline:none;font-size:14px;flex:1;background:none;color:var(--ink);}
 .cp-search input::placeholder{color:var(--muted2);}
 .cp-select{position:relative;}
-.cp-select select{appearance:none;background:#fff;border:1px solid var(--line);border-radius:11px;
+.cp-select select{appearance:none;background:var(--card);border:1px solid var(--line);border-radius:11px;
   padding:10px 32px 10px 13px;font-size:13px;color:var(--ink);font-family:inherit;cursor:pointer;}
 .cp-select .chev{position:absolute;right:11px;top:50%;transform:translateY(-50%);
   pointer-events:none;color:var(--muted2);}
@@ -112,7 +112,7 @@ const CSS = `
 /* avatar / owner chip */
 .av{width:26px;height:26px;border-radius:50%;display:grid;place-items:center;font-size:10px;
   font-weight:600;font-family:var(--font-mono);color:#fff;flex:none;}
-.av.empty{background:#fff;border:1.5px dashed var(--line);color:var(--muted2);}
+.av.empty{background:var(--card);border:1.5px dashed var(--line);color:var(--muted2);}
 .av.se{background:var(--se);} .av.cs{background:var(--cs);} .av.an{background:var(--an);}
 .role-tag{font-size:9px;font-family:var(--font-mono);letter-spacing:.1em;text-transform:uppercase;
   font-weight:600;}
@@ -172,13 +172,13 @@ const CSS = `
 .cp-railrow{display:grid;grid-template-columns:1fr auto;gap:16px;margin-bottom:18px;
   align-items:stretch;}
 @media(max-width:760px){.cp-railrow{grid-template-columns:1fr;}}
-.owners-panel{background:#fff;border:1px solid var(--line);border-radius:16px;padding:16px 18px;
+.owners-panel{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:16px 18px;
   display:flex;gap:26px;flex-wrap:wrap;align-items:center;}
 .owner-slot{display:flex;align-items:center;gap:10px;position:relative;}
 .owner-slot .meta .role-tag{color:var(--muted2);}
 .owner-slot .meta .nm{font-size:13px;font-weight:500;margin-top:2px;}
 .owner-slot .assign{font-size:12px;color:var(--accent-deep);font-weight:500;}
-.assign-menu{position:absolute;top:42px;left:0;z-index:20;background:#fff;border:1px solid var(--line);
+.assign-menu{position:absolute;top:42px;left:0;z-index:20;background:var(--card);border:1px solid var(--line);
   border-radius:11px;box-shadow:0 14px 40px -16px rgba(11,18,32,.35);padding:6px;min-width:170px;}
 .assign-menu button{display:block;width:100%;text-align:left;padding:8px 10px;border-radius:8px;
   font-size:13px;color:var(--ink);}
@@ -194,14 +194,14 @@ const CSS = `
 .qc-table td{padding:9px 12px;border-bottom:1px solid var(--line-soft);vertical-align:middle;white-space:nowrap;}
 .qc-table tr:last-child td{border-bottom:none;}
 .qc-table tr:hover td{background:var(--line-soft);}
-.seg{display:inline-flex;border:1px solid var(--line);border-radius:9px;padding:2px;background:#fff;}
+.seg{display:inline-flex;border:1px solid var(--line);border-radius:9px;padding:2px;background:var(--card);}
 .seg button{padding:6px 13px;border-radius:7px;border:none;background:transparent;font-size:12.5px;
   color:var(--muted);cursor:pointer;font-weight:500;}
 .seg button.on{background:var(--accent);color:#fff;}
 @keyframes spin{to{transform:rotate(360deg);}}
 .spin{animation:spin 0.9s linear infinite;}
 
-.readiness-panel{background:#fff;border:1px solid var(--line);border-radius:16px;padding:14px 20px;
+.readiness-panel{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:14px 20px;
   display:flex;align-items:center;gap:16px;cursor:pointer;min-width:230px;}
 .readiness-panel:hover{border-color:#D4DAE4;}
 .readiness-panel .txt .k{font-family:var(--font-mono);font-size:9.5px;letter-spacing:.12em;
@@ -210,7 +210,7 @@ const CSS = `
 .readiness-panel .txt small{font-size:11px;color:var(--muted);}
 
 /* checklist popover */
-.checklist{background:#fff;border:1px solid var(--line);border-radius:16px;padding:16px 18px;
+.checklist{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:16px 18px;
   margin-bottom:18px;}
 .checklist h4{font-family:var(--font-display);font-size:13px;font-weight:600;margin:0 0 12px;}
 .checklist .items{display:grid;grid-template-columns:1fr 1fr;gap:8px 22px;}
@@ -229,7 +229,7 @@ const CSS = `
 /* content blocks */
 .cols{display:grid;grid-template-columns:1fr 1fr;gap:16px;}
 @media(max-width:760px){.cols{grid-template-columns:1fr;}}
-.block{background:#fff;border:1px solid var(--line);border-radius:16px;padding:18px 20px;
+.block{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:18px 20px;
   margin-bottom:16px;}
 .block .bhead{display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;}
 .block .bhead .lhs{display:flex;align-items:center;gap:9px;}
@@ -274,7 +274,7 @@ const CSS = `
 .sev.low{background:#E7F1FE;color:#2c66c4;}
 
 /* notes / activity */
-.composer{background:#fff;border:1px solid var(--line);border-radius:16px;padding:14px 16px;
+.composer{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:14px 16px;
   margin-bottom:16px;}
 .composer textarea{width:100%;border:none;outline:none;resize:none;font-family:inherit;
   font-size:13.5px;color:var(--ink);min-height:54px;background:none;}
@@ -296,7 +296,7 @@ const CSS = `
 /* dashboard */
 .dash-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:18px;}
 @media(max-width:820px){.dash-grid{grid-template-columns:repeat(2,1fr);}}
-.stat{background:#fff;border:1px solid var(--line);border-radius:16px;padding:16px 18px;}
+.stat{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:16px 18px;}
 .stat .k{font-family:var(--font-mono);font-size:9.5px;letter-spacing:.12em;text-transform:uppercase;
   color:var(--muted2);}
 .stat .v{font-family:var(--font-display);font-size:27px;font-weight:600;margin-top:6px;
@@ -316,7 +316,7 @@ const CSS = `
 
 /* toast */
 .toast{position:fixed;bottom:22px;left:50%;transform:translateX(-50%);z-index:60;
-  background:var(--ink);color:#fff;padding:12px 18px;border-radius:12px;font-size:13px;
+  background:var(--ink);color:var(--surface);padding:12px 18px;border-radius:12px;font-size:13px;
   display:flex;align-items:center;gap:10px;box-shadow:0 16px 40px -12px rgba(11,18,32,.5);}
 .toast .spectral-dot{width:7px;height:7px;border-radius:50%;
   background:linear-gradient(90deg,#0EA5B7,#2FB67A);}
@@ -332,15 +332,15 @@ const CSS = `
 /* Keep the dark-ink top-bar logo readable when the OS/browser forces a dark or
    high-contrast ("contrast theme") view: sit it on a light plate that opts out
    of forced-colors and browser auto-darkening. */
-.cp-logo-plate{display:inline-flex;align-items:center;padding:3px 7px;border-radius:7px;
-  background:#fff;color-scheme:light;forced-color-adjust:none;}
+.cp-logo-plate{display:inline-flex;align-items:center;padding:3px 5px;border-radius:7px;
+  background:transparent;forced-color-adjust:none;}
 .cp-wordmark{font-family:var(--font-display);font-weight:700;font-size:21px;letter-spacing:-.045em;
   color:var(--ink);line-height:1;}
 .cp-wordmark .x{color:var(--accent);}
 .cp-brand-div{width:1px;height:22px;background:var(--line);margin:0 2px;}
 
 /* HubSpot sync pill */
-.hs-pill{display:flex;align-items:center;gap:8px;background:#fff;border:1px solid var(--line);
+.hs-pill{display:flex;align-items:center;gap:8px;background:var(--card);border:1px solid var(--line);
   border-radius:9px;padding:6px 8px 6px 11px;font-size:11.5px;color:var(--muted);}
 .hs-dot{width:7px;height:7px;border-radius:50%;background:var(--ok);
   box-shadow:0 0 0 3px rgba(47,182,122,.15);}
@@ -354,12 +354,12 @@ const CSS = `
 /* notification bell + panel */
 .bell{position:relative;}
 .bell .btn-bell{width:38px;height:38px;border-radius:10px;display:grid;place-items:center;
-  color:var(--muted);border:1px solid var(--line);background:#fff;}
+  color:var(--muted);border:1px solid var(--line);background:var(--card);}
 .bell .btn-bell:hover{color:var(--ink);border-color:#D4DAE4;}
 .bell .badge{position:absolute;top:-5px;right:-5px;min-width:17px;height:17px;padding:0 4px;
   border-radius:9px;background:var(--bad);color:#fff;font-size:10px;font-weight:700;
-  display:grid;place-items:center;font-family:var(--font-mono);border:2px solid #fff;}
-.notif-panel{position:absolute;top:46px;right:0;z-index:40;width:340px;background:#fff;
+  display:grid;place-items:center;font-family:var(--font-mono);border:2px solid var(--card);}
+.notif-panel{position:absolute;top:46px;right:0;z-index:40;width:340px;background:var(--card);
   border:1px solid var(--line);border-radius:14px;box-shadow:0 22px 60px -22px rgba(11,18,32,.4);
   overflow:hidden;}
 .notif-head{display:flex;align-items:center;justify-content:space-between;padding:13px 15px;
@@ -370,7 +370,7 @@ const CSS = `
 .notif-item{display:flex;gap:11px;padding:12px 15px;border-bottom:1px solid var(--line-soft);
   position:relative;}
 .notif-item:last-child{border-bottom:none;}
-.notif-item.unread{background:#F3FBFC;}
+.notif-item.unread{background:var(--accent-soft);}
 .notif-item .nt{font-size:12.5px;line-height:1.5;color:var(--ink2);}
 .notif-item .nt b{font-weight:600;}
 .notif-item .nch{display:flex;align-items:center;gap:6px;margin-top:5px;font-size:10.5px;
@@ -378,7 +378,7 @@ const CSS = `
 .notif-empty{padding:26px 15px;text-align:center;font-size:12.5px;color:var(--muted2);}
 
 /* Slack integration */
-.slack-pill{display:flex;align-items:center;gap:7px;background:#fff;border:1px solid var(--line);
+.slack-pill{display:flex;align-items:center;gap:7px;background:var(--card);border:1px solid var(--line);
   border-radius:9px;padding:6px 10px;font-size:11.5px;color:var(--muted);}
 .slack-dot{width:7px;height:7px;border-radius:50%;background:#4A154B;}
 .slack-pill b{color:var(--ink);font-weight:600;}
@@ -404,16 +404,16 @@ const CSS = `
 .sat-chip{display:inline-flex;align-items:center;gap:6px;padding:5px 11px;border-radius:20px;
   font-size:11.5px;font-weight:600;cursor:pointer;border:1.5px solid transparent;}
 .sat-chip.all{background:var(--line-soft);color:var(--muted);border-color:var(--line);}
-.sat-chip.all.on{background:var(--ink);color:#fff;border-color:var(--ink);}
+.sat-chip.all.on{background:var(--ink);color:var(--surface);border-color:var(--ink);}
 .sat-chip.vs{background:#FCE6E4;color:#b13b32;} .sat-chip.vs.on{border-color:#b13b32;}
 .sat-chip.s{background:#FBF1D8;color:#9a7415;} .sat-chip.s.on{border-color:#9a7415;}
 .sat-chip.sat{background:#E3F7EC;color:#1f8a57;} .sat-chip.sat.on{border-color:#1f8a57;}
 .sat-chip.vsat{background:var(--accent-soft);color:var(--accent-deep);} .sat-chip.vsat.on{border-color:var(--accent-deep);}
 .sat-chip.neu{background:var(--line-soft);color:var(--muted);} .sat-chip.neu.on{border-color:var(--muted);}
 .fb-notion-btn{display:inline-flex;align-items:center;gap:7px;font-size:12px;font-weight:500;
-  color:var(--muted);border:1px solid var(--line);border-radius:9px;padding:7px 13px;background:#fff;}
+  color:var(--muted);border:1px solid var(--line);border-radius:9px;padding:7px 13px;background:var(--card);}
 .fb-notion-btn:hover{color:var(--ink);border-color:#D4DAE4;}
-.fb-card{background:#fff;border:1px solid var(--line);border-radius:16px;margin-bottom:14px;overflow:hidden;}
+.fb-card{background:var(--card);border:1px solid var(--line);border-radius:16px;margin-bottom:14px;overflow:hidden;}
 .fb-card-head{display:flex;align-items:center;gap:14px;padding:16px 20px;cursor:pointer;}
 .fb-card-head:hover{background:var(--line-soft);}
 .fb-card-head .sat-badge{flex:none;}
@@ -438,15 +438,15 @@ const CSS = `
 .sat-dot{width:9px;height:9px;border-radius:50%;flex:none;}
 .fb-empty{text-align:center;padding:40px 20px;color:var(--muted2);}
 .fb-empty h4{font-family:var(--font-display);font-size:16px;font-weight:600;color:var(--muted);margin:12px 0 6px;}
-.fb-notion-banner{display:flex;align-items:center;gap:12px;background:#FAFAFA;border:1px solid var(--line);
+.fb-notion-banner{display:flex;align-items:center;gap:12px;background:var(--card);border:1px solid var(--line);
   border-radius:12px;padding:13px 16px;margin-bottom:18px;font-size:12.5px;color:var(--muted);}
 .fb-notion-banner .nb-title{font-weight:600;color:var(--ink);font-size:13px;}
 .fb-notion-banner .nb-status{display:flex;align-items:center;gap:6px;margin-top:3px;}
 .notion-dot{width:7px;height:7px;border-radius:50%;background:#888;}
 .notion-dot.linked{background:var(--ok);}
 .fb-notion-banner .connect-btn{margin-left:auto;display:inline-flex;align-items:center;gap:6px;
-  background:var(--ink);color:#fff;border-radius:8px;padding:7px 12px;font-size:12px;font-weight:500;white-space:nowrap;}
-.fb-notion-banner .connect-btn:hover{background:#1B2433;}
+  background:var(--ink);color:var(--surface);border-radius:8px;padding:7px 12px;font-size:12px;font-weight:500;white-space:nowrap;}
+.fb-notion-banner .connect-btn:hover{background:var(--ink2);}
 
 /* ── Feature: per-section last-updated stamp ── */
 .sec-stamp{display:inline-flex;align-items:center;gap:5px;font-size:10.5px;font-family:var(--font-mono);
@@ -494,10 +494,10 @@ const CSS = `
 .ap-tabs{display:flex;gap:4px;margin-bottom:16px;}
 .ap-tab{padding:6px 14px;border-radius:8px;font-size:12.5px;font-weight:500;color:var(--muted);
   border:1px solid transparent;}
-.ap-tab.on{background:#fff;border-color:var(--line);color:var(--ink);
+.ap-tab.on{background:var(--card);border-color:var(--line);color:var(--ink);
   box-shadow:0 1px 3px rgba(11,18,32,.07);}
 .ap-item{display:flex;align-items:flex-start;gap:12px;padding:12px 14px;border-radius:12px;
-  margin-bottom:8px;border:1px solid var(--line);background:#fff;transition:.12s;}
+  margin-bottom:8px;border:1px solid var(--line);background:var(--card);transition:.12s;}
 .ap-item:hover{border-color:#D4DAE4;}
 .ap-item.done-item{opacity:.55;}
 .ap-check{width:20px;height:20px;border-radius:6px;border:2px solid var(--line);
@@ -511,7 +511,7 @@ const CSS = `
 .ap-due.thisweek{color:var(--warn);font-weight:600;}
 .ap-add-row{display:flex;gap:8px;margin-top:10px;flex-wrap:wrap;}
 .ap-add-row input,.ap-add-row select{border:1px solid var(--line);border-radius:9px;
-  padding:8px 12px;font-size:13px;font-family:inherit;outline:none;background:#fff;}
+  padding:8px 12px;font-size:13px;font-family:inherit;outline:none;background:var(--card);}
 .ap-add-row input{flex:1;min-width:180px;}
 .ap-add-row select{min-width:130px;}
 .ap-add-row input[type=date]{min-width:140px;}
@@ -526,9 +526,9 @@ const STAGES = ["Discovery", "Technical Qualification", "Solution Validation", "
 // ── Official Pixxel logo. Files live in /public so Vercel serves them at
 //    these root paths. If a file is missing, the <img> onError handler
 //    falls back to the text wordmark / falls back gracefully. ──
-const PIXXEL_LOGO_URL = "/pixxel-logo-light.svg";  // dark-ink logo for the light top bar
-const PIXXEL_LOGO_DARK = "/pixxel-logo-dark.svg";  // white logo for dark surfaces
-const PASSPORT_LOGO = "/passport_light.png";       // sign-in screen logo
+const PIXXEL_LOGO_URL = "/pixxel-logo-white.svg";  // white wordmark for the dark space-canvas top bar
+const PIXXEL_LOGO_DARK = "/pixxel-logo-white.svg"; // white logo for dark surfaces
+const PASSPORT_LOGO = "/passport_dark.png";        // sign-in screen logo (dark theme)
 
 // ── Real Pixxel roster, grouped by team ──────────────────────
 // Source: HubSpot users export (active only). Each person has a clean
@@ -2042,7 +2042,7 @@ function DealSearchPicker({ deals, value, onChange }) {
         <ChevronDown size={13} className="chev" />
       </div>
       {open && (
-        <div style={{ position:"absolute", top:"100%", left:0, right:0, zIndex:40, marginTop:4, background:"#fff", border:"1px solid var(--line)", borderRadius:10, boxShadow:"0 14px 40px -16px rgba(11,18,32,.35)", padding:6 }}>
+        <div style={{ position:"absolute", top:"100%", left:0, right:0, zIndex:40, marginTop:4, background:"var(--card)", border:"1px solid var(--line)", borderRadius:10, boxShadow:"0 14px 40px -16px rgba(11,18,32,.35)", padding:6 }}>
           <input autoFocus placeholder="Search deals…" value={q} onChange={e => setQ(e.target.value)}
             style={{ width:"100%", border:"1px solid var(--line)", borderRadius:7, padding:"7px 10px", fontSize:13, fontFamily:"inherit", outline:"none", marginBottom:4 }} />
           <div style={{ maxHeight: 220, overflowY: "auto" }}>
@@ -2227,7 +2227,7 @@ function QcForm({ onSubmit, onCancel, defaultOrg, defaultPassportId, deals, init
         )}
       </div>
       <div style={{ display:"flex", gap:8, justifyContent:"flex-end" }}>
-        <button className="btn ghost" style={{ color:"var(--muted)", border:"1px solid var(--line)", background:"#fff" }} onClick={onCancel}>Cancel</button>
+        <button className="btn ghost" style={{ color:"var(--muted)", border:"1px solid var(--line)", background:"var(--card)" }} onClick={onCancel}>Cancel</button>
         <button className="btn solid" onClick={submit}><Camera size={13} /> {initial ? "Save changes" : "Save QC entry"}</button>
       </div>
     </div>
@@ -2354,7 +2354,7 @@ function IprImportModal({ deals, onClose, onDone, toast }) {
 
   return (
     <div onClick={onClose} style={{ position:"fixed", inset:0, zIndex:200, background:"rgba(8,18,28,.45)", display:"flex", alignItems:"flex-start", justifyContent:"center", padding:"6vh 16px", overflowY:"auto" }}>
-      <div onClick={e => e.stopPropagation()} style={{ width:"100%", maxWidth:760, background:"#fff", borderRadius:16, border:"1px solid var(--line)", boxShadow:"0 30px 80px -20px rgba(11,18,32,.5)", overflow:"hidden" }}>
+      <div onClick={e => e.stopPropagation()} style={{ width:"100%", maxWidth:760, background:"var(--card)", borderRadius:16, border:"1px solid var(--line)", boxShadow:"0 30px 80px -20px rgba(11,18,32,.5)", overflow:"hidden" }}>
         <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", padding:"16px 20px", borderBottom:"1px solid var(--line)" }}>
           <div style={{ display:"flex", alignItems:"center", gap:9 }}>
             <Satellite size={17} color="var(--accent-deep)" />
@@ -2438,7 +2438,7 @@ function IprImportModal({ deals, onClose, onDone, toast }) {
         </div>
 
         <div style={{ display:"flex", gap:8, justifyContent:"flex-end", padding:"14px 20px", borderTop:"1px solid var(--line)" }}>
-          <button className="btn ghost" style={{ color:"var(--muted)", border:"1px solid var(--line)", background:"#fff" }} onClick={onClose}>Cancel</button>
+          <button className="btn ghost" style={{ color:"var(--muted)", border:"1px solid var(--line)", background:"var(--card)" }} onClick={onClose}>Cancel</button>
           <button className="btn solid" onClick={doImport} disabled={importing || selected.size === 0}>
             {importing ? <><RefreshCw size={13} className="spin" /> Importing…</> : <><Plus size={13} /> Import {selected.size || ""} to QC</>}
           </button>
@@ -2515,10 +2515,10 @@ function QualityChecksGlobal({ deals, canEdit, onOpen, toast }) {
           </div>
           {canEdit && !showForm && !editRow && (
             <>
-              <button className="btn ghost" style={{ color:"var(--accent-deep)", border:"1px solid var(--line)", background:"#fff" }} onClick={syncCaptured} disabled={syncing} title="Pull newly captured images (Sent to Aurora / Datahub upload completed) for all deals">
+              <button className="btn ghost" style={{ color:"var(--accent-deep)", border:"1px solid var(--line)", background:"var(--card)" }} onClick={syncCaptured} disabled={syncing} title="Pull newly captured images (Sent to Aurora / Datahub upload completed) for all deals">
                 {syncing ? <><RefreshCw size={14} className="spin" /> Syncing…</> : <><RefreshCw size={14} /> Sync captured images</>}
               </button>
-              <button className="btn ghost" style={{ color:"var(--accent-deep)", border:"1px solid var(--line)", background:"#fff" }} onClick={() => setShowImport(true)}><Satellite size={14} /> Import from IPR</button>
+              <button className="btn ghost" style={{ color:"var(--accent-deep)", border:"1px solid var(--line)", background:"var(--card)" }} onClick={() => setShowImport(true)}><Satellite size={14} /> Import from IPR</button>
               <button className="btn solid" onClick={() => setShowForm(true)}><Plus size={14} /> New QC entry</button>
             </>
           )}
@@ -2536,7 +2536,7 @@ function QualityChecksGlobal({ deals, canEdit, onOpen, toast }) {
       )}
 
       {loading ? <div className="empty"><RefreshCw size={15} className="spin" /> Loading…</div> : (
-        <div style={{ overflowX: "auto", background:"#fff", border:"1px solid var(--line)", borderRadius: 14 }}>
+        <div style={{ overflowX: "auto", background:"var(--card)", border:"1px solid var(--line)", borderRadius: 14 }}>
           <table className="qc-table">
             <thead>
               <tr>
@@ -2713,7 +2713,7 @@ function NotionLeafletMap({ action, colorBy, colorRules, fields, titleFields, th
   return (
     <div style={{ position: "relative" }}>
       <div ref={containerRef} style={{ height: "70vh", width: "100%", borderRadius: 12, overflow: "hidden", border: "1px solid var(--line)" }} />
-      <div style={{ position: "absolute", top: 12, left: 12, zIndex: 500, background: "#fff", border: "1px solid var(--line)", borderRadius: 8, padding: "6px 12px", fontSize: 12.5, color: "var(--muted)", display: "flex", alignItems: "center", gap: 7 }}>
+      <div style={{ position: "absolute", top: 12, left: 12, zIndex: 500, background: "var(--card)", border: "1px solid var(--line)", borderRadius: 8, padding: "6px 12px", fontSize: 12.5, color: "var(--muted)", display: "flex", alignItems: "center", gap: 7 }}>
         {status === "loading" ? <><RefreshCw size={13} className="spin" /> Loading from Notion…</>
           : status === "error" ? <><AlertTriangle size={13} color="var(--bad)" /> Couldn't load from Notion</>
           : <>{count} location{count !== 1 ? "s" : ""}</>}
@@ -2746,7 +2746,7 @@ function MapsGlobal() {
   const cfg = which === "sample" ? SAMPLE_MAP_CONFIG : EXHIBITS_MAP_CONFIG;
   const segBtn = (active) => ({
     padding: "7px 14px", fontSize: 12.5, fontWeight: 500, cursor: "pointer", border: "none",
-    background: active ? "var(--ink)" : "#fff", color: active ? "#fff" : "var(--muted)",
+    background: active ? "var(--ink)" : "var(--card)", color: active ? "var(--surface)" : "var(--muted)",
   });
   return (
     <div className="cp-page-inner">
@@ -2819,7 +2819,7 @@ function MvpSyncModal({ row, deal, onClose, onDone, toast }) {
 
   return (
     <div onClick={onClose} style={{ position: "fixed", inset: 0, background: "rgba(11,18,32,.45)", zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
-      <div onClick={(e) => e.stopPropagation()} style={{ background: "#fff", borderRadius: 16, width: "min(680px,100%)", maxHeight: "88vh", overflowY: "auto", boxShadow: "0 20px 60px -12px rgba(11,18,32,.4)" }}>
+      <div onClick={(e) => e.stopPropagation()} style={{ background: "var(--card)", borderRadius: 16, width: "min(680px,100%)", maxHeight: "88vh", overflowY: "auto", boxShadow: "0 20px 60px -12px rgba(11,18,32,.4)" }}>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "18px 22px", borderBottom: "1px solid var(--line)" }}>
           <div>
             <h3 style={{ margin: 0, fontSize: 16, fontFamily: "var(--font-display)" }}>Sync image to Notion</h3>
@@ -2851,8 +2851,8 @@ function MvpSyncModal({ row, deal, onClose, onDone, toast }) {
           {evidenceUrl && <div style={{ marginTop: 12, fontSize: 11.5, color: "var(--muted2)" }}>Thumbnail prefilled from the QC evidence image.</div>}
         </div>
         <div style={{ display: "flex", justifyContent: "flex-end", gap: 10, padding: "14px 22px", borderTop: "1px solid var(--line)" }}>
-          <button onClick={onClose} style={{ padding: "8px 16px", borderRadius: 8, border: "1px solid var(--line)", background: "#fff", color: "var(--muted)", fontSize: 12.5, fontWeight: 500, cursor: "pointer" }}>Cancel</button>
-          <button onClick={submit} disabled={saving} style={{ padding: "8px 18px", borderRadius: 8, border: "none", background: "var(--ink)", color: "#fff", fontSize: 12.5, fontWeight: 600, cursor: saving ? "wait" : "pointer", display: "inline-flex", alignItems: "center", gap: 6 }}>
+          <button onClick={onClose} style={{ padding: "8px 16px", borderRadius: 8, border: "1px solid var(--line)", background: "var(--card)", color: "var(--muted)", fontSize: 12.5, fontWeight: 500, cursor: "pointer" }}>Cancel</button>
+          <button onClick={submit} disabled={saving} style={{ padding: "8px 18px", borderRadius: 8, border: "none", background: "var(--ink)", color: "var(--surface)", fontSize: 12.5, fontWeight: 600, cursor: saving ? "wait" : "pointer", display: "inline-flex", alignItems: "center", gap: 6 }}>
             {saving ? <><RefreshCw size={13} className="spin" /> Syncing…</> : <><Send size={13} /> Sync to Notion</>}
           </button>
         </div>
@@ -2941,7 +2941,7 @@ function MvpImagesGlobal({ deals, canEdit, onOpen, toast }) {
 
       {loading ? <div className="empty"><RefreshCw size={15} className="spin" /> Loading…</div> : (
         rows.length ? (
-          <div style={{ overflowX: "auto", background:"#fff", border:"1px solid var(--line)", borderRadius: 14 }}>
+          <div style={{ overflowX: "auto", background:"var(--card)", border:"1px solid var(--line)", borderRadius: 14 }}>
             <table className="qc-table">
               <thead>
                 <tr>
@@ -2977,7 +2977,7 @@ function MvpImagesGlobal({ deals, canEdit, onOpen, toast }) {
                             </span>
                           ) : (
                             <button onClick={() => setSyncRow(r)}
-                              style={{ display:"inline-flex", alignItems:"center", gap:5, padding:"5px 10px", borderRadius:7, border:"1px solid var(--line)", background:"#fff", color:"var(--accent-deep)", fontSize:11.5, fontWeight:500, cursor:"pointer", whiteSpace:"nowrap" }}>
+                              style={{ display:"inline-flex", alignItems:"center", gap:5, padding:"5px 10px", borderRadius:7, border:"1px solid var(--line)", background:"var(--card)", color:"var(--accent-deep)", fontSize:11.5, fontWeight:500, cursor:"pointer", whiteSpace:"nowrap" }}>
                               <ExternalLink size={11} /> Add details &amp; sync
                             </button>
                           )
@@ -3012,7 +3012,7 @@ function HandoverStatus({ d, canEdit, onUpdate }) {
     <div style={{
       display: "flex", alignItems: "center", gap: 12, padding: "12px 14px", borderRadius: 12,
       border: "1px solid " + (on ? "#bfe6cf" : "var(--line)"),
-      background: on ? "#F2FBF6" : "#fff", flex: 1, minWidth: 240,
+      background: on ? "rgba(47,182,122,.12)" : "var(--card)", flex: 1, minWidth: 240,
     }}>
       <div style={{
         width: 34, height: 34, borderRadius: 9, flex: "none", display: "flex", alignItems: "center", justifyContent: "center",
@@ -3043,7 +3043,7 @@ function HandoverStatus({ d, canEdit, onUpdate }) {
           style={{
             flex: "none", padding: "6px 12px", borderRadius: 8, fontSize: 12, fontWeight: 600, cursor: "pointer",
             border: "1px solid " + (on ? "var(--line)" : accent),
-            background: on ? "#fff" : accent, color: on ? "var(--muted)" : "#fff",
+            background: on ? "var(--card)" : accent, color: on ? "var(--muted)" : "#fff",
           }}>
           {on ? "Undo" : "Mark handed over"}
         </button>
@@ -3064,7 +3064,7 @@ function HandoverStatus({ d, canEdit, onUpdate }) {
         <div style={{
           display: "flex", alignItems: "center", gap: 12, padding: "12px 14px", borderRadius: 12,
           border: "1px solid " + (h.backToSe ? "#F0C99A" : "var(--line)"),
-          background: h.backToSe ? "#FEF6EC" : "#fff", flex: 1, minWidth: 240,
+          background: h.backToSe ? "rgba(224,122,43,.12)" : "var(--card)", flex: 1, minWidth: 240,
         }}>
           <div style={{
             width: 34, height: 34, borderRadius: 9, flex: "none", display: "flex", alignItems: "center", justifyContent: "center",
@@ -3091,7 +3091,7 @@ function HandoverStatus({ d, canEdit, onUpdate }) {
           </div>
           {canEdit && (h.backToSe
             ? <button onClick={() => onUpdate({ _handbackToSe: { value: false } })}
-                style={{ flex: "none", padding: "6px 12px", borderRadius: 8, fontSize: 12, fontWeight: 600, cursor: "pointer", border: "1px solid var(--line)", background: "#fff", color: "var(--muted)" }}>Clear</button>
+                style={{ flex: "none", padding: "6px 12px", borderRadius: 8, fontSize: 12, fontWeight: 600, cursor: "pointer", border: "1px solid var(--line)", background: "var(--card)", color: "var(--muted)" }}>Clear</button>
             : <button onClick={() => setHandbackOpen(o => !o)}
                 style={{ flex: "none", padding: "6px 12px", borderRadius: 8, fontSize: 12, fontWeight: 600, cursor: "pointer", border: "1px solid #C77C1E", background: "#C77C1E", color: "#fff" }}>Hand back to SE</button>
           )}
@@ -3107,7 +3107,7 @@ function HandoverStatus({ d, canEdit, onUpdate }) {
           <button onClick={() => { onUpdate({ _handbackToSe: { value: true, note: handbackNote.trim() } }); setHandbackOpen(false); setHandbackNote(""); }}
             style={{ padding: "8px 14px", borderRadius: 8, border: "none", background: "#C77C1E", color: "#fff", fontSize: 12.5, fontWeight: 600, cursor: "pointer" }}>Confirm hand-back</button>
           <button onClick={() => { setHandbackOpen(false); setHandbackNote(""); }}
-            style={{ padding: "8px 14px", borderRadius: 8, border: "1px solid var(--line)", background: "#fff", color: "var(--muted)", fontSize: 12.5, cursor: "pointer" }}>Cancel</button>
+            style={{ padding: "8px 14px", borderRadius: 8, border: "1px solid var(--line)", background: "var(--card)", color: "var(--muted)", fontSize: 12.5, cursor: "pointer" }}>Cancel</button>
         </div>
       )}
     </div>
@@ -4115,7 +4115,7 @@ function CaptureLog({ entries, canEdit, onAdd, onEdit, onDelete, onUploadShot })
             </div>
           )}
           <div style={{ display:"flex", gap:8, justifyContent:"flex-end", marginTop:10 }}>
-            <button className="btn ghost" style={{ color:"var(--muted)", border:"1px solid var(--line)", background:"#fff" }} onClick={closeForm}>Cancel</button>
+            <button className="btn ghost" style={{ color:"var(--muted)", border:"1px solid var(--line)", background:"var(--card)" }} onClick={closeForm}>Cancel</button>
             <button className="btn solid" onClick={submit}><Camera size={13} /> {editId ? "Save changes" : "Save event"}</button>
           </div>
         </div>
@@ -4737,7 +4737,7 @@ function NotesTab({ d, canEdit, canPostNote, onUpdate, toast }) {
             {mentionQuery !== null && matches.length > 0 && (
               <div style={{
                 position: "absolute", top: "100%", left: 0, zIndex: 30, marginTop: 4,
-                background: "#fff", border: "1px solid var(--line)", borderRadius: 10,
+                background: "var(--card)", border: "1px solid var(--line)", borderRadius: 10,
                 boxShadow: "0 14px 40px -16px rgba(11,18,32,.35)", padding: 6, minWidth: 240,
               }}>
                 {matches.map((p, i) => (
@@ -5190,7 +5190,7 @@ function FeedbackTab({ d, canEdit, onUpdate, toast }) {
               value={form.keyInsights} onChange={e => setForm(f => ({ ...f, keyInsights: e.target.value }))} />
           </div>
           <div style={{ marginTop: 12, display:"flex", justifyContent:"flex-end", gap:8 }}>
-            <button className="btn ghost" style={{ color:"var(--muted)", border:"1px solid var(--line)", background:"#fff" }} onClick={() => setShowForm(false)}>Cancel</button>
+            <button className="btn ghost" style={{ color:"var(--muted)", border:"1px solid var(--line)", background:"var(--card)" }} onClick={() => setShowForm(false)}>Cancel</button>
             <button className="btn solid" onClick={submitFeedback}><Send size={13} /> Save entry</button>
           </div>
         </div>
@@ -5268,7 +5268,7 @@ function FeedbackTab({ d, canEdit, onUpdate, toast }) {
                 ) : canEdit ? (
                   <div style={{ marginTop: 14 }}>
                     <button onClick={() => syncOne(fb)} disabled={syncingId === fb.id}
-                      style={{ display:"inline-flex", alignItems:"center", gap:6, padding:"6px 12px", borderRadius:8, border:"1px solid var(--line)", background:"#fff", color:"var(--accent-deep)", fontSize:12, fontWeight:500, cursor: syncingId === fb.id ? "wait" : "pointer" }}>
+                      style={{ display:"inline-flex", alignItems:"center", gap:6, padding:"6px 12px", borderRadius:8, border:"1px solid var(--line)", background:"var(--card)", color:"var(--accent-deep)", fontSize:12, fontWeight:500, cursor: syncingId === fb.id ? "wait" : "pointer" }}>
                       {syncingId === fb.id ? <><RefreshCw size={12} className="spin" /> Syncing…</> : <><ExternalLink size={12} /> Sync to Notion</>}
                     </button>
                   </div>
@@ -5505,9 +5505,9 @@ function PassportSignInLogo() {
 }
 
 function SignInScreen({ loading }) {
-  const INK = "#0B1220";
-  const MUTED = "#7C8595";
-  const ACCENT = "#0EA5B7";
+  const INK = "#04060B";
+  const MUTED = "#8A97A4";
+  const ACCENT = "#03d4ff";
   return (
     <div style={{
       minHeight: "100vh", background: INK, display: "flex",
@@ -5525,7 +5525,7 @@ function SignInScreen({ loading }) {
           <PassportSignInLogo />
         </div>
 
-        <h1 style={{ color: "white", fontFamily: "'Space Grotesk',sans-serif", fontSize: 28, fontWeight: 700, marginBottom: 8, letterSpacing: -0.5 }}>
+        <h1 style={{ color: "white", fontFamily: "'Barlow',sans-serif", fontSize: 28, fontWeight: 600, marginBottom: 8, letterSpacing: -0.5 }}>
           Welcome back
         </h1>
         <p style={{ color: MUTED, fontSize: 14, marginBottom: 40, lineHeight: 1.6 }}>
@@ -6694,13 +6694,13 @@ export default function App() {
   // Non-pixxel email — blocked entirely
   if (currentUser.role === "denied") {
     return (
-      <div style={{ minHeight:"100vh", background:"var(--ink)", display:"flex", alignItems:"center", justifyContent:"center", flexDirection:"column", fontFamily:"Inter,sans-serif", textAlign:"center", padding:"0 24px" }}>
-        <div style={{ color:"var(--muted2)", marginBottom:16 }}>
+      <div style={{ minHeight:"100vh", background:"#04060B", display:"flex", alignItems:"center", justifyContent:"center", flexDirection:"column", fontFamily:"Inter,sans-serif", textAlign:"center", padding:"0 24px" }}>
+        <div style={{ color:"#8A97A4", marginBottom:16 }}>
           <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><circle cx="12" cy="12" r="10"/><path d="M15 9l-6 6M9 9l6 6"/></svg>
         </div>
-        <h2 style={{ color:"white", fontFamily:"'Space Grotesk',sans-serif", marginBottom:8 }}>Access Denied</h2>
-        <p style={{ color:"var(--muted2)", fontSize:14, marginBottom:24 }}>This tool is only accessible to the Pixxel team.<br/>You signed in as <code style={{ color:"var(--accent)" }}>{currentUser.email}</code></p>
-        <button onClick={() => signOut()} style={{ padding:"10px 20px", borderRadius:8, border:"1px solid var(--line)", background:"transparent", color:"white", cursor:"pointer" }}>Sign out and try again</button>
+        <h2 style={{ color:"white", fontFamily:"'Barlow',sans-serif", marginBottom:8 }}>Access Denied</h2>
+        <p style={{ color:"#8A97A4", fontSize:14, marginBottom:24 }}>This tool is only accessible to the Pixxel team.<br/>You signed in as <code style={{ color:"#03d4ff" }}>{currentUser.email}</code></p>
+        <button onClick={() => signOut()} style={{ padding:"10px 20px", borderRadius:8, border:"1px solid #1C2430", background:"transparent", color:"white", cursor:"pointer" }}>Sign out and try again</button>
       </div>
     );
   }
