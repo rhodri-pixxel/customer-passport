@@ -11,7 +11,7 @@ import "./FileDropzone.css";
  */
 export default function FileDropzone({
   onFiles,
-  accept = ".geojson,.json,.kml,.zip",
+  accept = "",
   multiple = false,
   title = "Upload AOI file",
   hint = "Drag & drop, or click to browse",
@@ -48,7 +48,7 @@ export default function FileDropzone({
     >
       <div className="fdz-grid" />
       <div className="fdz-title">{title}</div>
-      <div className="fdz-sub">{hint} · <span className="mono">{accept.replace(/,/g, " ")}</span></div>
+      <div className="fdz-sub">{hint}{accept ? <> · <span className="mono">{accept.replace(/,/g, " ")}</span></> : null}</div>
 
       <div className="fdz-stage">
         <div className="fdz-plate"><Upload size={20} /></div>
@@ -58,7 +58,7 @@ export default function FileDropzone({
       <input
         ref={inputRef}
         type="file"
-        accept={accept}
+        accept={accept || undefined}
         multiple={multiple}
         hidden
         onClick={(e) => e.stopPropagation()}

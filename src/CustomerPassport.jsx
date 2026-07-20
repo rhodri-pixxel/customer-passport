@@ -77,7 +77,7 @@ const CSS = `
   font-size:12px;font-weight:500;color:var(--muted);}
 .cp-viewtoggle button.on{background:var(--card);color:var(--ink);box-shadow:0 1px 2px rgba(0,0,0,.3);}
 
-.cp-page{max-width:1180px;margin:0 auto;padding:26px 24px 80px;}
+.cp-page{max-width:1180px;margin:0 auto;padding:26px 24px 80px;position:relative;z-index:1;}
 
 /* readonly banner */
 .cp-banner{display:flex;align-items:center;gap:10px;background:rgba(224,176,43,.1);
@@ -150,7 +150,7 @@ const CSS = `
   background-size:34px 34px;
   mask-image:radial-gradient(120% 120% at 80% -10%,#000,transparent 70%);}
 .cp-head .spectral{position:absolute;top:0;left:0;right:0;height:3px;
-  background:linear-gradient(90deg,#6D5DF6,#2D7FF9,#0EA5B7,#2FB67A,#E0B02B,#E5564B);}
+  background:linear-gradient(90deg,#03d4ff,#06bdff,#00ffbb,#98eb00,#ecb423,#f76e2f);}
 .cp-head .htop{display:flex;justify-content:space-between;align-items:flex-start;gap:20px;
   position:relative;}
 .cp-head h1{font-family:var(--font-display);font-size:24px;font-weight:600;margin:0;
@@ -162,9 +162,11 @@ const CSS = `
 .btn{display:inline-flex;align-items:center;gap:7px;padding:8px 13px;border-radius:9px;
   font-size:12.5px;font-weight:500;transition:.12s;}
 .btn.ghost{background:rgba(255,255,255,.08);color:#dbe6f2;border:1px solid rgba(255,255,255,.12);}
-.btn.ghost:hover{background:rgba(255,255,255,.15);}
-.btn.solid{background:var(--accent);color:#06262b;font-weight:600;}
-.btn.solid:hover{background:#15b9cc;}
+.btn.ghost:hover{background:rgba(255,255,255,.15);border-color:rgba(3,212,255,.5);
+  box-shadow:0 0 12px rgba(3,212,255,.22);}
+.btn.solid{background:var(--accent);color:#001018;font-weight:600;
+  box-shadow:0 0 14px rgba(3,212,255,.28);}
+.btn.solid:hover{background:#3fe0ff;box-shadow:0 0 22px rgba(3,212,255,.5);}
 .btn:disabled{opacity:.45;cursor:not-allowed;}
 
 /* stage progress */
@@ -172,7 +174,8 @@ const CSS = `
 .stage-seg{flex:1;}
 .stage-seg .bar{height:5px;border-radius:3px;background:rgba(255,255,255,.13);}
 .stage-seg.done .bar{background:var(--accent);}
-.stage-seg.cur .bar{background:linear-gradient(90deg,var(--accent),#7fe3ee);}
+.stage-seg.cur .bar{background:linear-gradient(90deg,var(--accent),#66e7ff);
+  box-shadow:0 0 10px rgba(3,212,255,.45);}
 .stage-seg .lbl{font-size:9.5px;margin-top:7px;color:#7e93aa;font-weight:500;
   white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
 .stage-seg.done .lbl,.stage-seg.cur .lbl{color:#cfe0f0;}
@@ -196,7 +199,24 @@ const CSS = `
 .add-row{display:inline-flex;align-items:center;gap:7px;padding:8px 12px;border:1px dashed var(--line);
   border-radius:9px;background:transparent;color:var(--accent-deep);font-size:12.5px;font-weight:500;
   cursor:pointer;margin-top:6px;width:100%;justify-content:center;}
-.add-row:hover{border-color:var(--accent);background:var(--accent-soft);}
+.add-row:hover{border-color:var(--accent);background:var(--accent-soft);
+  box-shadow:0 0 12px rgba(3,212,255,.22);}
+
+/* ── Neon interaction layer (brand: glow draws focus to CTAs) ── */
+.cp-root button:focus-visible,.cp-root input:focus-visible,.cp-root select:focus-visible,
+.cp-root textarea:focus-visible,.cp-root label:focus-visible{
+  outline:2px solid var(--accent);outline-offset:2px;border-radius:6px;}
+.cp-nav button.on{box-shadow:0 0 14px rgba(3,212,255,.28);}
+.readiness-panel{transition:border-color .2s,box-shadow .2s;}
+.readiness-panel:hover{box-shadow:0 0 18px rgba(3,212,255,.16);}
+.ap-item:hover{box-shadow:0 0 14px rgba(3,212,255,.14);}
+.fb-card{transition:border-color .2s,box-shadow .2s;}
+.fb-card:hover{border-color:rgba(3,212,255,.45);box-shadow:0 0 18px rgba(3,212,255,.14);}
+.attach{transition:border-color .2s,box-shadow .2s;}
+.attach:hover{border-color:rgba(3,212,255,.45);box-shadow:0 0 14px rgba(3,212,255,.14);}
+.bell .btn-bell:hover{box-shadow:0 0 12px rgba(3,212,255,.22);}
+.fb-notion-btn:hover{box-shadow:0 0 12px rgba(3,212,255,.2);}
+.hs-pill .syncnow:hover,.slack-btn:hover{box-shadow:0 0 10px rgba(3,212,255,.2);}
 .qc-table{width:100%;border-collapse:collapse;font-size:12.5px;}
 .qc-table th{text-align:left;padding:10px 12px;font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;
   color:var(--muted2);border-bottom:1px solid var(--line);white-space:nowrap;}
@@ -206,7 +226,7 @@ const CSS = `
 .seg{display:inline-flex;border:1px solid var(--line);border-radius:9px;padding:2px;background:var(--card);}
 .seg button{padding:6px 13px;border-radius:7px;border:none;background:transparent;font-size:12.5px;
   color:var(--muted);cursor:pointer;font-weight:500;}
-.seg button.on{background:var(--accent);color:#fff;}
+.seg button.on{background:var(--accent);color:#001018;box-shadow:0 0 12px rgba(3,212,255,.35);}
 @keyframes spin{to{transform:rotate(360deg);}}
 .spin{animation:spin 0.9s linear infinite;}
 
@@ -315,7 +335,7 @@ const CSS = `
 .barlist .br{display:grid;grid-template-columns:150px 1fr 38px;align-items:center;gap:12px;
   font-size:12.5px;}
 .barlist .track{height:8px;background:var(--line-soft);border-radius:5px;overflow:hidden;}
-.barlist .fill{height:100%;border-radius:5px;background:linear-gradient(90deg,var(--accent),#6fd9e6);}
+.barlist .fill{height:100%;border-radius:5px;background:linear-gradient(90deg,var(--accent),#66e7ff);}
 .alert-row{display:flex;align-items:center;gap:12px;padding:11px 0;border-top:1px solid var(--line-soft);
   cursor:pointer;}
 .alert-row:first-child{border-top:none;}
@@ -328,7 +348,7 @@ const CSS = `
   background:var(--ink);color:var(--surface);padding:12px 18px;border-radius:12px;font-size:13px;
   display:flex;align-items:center;gap:10px;box-shadow:0 16px 40px -12px rgba(11,18,32,.5);}
 .toast .spectral-dot{width:7px;height:7px;border-radius:50%;
-  background:linear-gradient(90deg,#0EA5B7,#2FB67A);}
+  background:linear-gradient(90deg,#03d4ff,#00ffbb);}
 
 .section-title{font-family:var(--font-display);font-size:18px;font-weight:600;margin:0 0 4px;
   letter-spacing:-.01em;}
@@ -1759,7 +1779,7 @@ function exportPassportPdf(deal) {
 <style>
   * { box-sizing: border-box; }
   body { font-family: -apple-system, "Segoe UI", Roboto, sans-serif; color: #1a2230; margin: 0; padding: 40px; line-height: 1.5; }
-  .bar { height: 4px; background: linear-gradient(90deg,#7B2FBE,#2D7FF9,#0EA5B7,#2FB67A,#F0A429,#E5564B); margin: -40px -40px 28px; }
+  .bar { height: 4px; background: linear-gradient(90deg,#03d4ff,#06bdff,#00ffbb,#98eb00,#ecb423,#f76e2f); margin: -40px -40px 28px; }
   h1 { font-size: 22px; margin: 0 0 4px; }
   .sub { color: #6b7480; font-size: 12px; font-family: monospace; margin-bottom: 24px; }
   h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .08em; color: #0B7E8C; border-bottom: 1px solid #e3e8ef; padding-bottom: 5px; margin: 24px 0 10px; }
@@ -3420,18 +3440,19 @@ function FeasibilityFiles({ files, canEdit, onUpload, onAddLink, onRemove, title
       )}
       {canEdit && !atLimit && (
         <>
-          <div style={{ display:"flex", gap:8, flexWrap:"wrap" }}>
-            <label htmlFor={inputId} className="add-row" style={{ cursor: busy?"wait":"pointer", margin:0, flex:1, minWidth:120 }}>
-              <Upload size={13} /> {busy ? "Uploading…" : "Upload file"}
-            </label>
-            {showLink && (
-              <button onClick={() => setLinkOpen(o => !o)} className="add-row" style={{ margin:0, flex:1, minWidth:120 }}>
-                <Link2 size={13} /> Add link
-              </button>
-            )}
-          </div>
-          <input id={inputId} type="file" accept={accept} style={{ display:"none" }}
-            onChange={async (e) => { const f = e.target.files[0]; if (!f) return; setBusy(true); try { await onUpload(f); } finally { setBusy(false); e.target.value=""; } }} />
+          <FileDropzone
+            compact
+            onFiles={async (files) => { const f = files[0]; if (!f) return; setBusy(true); try { await onUpload(f); } finally { setBusy(false); } }}
+            accept={accept}
+            title={busy ? "Uploading…" : "Upload file"}
+            hint="Drag & drop, or click to browse"
+            showList={false}
+          />
+          {showLink && (
+            <button onClick={() => setLinkOpen(o => !o)} className="add-row" style={{ marginTop:8 }}>
+              <Link2 size={13} /> Add link
+            </button>
+          )}
           {linkOpen && (
             <div style={{ display:"flex", flexDirection:"column", gap:8, marginTop:8 }}>
               <input autoFocus placeholder="Label (e.g. Feasibility report Q1)" value={linkName} onChange={e => setLinkName(e.target.value)}
@@ -4901,16 +4922,16 @@ function AttachmentsManager({ attachments, canEdit, onUpload, onAddLink, onDelet
       )) : !linkOpen && <div className="empty"><Paperclip size={15} /> No attachments.</div>}
       {canEdit && (
         <>
-          <div style={{ display:"flex", gap:8, marginTop:8, flexWrap:"wrap" }}>
-            <label htmlFor={inputId} className="add-row" style={{ cursor: busy?"wait":"pointer", margin:0, flex:1, minWidth:140 }}>
-              <Upload size={14} /> {busy ? "Uploading…" : "Upload file"}
-            </label>
-            <button onClick={() => setLinkOpen(o => !o)} className="add-row" style={{ margin:0, flex:1, minWidth:140 }}>
-              <Link2 size={14} /> Add link
-            </button>
-          </div>
-          <input id={inputId} type="file" style={{ display:"none" }}
-            onChange={async (e) => { const f = e.target.files[0]; if (!f) return; setBusy(true); try { await onUpload(f); } finally { setBusy(false); e.target.value=""; } }} />
+          <FileDropzone
+            compact
+            onFiles={async (files) => { const f = files[0]; if (!f) return; setBusy(true); try { await onUpload(f); } finally { setBusy(false); } }}
+            title={busy ? "Uploading…" : "Upload file"}
+            hint="Drag & drop, or click to browse"
+            showList={false}
+          />
+          <button onClick={() => setLinkOpen(o => !o)} className="add-row" style={{ marginTop:8 }}>
+            <Link2 size={14} /> Add link
+          </button>
           {linkOpen && (
             <div style={{ display:"flex", flexDirection:"column", gap:8, marginTop:8 }}>
               <input autoFocus placeholder="Label (e.g. Delivery folder — Google Drive)" value={linkName} onChange={e => setLinkName(e.target.value)}
@@ -6962,6 +6983,8 @@ function AppMain({ currentUser, canEdit, canPostNote, onSignOut }) {
   return (
     <div className="cp-root">
       <style>{CSS}</style>
+      {/* Ambient aurora — the brand liquid backdrop behind every view */}
+      <AuroraBackground opacity={0.5} style={{ position: "fixed", zIndex: 0 }} />
 
       <div className="cp-top">
         <div className="cp-brand">
