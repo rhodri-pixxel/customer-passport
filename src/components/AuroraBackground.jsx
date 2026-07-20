@@ -12,7 +12,7 @@ const COLORS = [
   [0, 255, 187],   // bright turquoise
 ];
 
-export default function AuroraBackground({ blobCount = 11, blur = 14, opacity = 1, style = {} }) {
+export default function AuroraBackground({ blobCount = 14, blur = 16, opacity = 0.55, style = {} }) {
   const canvasRef = useRef(null);
 
   useEffect(() => {
@@ -25,8 +25,8 @@ export default function AuroraBackground({ blobCount = 11, blur = 14, opacity = 
     let W = 0, H = 0, t = 0, raf = 0, alive = true;
     const blobs = Array.from({ length: blobCount }, (_, i) => ({
       x: Math.random(), y: Math.random(),
-      vx: (Math.random() - 0.5) * 0.0022, vy: (Math.random() - 0.5) * 0.0022,
-      r: 0.24 + Math.random() * 0.24,
+      vx: (Math.random() - 0.5) * 0.0024, vy: (Math.random() - 0.5) * 0.0024,
+      r: 0.30 + Math.random() * 0.30,
       c: COLORS[i % COLORS.length],
       ph: Math.random() * 6.28,
     }));
@@ -71,7 +71,8 @@ export default function AuroraBackground({ blobCount = 11, blur = 14, opacity = 
         const px = b.x * W, py = b.y * H;
         const rr = b.r * Math.min(W, H) * (1 + 0.08 * Math.sin(t + b.ph));
         const g = ctx.createRadialGradient(px, py, 0, px, py, rr);
-        g.addColorStop(0, `rgba(${b.c[0]},${b.c[1]},${b.c[2]},.5)`);
+        g.addColorStop(0, `rgba(${b.c[0]},${b.c[1]},${b.c[2]},.78)`);
+        g.addColorStop(0.5, `rgba(${b.c[0]},${b.c[1]},${b.c[2]},.34)`);
         g.addColorStop(1, `rgba(${b.c[0]},${b.c[1]},${b.c[2]},0)`);
         ctx.fillStyle = g;
         ctx.beginPath();
@@ -98,7 +99,7 @@ export default function AuroraBackground({ blobCount = 11, blur = 14, opacity = 
       aria-hidden="true"
       style={{
         position: "absolute", inset: 0, width: "100%", height: "100%",
-        filter: `blur(${blur}px) saturate(1.2)`, opacity,
+        filter: `blur(${blur}px) saturate(1.35)`, opacity,
         pointerEvents: "none", ...style,
       }}
     />

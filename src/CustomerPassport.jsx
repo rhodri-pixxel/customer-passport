@@ -23,21 +23,27 @@ import { ParticleCard, GlobalSpotlight } from "./components/MagicBento.jsx";
 /*  Design system (spectral / Earth-observation theme)                */
 /* ------------------------------------------------------------------ */
 const CSS = `
-@import url('https://fonts.googleapis.com/css2?family=Barlow:wght@400;500;600;700&family=Inter:wght@300;400;450;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Familjen+Grotesk:wght@400;500;600&family=Hanken+Grotesk:wght@300;400;500;600&family=Fragment+Mono&display=swap');
 
 .cp-root{
-  /* ── Fused system: electric blue as the single signal on a near-void canvas ── */
+  /* ── Fused system (design handoff): electric is the only chromatic voice ── */
   --ink:#EDF4F9; --ink2:#C2CEDA; --muted:#7E8B99; --muted2:#525D6B;
-  --line:#1B2331; --line-soft:#101522; --surface:#04050A; --card:#0B101A; --raised:#101724;
-  --accent:#03d4ff; --accent-deep:#5FE6FF; --accent-soft:rgba(3,212,255,.12); --accent-bright:#03d4ff; --sky:#06bdff;
+  --line:#1B2331; --hair2:#26303F; --line-soft:#101522; --surface:#04050A; --card:#0B101A; --raised:#101724;
+  --accent:#03d4ff; --accent-deep:#5FE6FF; --accent-soft:rgba(3,212,255,.12); --accent-bright:#03d4ff;
+  --sky:#06bdff; --turq:#00ffbb;
+  /* geometry — two radii only */
+  --r-control:9999px; --r-container:18px;
+  /* elevation is shadow, not glow */
+  --shadow-1:0 10px 40px rgba(0,0,0,.35); --shadow-2:0 20px 50px rgba(0,0,0,.5);
+  --glow-electric:0 0 16px rgba(3,212,255,.3); --hairline-hover:rgba(3,212,255,.5);
   --se:#2D7FF9; --se-soft:rgba(45,127,249,.16); --cs:#E07A2B; --cs-soft:rgba(224,122,43,.16);
   --an:#7A5AF5; --an-soft:rgba(122,90,245,.18);
   --ok:#2FB67A; --warn:#E0B02B; --bad:#E5564B;
   /* industry-wise sector colours (from brand guidelines) */
   --agri:#98eb00; --energy:#ecb423; --mining:#f76e2f; --env:#00ffbb; --gov:#06bdff; --forest:#00c030;
-  --font-display:'Barlow',ui-sans-serif,system-ui,sans-serif;
-  --font-body:'Inter',ui-sans-serif,system-ui,sans-serif;
-  --font-mono:'IBM Plex Mono',ui-monospace,monospace;
+  --font-display:'Familjen Grotesk',ui-sans-serif,system-ui,sans-serif;
+  --font-body:'Hanken Grotesk',ui-sans-serif,system-ui,sans-serif;
+  --font-mono:'Fragment Mono',ui-monospace,'SFMono-Regular',monospace;
   font-family:var(--font-body); font-weight:300; color:var(--ink); background:var(--surface);
   min-height:100vh; -webkit-font-smoothing:antialiased;
 }
@@ -57,8 +63,9 @@ const CSS = `
 .disp{font-family:var(--font-display);}
 
 /* top bar */
-.cp-top{position:sticky;top:0;z-index:30;display:flex;align-items:center;gap:18px;
-  padding:12px 24px;background:color-mix(in srgb,var(--surface) 82%,transparent);backdrop-filter:blur(10px);
+/* A5 global header — segmented nav pill, demoted status cluster */
+.cp-top{position:sticky;top:0;z-index:30;display:flex;align-items:center;gap:16px;
+  padding:14px 26px;background:rgba(4,5,10,.72);backdrop-filter:blur(10px);
   border-bottom:1px solid var(--line);}
 .cp-brand{display:flex;align-items:center;gap:10px;font-family:var(--font-display);
   font-weight:600;font-size:15px;letter-spacing:-.01em;}
@@ -66,11 +73,13 @@ const CSS = `
   background:linear-gradient(135deg,#0B1220,#13314a);color:#fff;}
 .cp-brand small{display:block;font-family:var(--font-mono);font-weight:500;font-size:9.5px;
   letter-spacing:.14em;color:var(--muted2);text-transform:uppercase;margin-top:1px;}
-.cp-nav{display:flex;gap:4px;margin-left:6px;}
-.cp-nav button{display:flex;align-items:center;gap:7px;padding:7px 14px;border-radius:9999px;
-  font-size:13px;font-weight:400;color:var(--muted);}
+/* nav is ONE segmented pill, not five loose buttons */
+.cp-nav{display:inline-flex;border:1px solid var(--line);border-radius:var(--r-control);
+  padding:3px;background:rgba(16,23,36,.5);margin-left:4px;}
+.cp-nav button{display:flex;align-items:center;gap:7px;padding:7px 14px;border-radius:var(--r-control);
+  font-size:12.5px;font-weight:400;color:var(--muted);white-space:nowrap;}
 .cp-nav button.on{background:var(--ink);color:var(--surface);}
-.cp-nav button:not(.on):hover{background:var(--line-soft);color:var(--ink);}
+.cp-nav button:not(.on):hover{color:var(--ink);}
 .cp-spacer{flex:1;}
 .cp-viewtoggle{display:flex;align-items:center;background:var(--line-soft);border-radius:9999px;
   padding:3px;gap:2px;}
@@ -126,7 +135,7 @@ const CSS = `
 .chip{display:inline-flex;align-items:center;gap:6px;padding:4px 9px;border-radius:7px;
   font-size:11px;font-weight:600;letter-spacing:.01em;}
 .chip.live{background:var(--accent-soft);color:var(--accent-deep);}
-.chip.won{background:#E3F7EC;color:#1f8a57;}
+.chip.won{background:rgba(0,192,48,.14);color:var(--forest);}
 .chip.early{background:var(--line-soft);color:var(--muted);}
 
 /* mini ring */
@@ -138,24 +147,43 @@ const CSS = `
   font-weight:500;margin-bottom:16px;}
 .cp-back:hover{color:var(--ink);}
 
-.cp-head{position:relative;overflow:hidden;background:transparent;
-  border-radius:0;border-bottom:1px solid var(--line);
-  padding:20px 0 26px;color:var(--ink);margin-bottom:20px;}
+/* B7 passport header — carded, with the handover timeline as its centrepiece */
+.cp-head{position:relative;overflow:hidden;background:var(--card);
+  border-radius:var(--r-container);border:1px solid var(--line);
+  padding:26px 28px;color:var(--ink);margin-bottom:14px;}
 .cp-head .grat{display:none;}
+.cp-head .spectral{display:none;}
+/* eyebrow pills (deal no. / EAP) */
+.hd-pill{border:1px solid var(--hair2);border-radius:var(--r-control);padding:3px 10px;
+  color:var(--ink2);letter-spacing:.08em;}
+/* handover timeline */
+.hv-line{display:flex;align-items:center;margin-top:30px;}
+.hv-node{text-align:center;flex:none;width:130px;}
+.hv-disc{width:28px;height:28px;border-radius:50%;display:grid;place-items:center;margin:0 auto;
+  font-family:var(--font-mono);font-size:12px;}
+.hv-disc.done{background:var(--accent);color:#001018;}
+.hv-disc.cur{border:2px solid var(--accent);background:var(--card);color:var(--accent);
+  box-shadow:0 0 14px rgba(3,212,255,.4);}
+.hv-disc.todo{border:2px solid var(--muted2);background:var(--card);color:var(--muted2);}
+.hv-node .nm{font-size:12.5px;color:var(--ink);margin-top:9px;}
+.hv-node .dt{font-family:var(--font-mono);font-size:10px;color:var(--muted);margin-top:2px;}
+.hv-bar{height:2px;flex:1;background:var(--line);}
+.hv-bar.done{background:var(--accent);}
+.hv-bar.half{background:linear-gradient(90deg,var(--accent),var(--line));}
 .cp-head .spectral{position:absolute;top:0;left:0;right:0;height:3px;
   background:linear-gradient(90deg,#03d4ff,#06bdff,#00ffbb);}
 .cp-head .htop{display:flex;justify-content:space-between;align-items:flex-start;gap:20px;
   position:relative;}
-.cp-head h1{font-family:var(--font-display);font-size:clamp(26px,3.2vw,36px);font-weight:400;margin:0;
-  letter-spacing:-.025em;line-height:1.1;}
-.cp-head .hsub{display:flex;align-items:center;gap:14px;margin-top:7px;font-size:12.5px;
-  color:#9fb3c9;}
-.cp-head .hsub .dot{width:3px;height:3px;border-radius:50%;background:#54708c;}
+.cp-head h1{font-family:var(--font-display);font-size:clamp(24px,3vw,32px);font-weight:500;margin:14px 0 0;
+  letter-spacing:-.03em;line-height:1.05;max-width:22ch;}
+.cp-head .hsub{display:flex;align-items:center;gap:12px;font-family:var(--font-mono);font-size:11px;
+  letter-spacing:.06em;color:var(--muted);flex-wrap:wrap;}
+.cp-head .hsub .dot{width:3px;height:3px;border-radius:50%;background:var(--muted2);}
 .h-actions{display:flex;gap:8px;flex-wrap:wrap;}
 .btn{display:inline-flex;align-items:center;gap:7px;padding:8px 15px;border-radius:9999px;
   font-size:12.5px;font-weight:500;transition:.12s;}
-.btn.ghost{background:rgba(255,255,255,.08);color:#dbe6f2;border:1px solid rgba(255,255,255,.12);}
-.btn.ghost:hover{background:rgba(255,255,255,.15);border-color:rgba(3,212,255,.5);}
+.btn.ghost{background:transparent;color:var(--ink2);border:1px solid var(--hair2);}
+.btn.ghost:hover{border-color:var(--hairline-hover);color:var(--ink);}
 .btn.solid{background:var(--accent);color:#001018;font-weight:600;
   box-shadow:0 0 14px rgba(3,212,255,.28);}
 .btn.solid:hover{background:#3fe0ff;box-shadow:0 0 22px rgba(3,212,255,.5);}
@@ -164,15 +192,16 @@ const CSS = `
 /* stage progress */
 .stage-bar{display:flex;gap:5px;margin-top:20px;position:relative;}
 .stage-seg{flex:1;}
-.stage-seg .bar{height:5px;border-radius:3px;background:rgba(255,255,255,.13);}
+.stage-seg .bar{height:5px;border-radius:3px;background:var(--line);}
 .stage-seg.done .bar{background:var(--accent);}
 .stage-seg.cur .bar{background:linear-gradient(90deg,var(--accent),#66e7ff);}
-.stage-seg .lbl{font-size:9.5px;margin-top:7px;color:#7e93aa;font-weight:500;
-  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
-.stage-seg.done .lbl,.stage-seg.cur .lbl{color:#cfe0f0;}
+.stage-seg .lbl{font-family:var(--font-mono);font-size:9px;margin-top:7px;color:var(--muted2);
+  letter-spacing:.06em;text-transform:uppercase;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.stage-seg.done .lbl{color:var(--muted);}
+.stage-seg.cur .lbl{color:var(--accent);}
 
 /* ownership + readiness rail */
-.cp-railrow{display:grid;grid-template-columns:1fr auto;gap:16px;margin-bottom:18px;
+.cp-railrow{display:grid;grid-template-columns:1fr 300px;gap:14px;margin-bottom:18px;
   align-items:stretch;}
 @media(max-width:760px){.cp-railrow{grid-template-columns:1fr;}}
 .owners-panel{background:var(--card);border:1px solid var(--line);border-radius:18px;padding:16px 18px;
@@ -233,12 +262,15 @@ const CSS = `
 .cl-item.miss{color:var(--muted2);}
 
 /* tabs */
-.cp-tabs{display:flex;gap:2px;border-bottom:1px solid var(--line);margin-bottom:22px;}
-.cp-tabs button{display:flex;align-items:center;gap:7px;padding:11px 16px;font-size:13.5px;
-  font-weight:500;color:var(--muted);position:relative;}
-.cp-tabs button.on{color:var(--ink);font-weight:600;}
-.cp-tabs button.on::after{content:"";position:absolute;left:12px;right:12px;bottom:-1px;height:2px;
-  background:var(--accent);border-radius:2px;}
+.cp-tabs{display:flex;gap:26px;border-bottom:1px solid var(--line);margin-bottom:22px;flex-wrap:wrap;}
+.cp-tabs button{display:inline-flex;align-items:center;gap:8px;padding:0 0 12px;font-size:13.5px;
+  font-weight:400;color:var(--muted);position:relative;}
+.cp-tabs button:hover{color:var(--ink2);}
+.cp-tabs button.on{color:var(--ink);font-weight:400;}
+.cp-tabs button::after{content:"";position:absolute;left:0;right:0;bottom:-1px;height:2px;
+  background:var(--accent);border-radius:2px;opacity:0;transition:opacity .2s;
+  box-shadow:0 0 10px rgba(3,212,255,.5);}
+.cp-tabs button.on::after{opacity:1;}
 
 /* content blocks */
 .cols{display:grid;grid-template-columns:1fr 1fr;gap:16px;}
@@ -284,8 +316,9 @@ const CSS = `
 .risk:first-child{border-top:none;}
 .risk .sev{font-size:9.5px;font-family:var(--font-mono);font-weight:600;letter-spacing:.08em;
   padding:3px 7px;border-radius:6px;flex:none;text-transform:uppercase;}
-.sev.high{background:#FCE6E4;color:#b13b32;} .sev.med{background:#FBF1D8;color:#9a7415;}
-.sev.low{background:#E7F1FE;color:#2c66c4;}
+.sev.high{background:rgba(247,110,47,.14);color:var(--mining);}
+.sev.med{background:rgba(236,180,35,.14);color:var(--energy);}
+.sev.low{background:rgba(6,189,255,.14);color:var(--gov);}
 
 /* notes / activity */
 .composer{background:var(--card);border:1px solid var(--line);border-radius:18px;padding:14px 16px;
@@ -331,14 +364,17 @@ const CSS = `
 .alert-row .as2{font-size:11.5px;color:var(--muted);}
 
 /* toast */
-.toast{position:fixed;bottom:22px;left:50%;transform:translateX(-50%);z-index:60;
-  background:var(--ink);color:var(--surface);padding:12px 18px;border-radius:12px;font-size:13px;
-  display:flex;align-items:center;gap:10px;box-shadow:0 16px 40px -12px rgba(11,18,32,.5);}
-.toast .spectral-dot{width:7px;height:7px;border-radius:50%;
-  background:linear-gradient(90deg,#03d4ff,#00ffbb);}
+.toast{position:fixed;bottom:28px;left:50%;transform:translateX(-50%);z-index:60;
+  background:var(--raised);color:var(--ink2);border:1px solid var(--line);
+  padding:13px 16px;border-radius:14px;font-size:13px;
+  display:flex;align-items:center;gap:12px;box-shadow:0 18px 46px rgba(0,0,0,.5);}
+.toast b{color:var(--ink);font-weight:600;}
+.toast .spectral-dot{width:24px;height:24px;border-radius:50%;flex:none;
+  background:var(--turq);color:#001018;display:grid;place-items:center;
+  font-family:var(--font-mono);font-size:11px;}
 
 /* Editorial page titles — hierarchy by scale, not weight (fused system) */
-.section-title{font-family:var(--font-display);font-size:clamp(32px,4vw,46px);font-weight:400;
+.section-title{font-family:var(--font-display);font-size:clamp(30px,4vw,46px);font-weight:500;
   margin:0 0 6px;letter-spacing:-.03em;line-height:1.05;}
 .section-sub{font-family:var(--font-mono);font-size:12px;color:var(--muted);margin:0 0 26px;
   letter-spacing:.02em;}
@@ -358,8 +394,8 @@ const CSS = `
 .cp-brand-div{width:1px;height:22px;background:var(--line);margin:0 2px;}
 
 /* HubSpot sync pill */
-.hs-pill{display:flex;align-items:center;gap:8px;background:var(--card);border:1px solid var(--line);
-  border-radius:9999px;padding:6px 10px 6px 13px;font-size:11.5px;color:var(--muted);}
+.hs-pill{display:flex;align-items:center;gap:7px;background:transparent;border:1px solid var(--line);
+  border-radius:9999px;padding:6px 10px;font-family:var(--font-mono);font-size:10px;color:var(--muted);}
 .hs-dot{width:7px;height:7px;border-radius:50%;background:var(--ok);
   box-shadow:0 0 0 3px rgba(47,182,122,.15);}
 .hs-pill b{color:var(--ink);font-weight:600;}
@@ -367,16 +403,16 @@ const CSS = `
   font-weight:500;font-size:11.5px;padding:4px 8px;border-radius:7px;}
 .hs-pill .syncnow:hover{background:var(--accent-soft);}
 .hs-writeback{display:inline-flex;align-items:center;gap:7px;margin-top:14px;position:relative;
-  font-size:11px;color:#9fb3c9;font-family:var(--font-mono);}
+  font-size:11px;color:var(--muted);font-family:var(--font-mono);}
 
 /* notification bell + panel */
 .bell{position:relative;}
-.bell .btn-bell{width:38px;height:38px;border-radius:10px;display:grid;place-items:center;
-  color:var(--muted);border:1px solid var(--line);background:var(--card);}
+.bell .btn-bell{width:36px;height:36px;border-radius:50%;display:grid;place-items:center;
+  color:var(--ink2);border:1px solid var(--line);background:transparent;}
 .bell .btn-bell:hover{color:var(--ink);border-color:rgba(3,212,255,.45);}
-.bell .badge{position:absolute;top:-5px;right:-5px;min-width:17px;height:17px;padding:0 4px;
-  border-radius:9px;background:var(--bad);color:#fff;font-size:10px;font-weight:700;
-  display:grid;place-items:center;font-family:var(--font-mono);border:2px solid var(--card);}
+.bell .badge{position:absolute;top:-3px;right:-3px;min-width:16px;height:16px;padding:0 3px;
+  border-radius:9999px;background:var(--accent);color:#001018;font-size:9px;font-weight:400;
+  display:grid;place-items:center;font-family:var(--font-mono);border:2px solid var(--surface);}
 .notif-panel{position:absolute;top:46px;right:0;z-index:40;width:340px;background:var(--card);
   border:1px solid var(--line);border-radius:14px;box-shadow:0 22px 60px -22px rgba(11,18,32,.4);
   overflow:hidden;}
@@ -388,7 +424,9 @@ const CSS = `
 .notif-item{display:flex;gap:11px;padding:12px 15px;border-bottom:1px solid var(--line-soft);
   position:relative;}
 .notif-item:last-child{border-bottom:none;}
-.notif-item.unread{background:var(--accent-soft);}
+.notif-item.unread{background:rgba(3,212,255,.05);}
+.notif-item.unread::before{content:"";position:absolute;left:6px;top:19px;width:6px;height:6px;
+  border-radius:50%;background:var(--accent);}
 .notif-item .nt{font-size:12.5px;line-height:1.5;color:var(--ink2);}
 .notif-item .nt b{font-weight:600;}
 .notif-item .nch{display:flex;align-items:center;gap:6px;margin-top:5px;font-size:10.5px;
@@ -396,21 +434,21 @@ const CSS = `
 .notif-empty{padding:26px 15px;text-align:center;font-size:12.5px;color:var(--muted2);}
 
 /* Slack integration */
-.slack-pill{display:flex;align-items:center;gap:7px;background:var(--card);border:1px solid var(--line);
-  border-radius:9999px;padding:6px 12px;font-size:11.5px;color:var(--muted);}
-.slack-dot{width:7px;height:7px;border-radius:50%;background:#4A154B;}
+.slack-pill{display:flex;align-items:center;gap:7px;background:transparent;border:1px solid var(--line);
+  border-radius:9999px;padding:6px 10px;font-family:var(--font-mono);font-size:10px;color:var(--muted);}
+.slack-dot{width:8px;height:8px;border-radius:50%;background:#8f5cff;}
 .slack-pill b{color:var(--ink);font-weight:600;}
 .slack-btn{display:inline-flex;align-items:center;gap:5px;color:#4A154B;font-weight:600;
   font-size:11.5px;padding:4px 8px;border-radius:7px;background:rgba(74,21,75,.06);}
 .slack-btn:hover{background:rgba(74,21,75,.12);}
 .slack-btn.sending{opacity:.55;pointer-events:none;}
-.btn.slack{background:rgba(255,255,255,.08);color:#dbe6f2;font-weight:500;
-  border:1px solid rgba(255,255,255,.12);}
+.btn.slack{background:transparent;color:var(--ink2);font-weight:400;
+  border:1px solid var(--hair2);}
 .btn.slack:hover{background:rgba(255,255,255,.15);border-color:rgba(3,212,255,.5);}
 .btn.slack.sending{opacity:.55;pointer-events:none;}
-.slack-status{display:flex;align-items:center;gap:8px;padding:10px 14px;background:#F9F5FA;
-  border:1px solid #e5d5e6;border-radius:11px;font-size:12.5px;color:#4A154B;margin-top:10px;}
-.slack-status.err{background:#FEF2F2;border-color:#fcc;color:#b91c1c;}
+.slack-status{display:flex;align-items:center;gap:8px;padding:10px 14px;background:rgba(143,92,255,.12);
+  border:1px solid rgba(143,92,255,.4);border-radius:var(--r-container);font-size:12.5px;color:#b79bff;margin-top:10px;}
+.slack-status.err{background:rgba(247,110,47,.12);border-color:rgba(247,110,47,.45);color:var(--mining);}
 .channel-select{display:flex;align-items:center;gap:8px;background:var(--line-soft);
   border-radius:9px;padding:7px 12px;margin-top:12px;}
 .channel-select label{font-size:11.5px;color:var(--muted);font-weight:500;white-space:nowrap;}
@@ -424,9 +462,9 @@ const CSS = `
   font-size:11.5px;font-weight:600;cursor:pointer;border:1.5px solid transparent;}
 .sat-chip.all{background:var(--line-soft);color:var(--muted);border-color:var(--line);}
 .sat-chip.all.on{background:var(--ink);color:var(--surface);border-color:var(--ink);}
-.sat-chip.vs{background:#FCE6E4;color:#b13b32;} .sat-chip.vs.on{border-color:#b13b32;}
-.sat-chip.s{background:#FBF1D8;color:#9a7415;} .sat-chip.s.on{border-color:#9a7415;}
-.sat-chip.sat{background:#E3F7EC;color:#1f8a57;} .sat-chip.sat.on{border-color:#1f8a57;}
+.sat-chip.vs{background:rgba(247,110,47,.14);color:var(--mining);} .sat-chip.vs.on{border-color:var(--mining);}
+.sat-chip.s{background:rgba(236,180,35,.14);color:var(--energy);} .sat-chip.s.on{border-color:var(--energy);}
+.sat-chip.sat{background:rgba(0,192,48,.14);color:var(--forest);} .sat-chip.sat.on{border-color:var(--forest);}
 .sat-chip.vsat{background:var(--accent-soft);color:var(--accent-deep);} .sat-chip.vsat.on{border-color:var(--accent-deep);}
 .sat-chip.neu{background:var(--line-soft);color:var(--muted);} .sat-chip.neu.on{border-color:var(--muted);}
 .fb-notion-btn{display:inline-flex;align-items:center;gap:7px;font-size:12px;font-weight:500;
@@ -472,14 +510,14 @@ const CSS = `
   color:var(--muted2);padding:3px 7px;background:var(--line-soft);border-radius:6px;}
 
 /* ── Feature: last contact (HubSpot) in deal header ── */
-.last-contact{display:flex;align-items:center;gap:7px;background:rgba(255,255,255,.08);
-  border:1px solid rgba(255,255,255,.13);border-radius:9px;padding:7px 12px;font-size:12px;
-  color:#cfe0f0;margin-top:14px;flex-wrap:wrap;gap:14px;}
+.last-contact{display:flex;align-items:center;gap:7px;background:var(--raised);
+  border:1px solid var(--line);border-radius:var(--r-control);padding:7px 14px;font-size:12px;
+  color:var(--ink2);margin-top:14px;flex-wrap:wrap;gap:14px;}
 .last-contact .lc-item{display:flex;align-items:center;gap:6px;}
 .last-contact .lc-dot{width:7px;height:7px;border-radius:50%;}
 .lc-dot.warm{background:#2FB67A;} .lc-dot.cool{background:#E0B02B;} .lc-dot.cold{background:#E5564B;}
 .last-contact .lc-label{font-family:var(--font-mono);font-size:9.5px;letter-spacing:.1em;
-  text-transform:uppercase;color:#7e93aa;margin-right:2px;}
+  text-transform:uppercase;color:var(--muted);margin-right:2px;}
 
 /* ── Feature: capture / image progress log ── */
 .clog-wrap{display:flex;flex-direction:column;gap:0;}
@@ -491,16 +529,16 @@ const CSS = `
 .clog-line{width:2px;flex:1;background:var(--line);min-height:16px;margin-top:3px;}
 .clog-status{font-size:10.5px;font-weight:700;font-family:var(--font-mono);padding:3px 8px;
   border-radius:6px;flex:none;text-transform:uppercase;letter-spacing:.06em;}
-.cs-tasked{background:#E7F0FE;color:var(--se);}
-.cs-captured{background:var(--accent-soft);color:var(--accent-deep);}
-.cs-qcprog{background:#FBF1D8;color:#9a7415;}
-.cs-qcpass{background:#E3F7EC;color:#1f8a57;}
-.cs-qcfail{background:#FCE6E4;color:#b13b32;}
-.cs-shared{background:#EDE8FE;color:var(--an);}
+.cs-tasked{background:rgba(6,189,255,.14);color:var(--gov);}
+.cs-captured{background:var(--accent-soft);color:var(--accent);}
+.cs-qcprog{background:rgba(236,180,35,.14);color:var(--energy);}
+.cs-qcpass{background:rgba(0,192,48,.14);color:var(--forest);}
+.cs-qcfail{background:rgba(247,110,47,.14);color:var(--mining);}
+.cs-shared{background:rgba(152,235,0,.14);color:var(--agri);}
 .clog-meta{font-size:11px;font-family:var(--font-mono);color:var(--muted2);margin-top:3px;}
 .clog-note{font-size:13px;color:var(--ink2);line-height:1.5;margin-top:4px;}
 .clog-reason{display:inline-flex;align-items:center;gap:5px;font-size:11px;font-weight:600;
-  color:#b13b32;background:#FCE6E4;border-radius:6px;padding:2px 7px;margin-top:5px;}
+  color:var(--mining);background:rgba(247,110,47,.14);border-radius:6px;padding:2px 7px;margin-top:5px;}
 .clog-add{display:flex;align-items:center;gap:8px;padding:10px 14px;border:1.5px dashed var(--line);
   border-radius:11px;font-size:13px;color:var(--muted);cursor:pointer;margin-top:10px;}
 .clog-add:hover{border-color:var(--accent);color:var(--accent-deep);background:var(--accent-soft);}
@@ -2190,7 +2228,7 @@ function QcForm({ onSubmit, onCancel, defaultOrg, defaultPassportId, deals, init
         <div>
           <div className="k" style={{ fontFamily:"var(--font-mono)", fontSize:"9.5px", letterSpacing:".1em", textTransform:"uppercase", color:"var(--muted2)", marginBottom:4 }}>Quality Check</div>
           <div style={{ display:"flex", gap:8 }}>
-            {[["Awaiting QC","#B5720E","#FEF3E0","#F0A429"],["Pass","#1f8a57","#E3F7EC","var(--ok)"],["Fail","#c0392b","#FCE9E7","var(--bad)"]].map(([r,fg,bg,br]) => (
+            {[["Awaiting QC","var(--energy)","rgba(236,180,35,.14)","#F0A429"],["Pass","var(--forest)","rgba(0,192,48,.14)","var(--ok)"],["Fail","var(--mining)","rgba(247,110,47,.14)","var(--bad)"]].map(([r,fg,bg,br]) => (
               <button key={r} onClick={() => set("qc_result", r)} type="button"
                 style={{ flex:1, padding:"7px 4px", borderRadius:8, border:"1px solid "+(form.qc_result===r ? br : "var(--line)"),
                   background: form.qc_result===r ? bg : "transparent",
@@ -2283,7 +2321,7 @@ function QcRow({ row, canEdit, onDelete, onEdit, showOrg }) {
       {showOrg && <td style={{ fontWeight:600 }}>{row.organization}</td>}
       <td>{row.usecase || "—"}</td>
       <td>{row.bandset || "—"}</td>
-      <td><span className="tag" style={{ background: row.qc_result === "Pass" ? "#E3F7EC" : row.qc_result === "Fail" ? "#FCE9E7" : "#FEF3E0", color: row.qc_result === "Pass" ? "#1f8a57" : row.qc_result === "Fail" ? "#c0392b" : "#B5720E", fontWeight:600 }}>{row.qc_result}</span></td>
+      <td><span className="tag" style={{ background: row.qc_result === "Pass" ? "rgba(0,192,48,.14)" : row.qc_result === "Fail" ? "rgba(247,110,47,.14)" : "rgba(236,180,35,.14)", color: row.qc_result === "Pass" ? "var(--forest)" : row.qc_result === "Fail" ? "var(--mining)" : "var(--energy)", fontWeight:600 }}>{row.qc_result}</span></td>
       <td style={{ fontFamily:"var(--font-mono)", fontSize:12 }}>{row.image_id || "—"}</td>
       <td><span className="tag" style={{ background: row.type === "Paid" ? "var(--accent-soft)" : "var(--line-soft)", color: row.type === "Paid" ? "var(--accent-deep)" : "var(--muted)" }}>{row.type}</span></td>
       <td>{row.assignee || "—"}</td>
@@ -3009,7 +3047,7 @@ function MvpImagesGlobal({ deals, canEdit, onOpen, toast }) {
                       <td>{r.usecase || "—"}</td>
                       <td style={{ fontFamily:"var(--font-mono)", fontSize:12 }}>{r.image_id || "—"}</td>
                       <td><span className="tag" style={{ background: r.type === "Paid" ? "var(--accent-soft)" : "var(--line-soft)", color: r.type === "Paid" ? "var(--accent-deep)" : "var(--muted)" }}>{r.type}</span></td>
-                      <td><span className="tag" style={{ background: r.qc_result === "Pass" ? "#E3F7EC" : r.qc_result === "Fail" ? "#FCE9E7" : "#FEF3E0", color: r.qc_result === "Pass" ? "#1f8a57" : r.qc_result === "Fail" ? "#c0392b" : "#B5720E", fontWeight:600 }}>{r.qc_result}</span></td>
+                      <td><span className="tag" style={{ background: r.qc_result === "Pass" ? "rgba(0,192,48,.14)" : r.qc_result === "Fail" ? "rgba(247,110,47,.14)" : "rgba(236,180,35,.14)", color: r.qc_result === "Pass" ? "var(--forest)" : r.qc_result === "Fail" ? "var(--mining)" : "var(--energy)", fontWeight:600 }}>{r.qc_result}</span></td>
                       <td style={{ fontSize:12, color:"var(--muted)" }}>{r.location || "—"}</td>
                       <td>{deal ? <button onClick={() => onOpen(deal.id)} style={{ border:"none", background:"none", color:"var(--accent-deep)", cursor:"pointer", fontSize:12.5, padding:0, textDecoration:"underline" }}>{deal.company}</button> : <span style={{ color:"var(--muted2)", fontSize:12 }}>—</span>}</td>
                       <td>
@@ -3053,22 +3091,25 @@ function HandoverStatus({ d, canEdit, onUpdate }) {
 
   const Row = ({ team, label, on, at, by, assignee, accent }) => (
     <div style={{
-      display: "flex", alignItems: "center", gap: 12, padding: "12px 14px", borderRadius: 12,
-      border: "1px solid " + (on ? "#bfe6cf" : "var(--line)"),
-      background: on ? "rgba(47,182,122,.12)" : "var(--card)", flex: 1, minWidth: 240,
+      display: "flex", alignItems: "center", gap: 12, padding: "16px 18px", borderRadius: "var(--r-container)",
+      border: "1px solid " + (on ? "rgba(0,255,187,.4)" : "var(--line)"),
+      background: on ? "linear-gradient(180deg,rgba(0,255,187,.06),transparent)" : "var(--card)",
+      flex: 1, minWidth: 240,
     }}>
       <div style={{
-        width: 34, height: 34, borderRadius: 9, flex: "none", display: "flex", alignItems: "center", justifyContent: "center",
-        background: on ? "#E3F7EC" : "var(--line-soft)",
+        width: 26, height: 26, borderRadius: "50%", flex: "none", display: "grid", placeItems: "center",
+        background: on ? "var(--turq)" : "transparent",
+        border: on ? "none" : "2px solid var(--accent)",
+        color: on ? "#001018" : "var(--accent)",
       }}>
-        {on ? <CheckCircle2 size={18} color="#1f8a57" /> : <ArrowRightCircle size={18} color={accent} />}
+        {on ? <CheckCircle2 size={15} /> : <ArrowRightCircle size={15} />}
       </div>
       <div style={{ flex: 1, minWidth: 0 }}>
         <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: ".07em", textTransform: "uppercase", color: "var(--muted2)" }}>
           Handover to {label}
         </div>
         {on ? (
-          <div style={{ fontSize: 13, fontWeight: 600, color: "#1f8a57" }}>
+          <div style={{ fontSize: 13, fontWeight: 600, color: "var(--forest)" }}>
             Handed over{assignee ? ` to ${assignee}` : ""}
             <div style={{ fontSize: 10.5, fontWeight: 400, color: "var(--muted2)" }}>
               {at ? new Date(at).toLocaleDateString("en-GB", { day:"2-digit", month:"short", year:"numeric" }) : ""}{by ? ` · by ${by}` : ""}
@@ -3118,7 +3159,7 @@ function HandoverStatus({ d, canEdit, onUpdate }) {
           <div style={{ flex: 1, minWidth: 0 }}>
             <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: ".07em", textTransform: "uppercase", color: "var(--muted2)" }}>Next step owned by SE</div>
             {h.backToSe ? (
-              <div style={{ fontSize: 13, fontWeight: 600, color: "#B5720E" }}>
+              <div style={{ fontSize: 13, fontWeight: 600, color: "var(--energy)" }}>
                 Handed back to SE{se ? ` · ${se}` : ""}
                 {h.backToSeNote && <div style={{ fontSize: 11.5, fontWeight: 400, color: "var(--muted)", marginTop: 2 }}>“{h.backToSeNote}”</div>}
                 <div style={{ fontSize: 10.5, fontWeight: 400, color: "var(--muted2)" }}>
@@ -3174,7 +3215,7 @@ function Passport({ deal, onBack, canEdit, canPostNote, onUpdate, onAssign, onNo
       <button className="cp-back" onClick={onBack}><ChevronLeft size={16} /> All deals</button>
 
       {deal.archived && (
-        <div style={{ display:"flex", alignItems:"center", gap:8, fontSize:12.5, color:"#c0392b", background:"#FCE9E7", border:"1px solid #f0c4bf", borderRadius:10, padding:"10px 14px", marginBottom:14 }}>
+        <div style={{ display:"flex", alignItems:"center", gap:8, fontSize:12.5, color:"var(--mining)", background:"rgba(247,110,47,.14)", border:"1px solid rgba(247,110,47,.4)", borderRadius:10, padding:"10px 14px", marginBottom:14 }}>
           <AlertTriangle size={15} />
           <span><strong>Archived</strong> — no longer found in HubSpot{deal.archivedAt ? ` as of ${new Date(deal.archivedAt).toLocaleDateString("en-GB",{day:"2-digit",month:"short",year:"numeric"})}` : ""}. {deal.archivedReason || "Nothing has been deleted; this passport's history is fully preserved."}</span>
         </div>
@@ -3186,25 +3227,23 @@ function Passport({ deal, onBack, canEdit, canPostNote, onUpdate, onAssign, onNo
         <div className="grat" />
         <div className="htop">
           <div>
-            <h1 style={{ display: "flex", alignItems: "center", gap: 10 }}>
-              {deal.company}
+            <div className="hsub">
+              <span style={{ color: "var(--accent)" }}>● {deal.pipeline || deal.sector}</span>
+              <span className="hd-pill">{deal.id}</span>
+              <span>HubSpot {deal.hubspotId}</span>
+              <span>{fmt(deal.amount)} ACV</span>
               <button onClick={() => canEdit && onUpdate({ _toggleEap: { value: !deal.isEap } })} disabled={!canEdit}
                 title={canEdit ? "Toggle Early Access Program" : ""}
+                className="hd-pill"
                 style={{
-                  fontSize: 10.5, fontWeight: 700, letterSpacing: ".04em", padding: "3px 9px", borderRadius: 20,
-                  border: "1px solid " + (deal.isEap ? "#F0A429" : "var(--line)"),
-                  background: deal.isEap ? "#FEF3E0" : "transparent",
-                  color: deal.isEap ? "#B5720E" : "var(--muted2)",
-                  cursor: canEdit ? "pointer" : "default", textTransform: "uppercase",
+                  fontFamily: "var(--font-mono)", fontSize: 9.5, letterSpacing: ".14em", cursor: canEdit ? "pointer" : "default",
+                  borderColor: deal.isEap ? "rgba(3,212,255,.5)" : "var(--hair2)",
+                  color: deal.isEap ? "var(--accent)" : "var(--muted2)", background: "transparent",
                 }}>
-                {deal.isEap ? "★ EAP" : "+ EAP"}
+                {deal.isEap ? "EAP" : "+ EAP"}
               </button>
-            </h1>
-            <div className="hsub">
-              <span>{deal.sector}</span><span className="dot" />
-              <span className="mono">HubSpot {deal.hubspotId}</span><span className="dot" />
-              <span>{fmt(deal.amount)} ACV</span>
             </div>
+            <h1>{deal.company}</h1>
           </div>
           <div className="h-actions">
             <button className="btn ghost" onClick={() => {
@@ -3236,6 +3275,35 @@ function Passport({ deal, onBack, canEdit, canPostNote, onUpdate, onAssign, onNo
             {slackStatus.msg}
           </div>
         )}
+
+        {/* handover timeline — the passport's purpose, read at a glance */}
+        {(() => {
+          const hv = deal.handover || {};
+          const o = deal.owners || {};
+          const fmtD = (v) => v ? new Date(v).toLocaleDateString("en-GB", { day: "2-digit", month: "short" }) : "";
+          const nodes = [
+            { label: "Sales → SE", done: !!o.se, at: o.se ? "assigned" : "" },
+            { label: "SE → CS", done: !!hv.cs, at: hv.cs ? fmtD(hv.csAt) : "pending" },
+            { label: "CS → Analytics", done: !!hv.analytics, at: hv.analytics ? fmtD(hv.analyticsAt) : "pending" },
+          ];
+          const curIdx = nodes.findIndex(n => !n.done);
+          return (
+            <div className="hv-line">
+              {nodes.map((n, i) => (
+                <React.Fragment key={n.label}>
+                  {i > 0 && <div className={"hv-bar " + (nodes[i-1].done && n.done ? "done" : nodes[i-1].done ? "half" : "")} />}
+                  <div className="hv-node">
+                    <div className={"hv-disc " + (n.done ? "done" : i === curIdx ? "cur" : "todo")}>
+                      {n.done ? "✓" : "○"}
+                    </div>
+                    <div className="nm">{n.label}</div>
+                    <div className="dt">{n.at}</div>
+                  </div>
+                </React.Fragment>
+              ))}
+            </div>
+          );
+        })()}
 
         {/* stage bar */}
         <div className="stage-bar">
@@ -4284,7 +4352,7 @@ function PocAdder({ pocs, canEdit, onAdd, onDelete }) {
           <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center" }}>
             <span style={{ fontSize:13.5, fontWeight:600 }}>{p.name}</span>
             <div style={{ display:"flex", alignItems:"center", gap:6 }}>
-              <span className="tag" style={{ background: p.status === "Complete" ? "#E3F7EC" : "var(--accent-soft)", color: p.status === "Complete" ? "#1f8a57" : "var(--accent-deep)" }}>{p.status}</span>
+              <span className="tag" style={{ background: p.status === "Complete" ? "rgba(0,192,48,.14)" : "var(--accent-soft)", color: p.status === "Complete" ? "var(--forest)" : "var(--accent-deep)" }}>{p.status}</span>
               {canEdit && <button onClick={() => onDelete(p.id)} title="Delete" style={{ border:"none", background:"none", color:"var(--muted2)", cursor:"pointer", fontSize:13 }}>✕</button>}
             </div>
           </div>
@@ -4379,8 +4447,8 @@ const COMMERCIAL_LEGAL_PRESETS = ["NDA", "Order form", "Contract / MSA", "DPA", 
 // status label → [text colour, background]
 const CL_STATUS_STYLE = {
   "Not started": ["#6B7480", "var(--line-soft)"],
-  "In progress": ["#B5720E", "#FEF3E0"],
-  "Complete":    ["#1f8a57", "#E3F7EC"],
+  "In progress": ["var(--energy)", "rgba(236,180,35,.14)"],
+  "Complete":    ["var(--forest)", "rgba(0,192,48,.14)"],
 };
 
 // Structured tracker for completed legal/commercial formalities (NDA, order form,
@@ -5557,7 +5625,7 @@ function SignInScreen({ loading }) {
     <div style={{
       minHeight: "100vh", background: INK, display: "flex",
       alignItems: "center", justifyContent: "center", flexDirection: "column",
-      fontFamily: "Inter, sans-serif", position: "relative", overflow: "hidden",
+      fontFamily: "'Hanken Grotesk', sans-serif", position: "relative", overflow: "hidden",
     }}>
       {/* Aurora — soft brand-cyan liquid backdrop */}
       <AuroraBackground opacity={0.9} />
@@ -5572,7 +5640,7 @@ function SignInScreen({ loading }) {
           <PassportSignInLogo />
         </div>
 
-        <h1 style={{ color: "white", fontFamily: "'Barlow',sans-serif", fontSize: 28, fontWeight: 600, marginBottom: 8, letterSpacing: -0.5 }}>
+        <h1 style={{ color: "white", fontFamily: "'Familjen Grotesk',sans-serif", fontSize: 32, fontWeight: 500, marginBottom: 8, letterSpacing: "-.03em" }}>
           Welcome back
         </h1>
         <p style={{ color: MUTED, fontSize: 14, marginBottom: 40, lineHeight: 1.6 }}>
@@ -5938,8 +6006,8 @@ function DealListLive({ deals, loading, onOpen, pipelineFilter, setPipelineFilte
                     <div style={{ display:"flex", alignItems:"center", gap:7, marginBottom:4 }}>
                       <span style={{ width:8, height:8, borderRadius:"50%", background:pipeColor, flex:"none" }} />
                       <span style={{ fontSize:10.5, color:"var(--muted2)", fontFamily:"var(--font-mono)", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{d.pipeline}</span>
-                      {d.archived && <span className="tag" style={{ background:"#FCE9E7", color:"#c0392b", fontSize:10, marginLeft:"auto", flex:"none" }}>Archived</span>}
-                      {d.is_eap && <span style={{ fontSize:10, color:"#B5720E" }}><Star size={10} fill="#F0A429" color="#F0A429" style={{ verticalAlign:-1 }} /></span>}
+                      {d.archived && <span className="tag" style={{ background:"rgba(247,110,47,.14)", color:"var(--mining)", fontSize:10, marginLeft:"auto", flex:"none" }}>Archived</span>}
+                      {d.is_eap && <span style={{ fontSize:10, color:"var(--energy)" }}><Star size={10} fill="#F0A429" color="#F0A429" style={{ verticalAlign:-1 }} /></span>}
                     </div>
                     <h3 style={{ margin:0, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{d.company}</h3>
                   </div>
@@ -6729,11 +6797,11 @@ export default function App() {
   // Non-pixxel email — blocked entirely
   if (currentUser.role === "denied") {
     return (
-      <div style={{ minHeight:"100vh", background:"#04060B", display:"flex", alignItems:"center", justifyContent:"center", flexDirection:"column", fontFamily:"Inter,sans-serif", textAlign:"center", padding:"0 24px" }}>
+      <div style={{ minHeight:"100vh", background:"#04060B", display:"flex", alignItems:"center", justifyContent:"center", flexDirection:"column", fontFamily:"'Hanken Grotesk',sans-serif", textAlign:"center", padding:"0 24px" }}>
         <div style={{ color:"#8A97A4", marginBottom:16 }}>
           <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><circle cx="12" cy="12" r="10"/><path d="M15 9l-6 6M9 9l6 6"/></svg>
         </div>
-        <h2 style={{ color:"white", fontFamily:"'Barlow',sans-serif", marginBottom:8 }}>Access Denied</h2>
+        <h2 style={{ color:"white", fontFamily:"'Familjen Grotesk',sans-serif", marginBottom:8 }}>Access Denied</h2>
         <p style={{ color:"#8A97A4", fontSize:14, marginBottom:24 }}>This tool is only accessible to the Pixxel team.<br/>You signed in as <code style={{ color:"#03d4ff" }}>{currentUser.email}</code></p>
         <button onClick={() => signOut()} style={{ padding:"10px 20px", borderRadius:8, border:"1px solid #1C2430", background:"transparent", color:"white", cursor:"pointer" }}>Sign out and try again</button>
       </div>
@@ -6975,7 +7043,7 @@ function AppMain({ currentUser, canEdit, canPostNote, onSignOut }) {
     <div className="cp-root">
       <style>{CSS}</style>
       {/* Ambient aurora — the brand liquid backdrop behind every view */}
-      <AuroraBackground opacity={0.42} style={{ position: "fixed", zIndex: 0 }} />
+      <AuroraBackground opacity={0.55} style={{ position: "fixed", zIndex: 0 }} />
 
       <div className="cp-top">
         <div className="cp-brand">
@@ -7051,26 +7119,25 @@ function AppMain({ currentUser, canEdit, canPostNote, onSignOut }) {
           )}
         </div>
 
-        <div className="cp-viewtoggle" style={{display:"flex",alignItems:"center",gap:8}}>
-          <div style={{
-            display:"flex",alignItems:"center",gap:6,
-            padding:"6px 12px",borderRadius:8,
-            background: canEdit ? "rgba(14,165,183,0.1)" : "rgba(146,155,171,0.1)",
-            border: canEdit ? "1px solid rgba(14,165,183,0.2)" : "1px solid rgba(146,155,171,0.2)",
-            fontSize:12,fontWeight:500,
-            color: canEdit ? "var(--accent)" : "var(--muted2)",
-          }}>
-            {canEdit ? <Pencil size={12}/> : <Eye size={12}/>}
-            {currentUser.name} · {canEdit ? "Full access" : "View only"}
-          </div>
-          <button
-            onClick={onSignOut}
-            title="Sign out"
-            style={{
-              padding:"6px 10px",borderRadius:8,border:"1px solid var(--line)",
-              background:"transparent",color:"var(--muted2)",fontSize:12,cursor:"pointer",
-            }}
-          >Sign out</button>
+        {/* account chip — gradient avatar + name + access, sign-out demoted */}
+        <div style={{ display:"inline-flex", alignItems:"center", gap:9, height:38,
+          padding:"3px 4px 3px 3px", borderRadius:"var(--r-control)", border:"1px solid var(--line)" }}>
+          <span style={{ width:30, height:30, borderRadius:"50%", flex:"none",
+            background:"linear-gradient(135deg,var(--sky),var(--turq))", color:"#001018",
+            display:"grid", placeItems:"center", fontFamily:"var(--font-mono)", fontSize:11 }}>
+            {initials(currentUser.name)}
+          </span>
+          <span style={{ lineHeight:1.15, paddingRight:2 }}>
+            <b style={{ fontSize:12.5, fontWeight:500, display:"block", color:"var(--ink)" }}>{currentUser.name}</b>
+            <span style={{ fontFamily:"var(--font-mono)", fontSize:9, color:"var(--muted)", letterSpacing:".06em", textTransform:"uppercase" }}>
+              {canEdit ? "Full access" : "View only"}
+            </span>
+          </span>
+          <button onClick={onSignOut} title="Sign out"
+            style={{ width:28, height:28, borderRadius:"50%", border:"1px solid var(--line)",
+              background:"transparent", color:"var(--muted)", cursor:"pointer", display:"grid", placeItems:"center", flex:"none" }}>
+            <ChevronLeft size={13} style={{ transform:"rotate(180deg)" }} />
+          </button>
         </div>
       </div>
 
@@ -7160,7 +7227,7 @@ function AppMain({ currentUser, canEdit, canPostNote, onSignOut }) {
         }
       </div>
 
-      {toastMsg && <div className="toast"><span className="spectral-dot" />{toastMsg}</div>}
+      {toastMsg && <div className="toast"><span className="spectral-dot">✓</span>{toastMsg}</div>}
     </div>
   );
 }
