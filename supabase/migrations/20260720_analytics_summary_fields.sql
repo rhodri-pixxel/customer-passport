@@ -1,3 +1,4 @@
+-- APPLIED 20 Jul 2026 to project plspunlkmkvplgcsncpa (pixxel-customer-passport).
 -- Analytics Summary gets its own record, separate from CS Summary.
 -- CS and Analytics may capture similar things, but they are different teams
 -- with different cadences and different notes — they must not overwrite
