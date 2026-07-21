@@ -28,7 +28,10 @@ const CSS = `
 
 .cp-root{
   /* ── Fused system (design handoff): electric is the only chromatic voice ── */
-  --ink:#EDF4F9; --ink2:#C2CEDA; --muted:#7E8B99; --muted2:#525D6B;
+  /* Neutral ramp brightened for legibility on the void canvas. The old
+     --muted2 (#525D6B) sat at ~2.2:1 on --card, well under WCAG AA; every
+     step now clears AA for body text while keeping the hierarchy readable. */
+  --ink:#F4F9FC; --ink2:#E4EDF4; --muted:#C6D3DE; --muted2:#A6B4C2;
   --line:#1B2331; --hair2:#26303F; --line-soft:#101522; --surface:#04050A; --card:#0B101A; --raised:#101724;
   --accent:#03d4ff; --accent-deep:#5FE6FF; --accent-soft:rgba(3,212,255,.12); --accent-bright:#03d4ff;
   --sky:#06bdff; --turq:#00ffbb;
@@ -57,7 +60,7 @@ const CSS = `
 /* Dark "space canvas" — brand-forward theme, scoped to a wrapper for now
    (preview it on the Prototypes route before making it the global default). */
 .space-canvas{
-  --ink:#F2FAFD; --ink2:#C4D2DA; --muted:#8A97A4; --muted2:#5C6773;
+  --ink:#F4F9FC; --ink2:#E4EDF4; --muted:#C6D3DE; --muted2:#A6B4C2;
   --line:#1C2430; --line-soft:#141A24; --surface:#04060B; --card:#0E121B;
   --accent:#03d4ff; --accent-deep:#5FE6FF; --accent-soft:rgba(3,212,255,.12); --accent-bright:#03d4ff; --sky:#06bdff;
   --se-soft:rgba(45,127,249,.16); --an-soft:rgba(122,90,245,.18);
@@ -5814,7 +5817,7 @@ function PassportSignInLogo() {
   }
   // Fallback placeholder mark if the logo file isn't deployed yet
   const ACCENT = "#0EA5B7";
-  const MUTED = "#7C8595";
+  const MUTED = "#C6D3DE";
   return (
     <div style={{ display: "inline-flex", alignItems: "center", gap: 10 }}>
       <div style={{ width: 40, height: 40, borderRadius: 10, background: ACCENT, display: "flex", alignItems: "center", justifyContent: "center" }}>
@@ -5834,7 +5837,7 @@ function PassportSignInLogo() {
 
 function SignInScreen({ loading }) {
   const INK = "#04060B";
-  const MUTED = "#8A97A4";
+  const MUTED = "#C6D3DE";
   const ACCENT = "#03d4ff";
   return (
     <div style={{
@@ -7213,11 +7216,11 @@ export default function App() {
   if (currentUser.role === "denied") {
     return (
       <div style={{ minHeight:"100vh", background:"#04060B", display:"flex", alignItems:"center", justifyContent:"center", flexDirection:"column", fontFamily:"'Hanken Grotesk',sans-serif", textAlign:"center", padding:"0 24px" }}>
-        <div style={{ color:"#8A97A4", marginBottom:16 }}>
+        <div style={{ color:"#C6D3DE", marginBottom:16 }}>
           <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><circle cx="12" cy="12" r="10"/><path d="M15 9l-6 6M9 9l6 6"/></svg>
         </div>
         <h2 style={{ color:"white", fontFamily:"'Familjen Grotesk',sans-serif", marginBottom:8 }}>Access Denied</h2>
-        <p style={{ color:"#8A97A4", fontSize:14, marginBottom:24 }}>This tool is only accessible to the Pixxel team.<br/>You signed in as <code style={{ color:"#03d4ff" }}>{currentUser.email}</code></p>
+        <p style={{ color:"#C6D3DE", fontSize:14, marginBottom:24 }}>This tool is only accessible to the Pixxel team.<br/>You signed in as <code style={{ color:"#03d4ff" }}>{currentUser.email}</code></p>
         <button onClick={() => signOut()} style={{ padding:"10px 20px", borderRadius:8, border:"1px solid #1C2430", background:"transparent", color:"white", cursor:"pointer" }}>Sign out and try again</button>
       </div>
     );
