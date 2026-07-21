@@ -3474,15 +3474,16 @@ function Passport({ deal, onBack, canEdit, canPostNote, onUpdate, onAssign, onNo
         </div>
       </div>
 
-      <HandoverStatus d={deal} canEdit={canEdit} onUpdate={onUpdate} />
-
-      {/* Additional collaborators */}
+      {/* Additional collaborators — sits with the owners row, since it's the
+          same question ("who is on this deal?"), before handover state */}
       <CollaboratorsRow
         collaborators={deal.collaborators || []}
         canEdit={canEdit}
         onAdd={(person) => onUpdate({ _addCollaborator: person })}
         onDelete={(id) => onUpdate({ _deleteRecord: { table:"deal_collaborators", id } })}
       />
+
+      <HandoverStatus d={deal} canEdit={canEdit} onUpdate={onUpdate} />
 
       {showChecklist && (
         <div className="checklist">
