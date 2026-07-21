@@ -330,9 +330,10 @@ const CSS = `
 .p4{display:grid;grid-template-columns:190px 1fr;border:1px solid var(--line);
   border-radius:var(--r-container);background:var(--card);overflow:hidden;min-height:320px;}
 .p4-rail{border-right:1px solid var(--line);padding:12px;}
-.p4-item{display:flex;align-items:center;gap:9px;padding:9px 12px;border-radius:10px;
-  cursor:pointer;margin-bottom:4px;font-size:13px;color:var(--ink2);
+.p4-item{display:flex;align-items:flex-start;gap:9px;padding:9px 12px;border-radius:10px;
+  cursor:pointer;margin-bottom:4px;font-size:13px;line-height:1.35;color:var(--ink2);
   border-left:2px solid transparent;background:transparent;}
+.p4-item svg{flex:none;margin-top:2px;}
 .p4-item:hover{background:rgba(3,212,255,.05);}
 .p4-item.on{color:var(--ink);border-left-color:var(--accent);background:var(--raised);}
 .p4-detail{padding:22px;min-width:0;}
@@ -3501,7 +3502,7 @@ function Passport({ deal, onBack, canEdit, canPostNote, onUpdate, onAssign, onNo
         <div className="p4-rail">
           {[
             ["profile", Building2, "Customer Profile"],
-            ["context", Target, "Objectives"],
+            ["context", Target, "Pain Points & Desired Outcomes"],
             ["csummary", LayoutGrid, "CS Summary"],
             ["analytics", BarChart3, "Analytics Summary"],
             ["execution", Activity, "Execution"],
@@ -3518,7 +3519,7 @@ function Passport({ deal, onBack, canEdit, canPostNote, onUpdate, onAssign, onNo
           {(() => {
             const intro = {
               profile:   ["Customer Profile", "Who they are, what they do, and what they need from Pixxel. Owned by Sales & SE."],
-              context:   ["Objectives", "The problem the customer is solving and what success looks like for them."],
+              context:   ["Pain Points & Desired Outcomes", "What hurts today, and what the customer wants to be true instead."],
               csummary:  ["CS Summary", "The handover roll-up for Customer Success — everything CS needs in one place."],
               analytics: ["Analytics Summary", "The handover roll-up for the Analytics team."],
               execution: ["Execution", "Delivery: tasking, captures, samples, risks and the commercial pathway."],
@@ -4210,12 +4211,12 @@ function LegacyPainPoints({ d, canEdit, onSaveField }) {
   return (
     <div className="legacy-note">
       <div>
-        <div className="klabel" style={{ marginBottom: 6 }}>Previously captured as “Pain points”</div>
+        <div className="klabel" style={{ marginBottom: 6 }}>Older text from the Customer Profile field</div>
         <div style={{ fontSize: 13, color: "var(--ink2)", lineHeight: 1.55 }}>{legacy}</div>
       </div>
       {canEdit && (
         <button className="fx-pill" onClick={merge} disabled={merging} style={{ flex: "none", height: 32 }}>
-          {merging ? "Merging…" : "Merge into problem statement"}
+          {merging ? "Merging…" : "Merge into pain points"}
         </button>
       )}
     </div>
@@ -4225,20 +4226,15 @@ function LegacyPainPoints({ d, canEdit, onSaveField }) {
 function ContextTab({ d, canEdit, onSaveField, onUpdate }) {
   return (
     <>
-      <Block icon={Target} title="Problem statement">
-        <div className="field-help">The problem the customer is trying to solve — their pain points, in their words. This is the single home for it.</div>
+      <Block icon={AlertTriangle} title="Pain points">
+        <div className="field-help">What hurts today, in the customer's own words. The single home for the problem we're solving.</div>
         <div className="kv"><EditableField k="What the customer is trying to solve" value={d.context.problem} field="problem_statement" canEdit={canEdit} onSave={onSaveField} /></div>
         <LegacyPainPoints d={d} canEdit={canEdit} onSaveField={onSaveField} />
       </Block>
-      <div className="cols">
-        <Block icon={CheckCircle2} title="Objectives">
-          <EditableList items={d.context.objectives} field="objectives" canEdit={canEdit} onSave={onSaveField} emptyIcon={Target} emptyText="No objectives defined." />
-        </Block>
-        <Block icon={MapPin} title="Area of interest" action={<SourceLink to="Customer Profile" />}>
-          <div className="field-help">Shown here for context. The AOI is owned by Customer Profile — upload and edit it there so there's only ever one version.</div>
-          <ContextAoi d={d} canEdit={false} onUpdate={onUpdate} />
-        </Block>
-      </div>
+      <Block icon={CheckCircle2} title="Desired outcomes">
+        <div className="field-help">What the customer wants to be true instead — one outcome per line. These are what we're measured against.</div>
+        <EditableList items={d.context.objectives} field="objectives" canEdit={canEdit} onSave={onSaveField} emptyIcon={Target} emptyText="No desired outcomes captured yet." />
+      </Block>
     </>
   );
 }
