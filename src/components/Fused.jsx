@@ -523,6 +523,7 @@ export function DealsTable({ rows = [], dense = false, onOpen }) {
     const c = [...rows];
     c.sort((a, b) => {
       const av = a[sort.k], bv = b[sort.k];
+      if (av == null && bv == null) return 0;
       if (av == null) return 1;
       if (bv == null) return -1;
       return (av > bv ? 1 : av < bv ? -1 : 0) * sort.dir;

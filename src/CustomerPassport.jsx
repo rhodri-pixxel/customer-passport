@@ -14,11 +14,10 @@ import "leaflet/dist/leaflet.css";
 import "leaflet.markercluster";
 import "leaflet.markercluster/dist/MarkerCluster.css";
 import "leaflet.markercluster/dist/MarkerCluster.Default.css";
-import GooeySearch from "./components/GooeySearch.jsx";
 import FileDropzone from "./components/FileDropzone.jsx";
 import AuroraBackground from "./components/AuroraBackground.jsx";
 import { ParticleCard, GlobalSpotlight } from "./components/MagicBento.jsx";
-import { CommandPalette, ReadinessRing, RoutedTimeline, routeFor, Avatar as FxAvatar, PeopleFilter, DealsTable as FxDealsTable, Spark, PresenceBar, KpiTile, DistributionBar, SectorHealth, AtRiskFeed, ExecBrief } from "./components/Fused.jsx";
+import { CommandPalette, ReadinessRing, RoutedTimeline, routeFor, Avatar as FxAvatar, PeopleFilter, DealsTable as FxDealsTable, KpiTile, DistributionBar, SectorHealth, AtRiskFeed, ExecBrief } from "./components/Fused.jsx";
 
 /* ------------------------------------------------------------------ */
 /*  Design system (spectral / Earth-observation theme)                */
@@ -56,6 +55,7 @@ const CSS = `
 @keyframes cp-shimmer{0%{background-position:-260px 0;}100%{background-position:260px 0;}}
 .sk{border-radius:7px;background:linear-gradient(90deg,var(--card),var(--raised),var(--card));
   background-size:260px 100%;animation:cp-shimmer 1.3s linear infinite;}
+@media (prefers-reduced-motion: reduce){.sk{animation:none;background:var(--raised);}}
 .sk-row{display:flex;align-items:center;gap:12px;margin-bottom:14px;}
 /* Dark "space canvas" — brand-forward theme, scoped to a wrapper for now
    (preview it on the Prototypes route before making it the global default). */
@@ -172,14 +172,16 @@ const CSS = `
 .ring-val{position:absolute;font-family:var(--font-mono);font-weight:600;}
 
 /* ---- passport detail ---- */
-/* echo of the header search, shown in the filter row */
-.filter-echo{display:inline-flex;align-items:center;gap:8px;height:40px;padding:0 8px 0 14px;
-  border-radius:var(--r-control);border:1px solid rgba(3,212,255,.4);background:var(--accent-soft);
-  color:var(--accent);font-size:12.5px;}
-.filter-echo .mono{font-family:var(--font-mono);font-size:11.5px;}
-.filter-echo button{display:grid;place-items:center;width:20px;height:20px;border-radius:50%;
-  color:var(--accent);background:transparent;}
-.filter-echo button:hover{background:rgba(3,212,255,.15);}
+/* type-to-filter search in the deals filter row */
+.list-search{display:inline-flex;align-items:center;gap:9px;height:40px;padding:0 10px 0 15px;
+  min-width:250px;border-radius:var(--r-control);border:1px solid var(--hair2);
+  background:var(--card);color:var(--muted);}
+.list-search:focus-within{border-color:var(--accent);}
+.list-search input{border:none!important;background:none!important;outline:none;box-shadow:none!important;
+  font:inherit;font-size:13px;color:var(--ink);flex:1;padding:0;}
+.list-search button{display:grid;place-items:center;width:20px;height:20px;border-radius:50%;
+  color:var(--accent);background:transparent;flex:none;}
+.list-search button:hover{background:rgba(3,212,255,.15);}
 
 .cp-back{display:inline-flex;align-items:center;gap:6px;font-family:var(--font-mono);font-size:12px;color:var(--muted);
   font-weight:500;margin-bottom:16px;}
@@ -5916,7 +5918,11 @@ async function fetchPassports({ pipeline, stage, ownerFilter, search, archivedVi
   // The `or=(pipeline.eq.…)` form lets raw parentheses break the filter parse,
   // silently dropping every pipeline listed after the one with parens (Reseller).
   const pipeQ = pipes.map(p => `"${encodeURIComponent(p)}"`).join(",");
-  let params = `?select=id,hubspot_deal_id,company,deal_id_display,hubspot_stage,hubspot_stage_idx,hubspot_amount,hubspot_last_contacted,hubspot_last_contact_owner,hubspot_synced_at,owner_director,owner_se,owner_cs,owner_analytics,pipeline,last_activity_label,updated_at,handed_to_cs,handed_to_analytics,is_eap,archived,archived_at,archived_reason&pipeline=in.(${pipeQ})&order=updated_at.desc&limit=300`;
+  // List rows feed the Deals split-view peek: the handover timestamps drive the
+  // route timeline, and the light content columns drive the readiness ring.
+  // aoi_type extracts only the GeoJSON "type" key so 300 rows don't haul full
+  // geometry blobs — presence is all calcReadiness needs.
+  let params = `?select=id,hubspot_deal_id,company,deal_id_display,hubspot_stage,hubspot_stage_idx,hubspot_amount,hubspot_last_contacted,hubspot_last_contact_owner,hubspot_synced_at,owner_director,owner_se,owner_cs,owner_analytics,pipeline,last_activity_label,updated_at,handed_to_cs,handed_to_cs_at,handed_to_analytics,handed_to_analytics_at,is_eap,archived,archived_at,archived_reason,use_case,pain_points,data_sources,bandset,cadence,problem_statement,objectives,success_criteria,next_steps,aoi_type:aoi_geojson->>type&pipeline=in.(${pipeQ})&order=updated_at.desc&limit=300`;
   if (stage !== undefined && stage !== "all") params += `&hubspot_stage_idx=eq.${stage}`;
   // archivedView: "active" (default, hide archived) | "archived" (only archived) | "all"
   if (!archivedView || archivedView === "active") params += `&archived=eq.false`;
@@ -6140,13 +6146,17 @@ function DealListLive({ deals, loading, onOpen, pipelineFilter, setPipelineFilte
       </p>
 
       <div className="cp-filters">
-        {/* search lives in the global header (A5) — filters only here */}
-        {searchQ && (
-          <span className="filter-echo">
-            <span className="mono">“{searchQ}”</span>
-            <button onClick={() => setSearchQ("")} title="Clear search"><X size={12} /></button>
-          </span>
-        )}
+        {/* Type-to-filter search — drives the server-side fetch. ⌘K in the
+            header is jump-to; this narrows the list. */}
+        <div className="list-search">
+          <Search size={14} />
+          <input
+            placeholder="Search company or deal ID…"
+            value={searchQ}
+            onChange={e => setSearchQ(e.target.value)}
+          />
+          {searchQ && <button onClick={() => setSearchQ("")} title="Clear search"><X size={12} /></button>}
+        </div>
 
         {/* Pipeline filter */}
         <div className="cp-select">
@@ -6223,7 +6233,7 @@ function DealListLive({ deals, loading, onOpen, pipelineFilter, setPipelineFilte
         <div className="empty">
           <Search size={16} />
           <span>No deals match these filters.</span>
-          <button onClick={() => { setSearchQ(""); setOwnerFilter(""); setPipelineFilter("all"); setStageFilter("all"); }}>Clear filters</button>
+          <button onClick={() => { setSearchQ(""); setOwnerFilter(""); setPipelineFilter("all"); setStageFilter("all"); setArchivedView("active"); }}>Clear filters</button>
         </div>
       ) : (
         <DealsSplit deals={deals} onOpen={onOpen} ownerFilter={ownerFilter} setOwnerFilter={setOwnerFilter} />
@@ -6246,13 +6256,20 @@ function DealsSplit({ deals, onOpen, ownerFilter, setOwnerFilter }) {
 
   if (!sel) return <div className="empty">No deals match these filters.</div>;
 
-  const { score } = calcReadiness(sel, []);
+  // List rows carry aoi_type (GeoJSON "type" key) instead of the full geometry;
+  // shim it back to a truthy value so the readiness ring scores AOI presence.
+  const { score } = calcReadiness({ ...sel, aoi_geojson: sel.aoi_type ? {} : null }, []);
   const owners = {
     se: sel.owner_se || null,
     cs: sel.owner_cs || null,
     analytics: sel.owner_analytics || null,
   };
-  const route = routeFor({ owners, handover: sel.handover || {} });
+  // List rows are flat columns, not the adapter's nested shape — build the
+  // handover object routeFor expects, or every node renders "pending".
+  const route = routeFor({ owners, handover: {
+    cs: !!sel.handed_to_cs, csAt: sel.handed_to_cs_at,
+    analytics: !!sel.handed_to_analytics, analyticsAt: sel.handed_to_analytics_at,
+  } });
 
   return (
     <div className="deals-split">

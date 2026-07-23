@@ -50,6 +50,17 @@ function b64ToBytes(b64: string): Uint8Array {
   return out;
 }
 
+// Constant-time string compare for the shared secret (a plain !== leaks
+// match-length timing).
+function safeEqual(a: string, b: string): boolean {
+  const ab = new TextEncoder().encode(a);
+  const bb = new TextEncoder().encode(b);
+  if (ab.length !== bb.length) return false;
+  let diff = 0;
+  for (let i = 0; i < ab.length; i++) diff |= ab[i] ^ bb[i];
+  return diff === 0;
+}
+
 // Same sanitisation + naming convention as uploadFile() in the frontend.
 async function uploadToStorage(sb: any, passportId: string, name: string,
                                bytes: Uint8Array, contentType: string) {
@@ -65,7 +76,7 @@ serve(async function (req) {
   if (req.method === "OPTIONS") return new Response("ok", { headers: CORS });
 
   const secret = Deno.env.get("ATTACH_FEASIBILITY_SECRET");
-  if (!secret || req.headers.get("x-attach-secret") !== secret) {
+  if (!secret || !safeEqual(req.headers.get("x-attach-secret") || "", secret)) {
     return json({ ok: false, error: "unauthorized" }, 401);
   }
 
@@ -108,21 +119,20 @@ serve(async function (req) {
 
     const done: string[] = [];
     const skipped: string[] = [];
-    const patch: Record<string, unknown> = {};
 
-    // ── 1. PDF → storage → feasibility_files + attachments row ─────────
+    // All passport-column mutations go through the attach_feasibility_apply
+    // RPC (one row-locked transaction, server-side dedupe/caps/backfill).
+    // The old pattern — SELECT arrays, mutate in memory across slow storage
+    // uploads, overwrite the columns — silently dropped a concurrent user's
+    // edit. The stale `p` row below is only used for messages and cheap
+    // pre-checks; it is never written back.
+
+    // ── 1. PDF → storage, then atomic append ───────────────────────────
     const pdfBytes = b64ToBytes(body.pdf.b64);
     const pdfPath = await uploadToStorage(sb, passportId, body.pdf.name,
                                           pdfBytes, "application/pdf");
-    const feasFiles = Array.isArray(p.feasibility_files) ? p.feasibility_files : [];
-    if (feasFiles.length < MAX_FILES) {
-      patch.feasibility_files =
-        [...feasFiles, { name: body.pdf.name, url: pdfPath, type: "file" }];
-      done.push("PDF added to feasibility files");
-    } else {
-      skipped.push(`feasibility_files already has ${MAX_FILES} entries — PDF ` +
-                   "uploaded to storage but not listed; remove one and re-attach");
-    }
+    const feasEntry = { name: body.pdf.name, url: pdfPath, type: "file" };
+
     const { error: attErr } = await sb.from("attachments").insert({
       passport_id: passportId,
       file_name: body.pdf.name,
@@ -134,52 +144,56 @@ serve(async function (req) {
     if (attErr) skipped.push(`attachments row failed: ${attErr.message}`);
     else done.push("PDF added to attachments (CS Summary)");
 
-    // ── 2. AOI → aoi_files (only if that filename isn't already there) ─
+    // ── 2. AOI upload (duplicate pre-check only avoids a wasted upload;
+    //       the RPC enforces dedupe against the live row) ────────────────
+    let aoiEntry: Record<string, unknown> | null = null;
     if (body.aoi?.b64 && body.aoi?.name) {
       const aoiFiles = Array.isArray(p.aoi_files) ? p.aoi_files : [];
       const exists = aoiFiles.some((f: any) =>
         String(f?.name || "").toLowerCase() === String(body.aoi.name).toLowerCase());
       if (exists) {
         skipped.push(`AOI '${body.aoi.name}' already attached`);
-      } else if (aoiFiles.length >= MAX_FILES) {
-        skipped.push(`aoi_files already has ${MAX_FILES} entries`);
       } else {
         const aoiPath = await uploadToStorage(sb, passportId, body.aoi.name,
           b64ToBytes(body.aoi.b64), "application/geo+json");
-        patch.aoi_files =
-          [...aoiFiles, { name: body.aoi.name, url: aoiPath, type: "file" }];
-        done.push("AOI added to AOI files");
+        aoiEntry = { name: body.aoi.name, url: aoiPath, type: "file" };
       }
     }
 
-    // ── 3. Backfill technical requirements ONLY where currently empty ──
+    // ── 3. Atomic apply: appends + only-if-empty backfills ─────────────
     const f = body.fields || {};
-    if (f.bandset && !p.bandset) { patch.bandset = String(f.bandset); done.push("bandset set"); }
-    if (f.cadence && !p.cadence) { patch.cadence = String(f.cadence); done.push("cadence set"); }
-    if (Array.isArray(f.data_sources) && f.data_sources.length &&
-        !(Array.isArray(p.data_sources) && p.data_sources.length)) {
-      patch.data_sources = f.data_sources.map(String);
+    const toiEntry = (f.window?.start && f.window?.end)
+      ? { start: String(f.window.start), end: String(f.window.end),
+          label: String(f.window.label || "Feasibility study window") }
+      : null;
+    const { data: applied, error: rpcErr } = await sb.rpc("attach_feasibility_apply", {
+      p_id: passportId,
+      p_feas_entry: feasEntry,
+      p_aoi_entry: aoiEntry,
+      p_toi_entry: toiEntry,
+      p_bandset: f.bandset ? String(f.bandset) : null,
+      p_cadence: f.cadence ? String(f.cadence) : null,
+      p_data_sources: (Array.isArray(f.data_sources) && f.data_sources.length)
+        ? f.data_sources.map(String) : null,
+      p_max: MAX_FILES,
+    });
+    if (rpcErr) throw rpcErr;
+    const a: Record<string, boolean> = applied || {};
+    if (a.feas_added) done.push("PDF added to feasibility files");
+    else skipped.push(`feasibility_files already has ${MAX_FILES} entries — PDF ` +
+                      "uploaded to storage but not listed; remove one and re-attach");
+    if (aoiEntry) {
+      if (a.aoi_added) done.push("AOI added to AOI files");
+      else skipped.push(`AOI '${body.aoi.name}' not added (already attached or at the ${MAX_FILES}-file cap)`);
+    }
+    if (toiEntry) {
+      if (a.toi_added) done.push("time-of-interest window added");
+      else skipped.push("time-of-interest window already present");
+    }
+    if (f.bandset && a.bandset_set) done.push("bandset set");
+    if (f.cadence && a.cadence_set) done.push("cadence set");
+    if (Array.isArray(f.data_sources) && f.data_sources.length && a.data_sources_set) {
       done.push("data sources set");
-    }
-    if (f.window?.start && f.window?.end) {
-      const toi = Array.isArray(p.time_of_interest) ? p.time_of_interest : [];
-      const dup = toi.some((w: any) => w?.start === f.window.start && w?.end === f.window.end);
-      if (dup) {
-        skipped.push("time-of-interest window already present");
-      } else {
-        patch.time_of_interest = [...toi, {
-          start: String(f.window.start),
-          end: String(f.window.end),
-          label: String(f.window.label || "Feasibility study window"),
-        }];
-        done.push("time-of-interest window added");
-      }
-    }
-
-    if (Object.keys(patch).length) {
-      const { error: upErr } = await sb.from("handover_passports")
-        .update(patch).eq("id", passportId);
-      if (upErr) throw upErr;
     }
 
     // ── 4. PDF → HubSpot deal attachments (upload file + pin via note) ─
