@@ -4,7 +4,8 @@ import {
   AlertTriangle, CheckCircle2, Circle, Clock, Paperclip, Send, BarChart3,
   LayoutGrid, Eye, Pencil, ExternalLink, Building2, Mail, Satellite, Layers,
   Activity, TrendingUp, X, Lock, Gauge, AtSign, Plus, Radar, ChevronDown,
-  MessageSquare, Hash, Zap, RefreshCw, CheckCheck, Camera, ListChecks, CalendarClock, Upload, Trash2, UserPlus, Link2, Star, ArrowRightCircle
+  MessageSquare, Hash, Zap, RefreshCw, CheckCheck, Camera, ListChecks, CalendarClock, Upload, Trash2, UserPlus, Link2, Star, ArrowRightCircle,
+  Sparkles, Moon, Sun
 } from "lucide-react";
 import shp from "shpjs";
 import proj4 from "proj4";
@@ -51,6 +52,30 @@ const CSS = `
   min-height:100vh; -webkit-font-smoothing:antialiased;
 }
 .cp-root b,.cp-root strong{font-weight:600;}
+
+/* ── Appearance: "light" — the original white theme, as a token override.
+   Data-state hues darken so text stays legible on white; vivid variants
+   remain available via the base values where used as dots/bars. ── */
+.cp-root.light{
+  --ink:#0B1220; --ink2:#1B2433; --muted:#5A6577; --muted2:#8A94A3;
+  --line:#E4E8EF; --hair2:#D5DDE6; --line-soft:#EEF1F6;
+  --surface:#F5F7FB; --card:#FFFFFF; --raised:#F2F5F9;
+  --accent:#0399C9; --accent-deep:#036E8C; --accent-soft:#E1F7FE;
+  --agri:#5a8f00; --energy:#9a7207; --mining:#c2531d;
+  --env:#008f6b; --gov:#0b6fa8; --forest:#0b7f2a;
+  --shadow-1:0 10px 40px rgba(9,20,30,.08); --shadow-2:0 20px 50px rgba(9,20,30,.14);
+  --topbar-bg:rgba(245,247,251,.85);
+  --glow-electric:0 0 16px rgba(3,153,201,.25);
+  --hairline-hover:rgba(3,153,201,.55);
+}
+
+/* appearance toggle (header) */
+.appearance-toggle{display:inline-flex;border:1px solid var(--line);border-radius:var(--r-control);
+  padding:3px;gap:2px;flex:none;}
+.appearance-toggle button{width:28px;height:26px;border-radius:var(--r-control);
+  display:grid;place-items:center;color:var(--muted);}
+.appearance-toggle button:hover{color:var(--ink);}
+.appearance-toggle button.on{background:var(--ink);color:var(--surface);}
 /* skeletons shimmer the card→raised ramp so loading never reads as broken */
 @keyframes cp-shimmer{0%{background-position:-260px 0;}100%{background-position:260px 0;}}
 .sk{border-radius:7px;background:linear-gradient(90deg,var(--card),var(--raised),var(--card));
@@ -74,7 +99,7 @@ const CSS = `
 /* top bar */
 /* A5 global header — segmented nav pill, demoted status cluster */
 .cp-top{position:sticky;top:0;z-index:30;display:flex;align-items:center;gap:16px;
-  padding:14px 26px;background:rgba(4,5,10,.72);backdrop-filter:blur(10px);
+  padding:14px 26px;background:var(--topbar-bg,rgba(4,5,10,.72));backdrop-filter:blur(10px);
   border-bottom:1px solid var(--line);}
 .cp-brand{display:flex;align-items:center;gap:10px;font-family:var(--font-display);
   font-weight:600;font-size:15px;letter-spacing:-.01em;}
@@ -7275,6 +7300,22 @@ function AppMain({ currentUser, canEdit, canPostNote, onSignOut }) {
 
   // ── UI state ────────────────────────────────────────────────
   const [view, setView] = useState("deals");
+
+  // Appearance: "aurora" (animated bg) · "dark" (static) · "light" (original
+  // white theme). Per-browser preference — colleague feedback: the moving
+  // background distracts some people.
+  const [appearance, setAppearance] = useState(() => {
+    try {
+      const v = localStorage.getItem("cp_appearance");
+      return ["aurora", "dark", "light"].includes(v) ? v : "aurora";
+    } catch { return "aurora"; }
+  });
+  useEffect(() => {
+    try { localStorage.setItem("cp_appearance", appearance); } catch { /* private mode */ }
+    // document-level bits live outside .cp-root (overscroll, scrollbars)
+    document.body.style.background = appearance === "light" ? "#F5F7FB" : "#04050A";
+    document.documentElement.style.colorScheme = appearance === "light" ? "light" : "dark";
+  }, [appearance]);
   const [toastMsg, setToastMsg] = useState(null);
   const [notifs, setNotifs] = useState([]);
   const [bellOpen, setBellOpen] = useState(false);
@@ -7476,10 +7517,12 @@ function AppMain({ currentUser, canEdit, canPostNote, onSignOut }) {
       : "not yet synced");
 
   return (
-    <div className="cp-root">
+    <div className={"cp-root" + (appearance === "light" ? " light" : "")}>
       <style>{CSS}</style>
-      {/* Ambient aurora — the brand liquid backdrop behind every view */}
-      <AuroraBackground opacity={0.36} style={{ position: "fixed", zIndex: 0 }} />
+      {/* Ambient aurora — only in the "aurora" appearance */}
+      {appearance === "aurora" && (
+        <AuroraBackground opacity={0.36} style={{ position: "fixed", zIndex: 0 }} />
+      )}
 
       <div className="cp-top">
         <div className="cp-brand">
@@ -7537,6 +7580,20 @@ function AppMain({ currentUser, canEdit, canPostNote, onSignOut }) {
           <button className="syncnow" onClick={syncHubspot} disabled={syncing}>
             <Satellite size={12} /> {syncing ? "Syncing…" : "Sync now"}
           </button>
+        </div>
+
+        {/* Appearance: aurora / dark / light */}
+        <div className="appearance-toggle">
+          {[
+            ["aurora", Sparkles, "Aurora — dark with the animated background"],
+            ["dark", Moon, "Dark — no animation"],
+            ["light", Sun, "Light — original white theme"],
+          ].map(([k, Ic, label]) => (
+            <button key={k} className={appearance === k ? "on" : ""}
+              onClick={() => setAppearance(k)} title={label} aria-label={label}>
+              <Ic size={13} />
+            </button>
+          ))}
         </div>
 
         {/* Bell */}
