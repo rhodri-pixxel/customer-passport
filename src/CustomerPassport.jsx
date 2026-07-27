@@ -2223,6 +2223,148 @@ async function notifyCsQcComplete({ prevResult, entry, csName }) {
   } catch (_) { /* best-effort */ }
 }
 
+// ── Catalog delivery sync (Metabase "Image to Catalog Mapping") ─────────
+// Images delivered to customers (tasking, archive, manual API) are cataloged to
+// Aurora org UUIDs, not HubSpot deals. catalog_org_links stores the
+// human-confirmed org → passport mapping; once an org is linked, sync is an
+// exact join on org_id — no name matching, unlike the IPR path above.
+const CATALOG_QUESTION_URL = "https://metabase.portals.pixxel.dev/question/636-image-to-catalog-mapping";
+// Public JSON endpoint for that question. Empty until a Metabase admin enables
+// public sharing on it (Admin settings → Public Sharing, then "Public link" on
+// q636) — then set `https://metabase.portals.pixxel.dev/api/public/card/<uuid>/query/json`.
+// While empty, the sync modal imports the question's "Download results → JSON"
+// export instead. Metabase resolves to private 10.x addresses, so either path
+// only works on Pixxel's network — same trade-off as the IPR fetch above.
+const CATALOG_PUBLIC_JSON_URL = "";
+// Orgs that are clearly Pixxel-internal / test workspaces — grouped separately
+// in the review list behind a one-click "ignore all".
+const CATALOG_INTERNAL_RX = /pixxel|internal|test\b|testing|demo|sandbox|order desk|product team|sales ops/i;
+
+function catalogNormName(s) {
+  return String(s || "").toLowerCase()
+    .replace(/\b(inc|ltd|llc|ag|pty|pte|corp|corporation|gmbh|co|company|group|technologies|technology)\b\.?/g, " ")
+    .replace(/[^a-z0-9]+/g, " ").trim();
+}
+
+// Suggest the passport whose company name matches an org name (either contains
+// the other after normalization). Only pre-fills the picker — a human always
+// confirms before the link is saved.
+function catalogSuggestDeal(orgName, deals) {
+  const o = catalogNormName(orgName);
+  if (!o) return null;
+  return (deals || []).find(d => {
+    const c = catalogNormName(d.company);
+    return c && (o === c || o.includes(c) || c.includes(o));
+  }) || null;
+}
+
+// Accepts the Metabase JSON export (array of row objects) or a raw query API
+// response ({data:{cols,rows}}). Returns clean row objects or throws.
+function parseCatalogRows(input) {
+  let data = input;
+  if (typeof data === "string") data = JSON.parse(data);
+  if (data && data.data && Array.isArray(data.data.rows) && Array.isArray(data.data.cols)) {
+    const names = data.data.cols.map(c => c.name);
+    data = data.data.rows.map(r => Object.fromEntries(names.map((n, i) => [n, r[i]])));
+  }
+  if (!Array.isArray(data)) throw new Error("Unrecognized format — expected the question's JSON export");
+  const rows = data
+    .filter(r => r && r.image_id && r.org_id)
+    .map(r => ({
+      image_id: String(r.image_id).trim(),
+      org_id: String(r.org_id).trim(),
+      org_name: String(r.org_name || "").trim(),
+      order_type: r.order_type || null,
+      task_id: r.task_id || null,
+      delivered_at: r.delivered_at || null,
+    }));
+  if (!rows.length) throw new Error("No image rows found — is this the right export?");
+  return rows;
+}
+
+async function fetchCatalogRows() {
+  const r = await fetch(CATALOG_PUBLIC_JSON_URL);
+  if (!r.ok) throw new Error(`Metabase ${r.status}: ${(await r.text()).slice(0, 200)}`);
+  return parseCatalogRows(await r.json());
+}
+
+// PostgREST upsert (ON CONFLICT … DO UPDATE) — sbPost can't set on_conflict.
+async function sbUpsert(table, rows, onConflict) {
+  const r = await sbFetchWithRefresh(() => fetch(`${SUPABASE_URL}/rest/v1/${table}?on_conflict=${onConflict}`, {
+    method: "POST",
+    headers: getHeaders({ "Prefer": "resolution=merge-duplicates,return=minimal" }),
+    body: JSON.stringify(rows),
+  }));
+  if (!r.ok) {
+    if (r.status === 401) throw new Error("Your session has expired — please sign in again.");
+    throw new Error(`${r.status}: ${await r.text()}`);
+  }
+}
+
+async function fetchCatalogLinks() {
+  return sbGet("catalog_org_links", "?order=created_at.asc");
+}
+async function saveCatalogLinks(links) {
+  await sbUpsert("catalog_org_links", links, "org_id");
+}
+async function deleteCatalogLink(orgId) {
+  const r = await sbFetchWithRefresh(() => fetch(`${SUPABASE_URL}/rest/v1/catalog_org_links?org_id=eq.${encodeURIComponent(orgId)}`, {
+    method: "DELETE", headers: getHeaders({ "Prefer": "return=minimal" }),
+  }));
+  if (!r.ok) throw new Error(`${r.status}: ${await r.text()}`);
+}
+
+// Sync catalog rows into the passport: upsert delivered_images for every row
+// whose org is linked to a passport, then create Awaiting-QC rows for delivered
+// images that have no QC entry yet. Dedup is an exact image_id match — catalog
+// ids (TD1_005260_…) and IPR ids (FF03 0000004320) use different formats, so a
+// cross-source duplicate is possible; catalog rows carry created_by
+// "Catalog import" to keep them tellable apart. No Slack pings here: the first
+// sync backfills months of deliveries and would flood every SE.
+async function syncCatalogRows(rows, links, deals) {
+  const linkByOrg = {};
+  for (const l of links || []) if (l.status === "linked" && l.passport_id) linkByOrg[l.org_id] = l;
+  // The source has a few duplicated (org, image) pairs — last row wins.
+  const byKey = new Map();
+  for (const row of rows) {
+    const link = linkByOrg[row.org_id];
+    if (!link) continue;
+    byKey.set(`${row.org_id}||${row.image_id}`, { ...row, passport_id: link.passport_id });
+  }
+  const toSync = [...byKey.values()];
+  for (let i = 0; i < toSync.length; i += 500) {
+    await sbUpsert("delivered_images", toSync.slice(i, i + 500), "org_id,image_id");
+  }
+  const existing = await existingQcImageIds();
+  const TEAM_FLAT = Object.values(TEAM_MEMBERS).flat();
+  const qcRows = [];
+  for (const row of toSync) {
+    const key = row.image_id.toLowerCase();
+    if (existing.has(key)) continue;
+    existing.add(key);
+    const deal = (deals || []).find(d => d.id === row.passport_id);
+    const seName = deal && deal.owners ? deal.owners.se : null;
+    const sePerson = seName ? TEAM_FLAT.find(p => p.name === seName) : null;
+    qcRows.push({
+      organization: (deal && deal.company) || row.org_name || "Unknown",
+      passport_id: row.passport_id,
+      usecase: "",
+      qc_result: "Awaiting QC",
+      image_id: row.image_id,
+      assignee: seName || null,
+      assignee_email: sePerson ? sePerson.email : null,
+      qc_notes: "",
+      location: "",
+      mvp_image: false,
+      created_by: "Catalog import",
+    });
+  }
+  for (let i = 0; i < qcRows.length; i += 200) {
+    await sbPost("quality_checks", qcRows.slice(i, i + 200));
+  }
+  return { imagesSynced: toSync.length, qcCreated: qcRows.length };
+}
+
 // Searchable deal picker — type to filter instead of scrolling a long dropdown
 function DealSearchPicker({ deals, value, onChange }) {
   const [open, setOpen] = useState(false);
@@ -2647,13 +2789,252 @@ function IprImportModal({ deals, onClose, onDone, toast }) {
   );
 }
 
-function QualityChecksGlobal({ deals, canEdit, onOpen, toast }) {
+// Catalog sync modal — loads the delivery list (auto-fetch when the public
+// link is configured, else a dropped/pasted Metabase JSON export), shows every
+// org in it grouped by mapping status, lets editors link/ignore orgs, then
+// syncs delivered images + QC rows for all linked orgs.
+function CatalogSyncModal({ deals, onClose, onDone, toast, currentUserName }) {
+  const [links, setLinks] = useState([]);
+  const [rows, setRows] = useState(null);   // null until a source is loaded
+  const [loading, setLoading] = useState(false);
+  const [syncing, setSyncing] = useState(false);
+  const [pasteOpen, setPasteOpen] = useState(false);
+  const [pasteText, setPasteText] = useState("");
+  const [pick, setPick] = useState({});     // org_id → passport_id chosen in a picker
+  const fileRef = useRef(null);
+
+  const reloadLinks = async () => { try { setLinks(await fetchCatalogLinks()); } catch (_) { setLinks([]); } };
+  useEffect(() => {
+    reloadLinks();
+    if (CATALOG_PUBLIC_JSON_URL) autoFetch();
+  }, []);
+
+  const autoFetch = async () => {
+    setLoading(true);
+    try { setRows(await fetchCatalogRows()); }
+    catch (e) { toast("Couldn't fetch from Metabase: " + e.message); }
+    finally { setLoading(false); }
+  };
+  const onFile = async (file) => {
+    if (!file) return;
+    try { setRows(parseCatalogRows(await file.text())); }
+    catch (e) { toast("Import failed: " + e.message); }
+  };
+  const onPaste = () => {
+    try { setRows(parseCatalogRows(pasteText)); setPasteOpen(false); setPasteText(""); }
+    catch (e) { toast("Paste failed: " + e.message); }
+  };
+
+  // Orgs in the loaded data, grouped by mapping status.
+  const groups = useMemo(() => {
+    if (!rows) return null;
+    const byOrg = new Map();
+    for (const r of rows) {
+      if (!byOrg.has(r.org_id)) byOrg.set(r.org_id, { org_id: r.org_id, org_name: r.org_name, count: 0 });
+      byOrg.get(r.org_id).count++;
+    }
+    const linkBy = {};
+    for (const l of links) linkBy[l.org_id] = l;
+    const linked = [], ignored = [], internal = [], unmatched = [];
+    for (const o of byOrg.values()) {
+      const l = linkBy[o.org_id];
+      if (l && l.status === "linked") linked.push({ ...o, deal: deals.find(d => d.id === l.passport_id) });
+      else if (l && l.status === "ignored") ignored.push(o);
+      else if (CATALOG_INTERNAL_RX.test(o.org_name)) internal.push(o);
+      else unmatched.push({ ...o, suggestion: catalogSuggestDeal(o.org_name, deals) });
+    }
+    const byCount = (a, b) => b.count - a.count;
+    return { linked: linked.sort(byCount), ignored: ignored.sort(byCount), internal: internal.sort(byCount), unmatched: unmatched.sort(byCount) };
+  }, [rows, links, deals]);
+
+  const saveLink = async (o, passportId) => {
+    if (!passportId) { toast("Pick a deal first"); return; }
+    try {
+      await saveCatalogLinks([{ org_id: o.org_id, org_name: o.org_name, passport_id: passportId, status: "linked", created_by: currentUserName || null }]);
+      await reloadLinks();
+    } catch (e) { toast("Link failed: " + e.message); }
+  };
+  const ignoreOrg = async (o) => {
+    try {
+      await saveCatalogLinks([{ org_id: o.org_id, org_name: o.org_name, passport_id: null, status: "ignored", created_by: currentUserName || null }]);
+      await reloadLinks();
+    } catch (e) { toast("Ignore failed: " + e.message); }
+  };
+  const unlinkOrg = async (o) => {
+    try { await deleteCatalogLink(o.org_id); await reloadLinks(); }
+    catch (e) { toast("Unlink failed: " + e.message); }
+  };
+  const ignoreAllInternal = async () => {
+    try {
+      await saveCatalogLinks(groups.internal.map(o => ({ org_id: o.org_id, org_name: o.org_name, passport_id: null, status: "ignored", created_by: currentUserName || null })));
+      await reloadLinks();
+    } catch (e) { toast("Ignore failed: " + e.message); }
+  };
+
+  const doSync = async () => {
+    setSyncing(true);
+    try {
+      const { imagesSynced, qcCreated } = await syncCatalogRows(rows, links, deals);
+      toast(`Synced ${imagesSynced} delivered image${imagesSynced === 1 ? "" : "s"} · ${qcCreated} new QC row${qcCreated === 1 ? "" : "s"}`);
+      onDone && onDone();
+      onClose();
+    } catch (e) { toast("Sync failed: " + e.message); }
+    finally { setSyncing(false); }
+  };
+
+  const linkedImageCount = groups ? groups.linked.reduce((n, o) => n + o.count, 0) : 0;
+  const secTitle = { fontFamily:"var(--font-mono)", fontSize:"9.5px", letterSpacing:".1em", textTransform:"uppercase", color:"var(--muted2)", margin:"14px 0 6px" };
+  const orgRow = { display:"flex", alignItems:"center", gap:8, padding:"7px 10px", borderBottom:"1px solid var(--line)", fontSize:12.5, flexWrap:"wrap" };
+  const listBox = { border:"1px solid var(--line)", borderRadius:10, maxHeight:220, overflowY:"auto" };
+  const countChip = { fontFamily:"var(--font-mono)", fontSize:10.5, color:"var(--muted2)", whiteSpace:"nowrap" };
+
+  return (
+    <div onClick={onClose} style={{ position:"fixed", inset:0, zIndex:200, background:"rgba(8,18,28,.45)", display:"flex", alignItems:"flex-start", justifyContent:"center", padding:"6vh 16px", overflowY:"auto" }}>
+      <div onClick={e => e.stopPropagation()} style={{ width:"100%", maxWidth:820, background:"var(--card)", borderRadius:16, border:"1px solid var(--line)", boxShadow:"0 30px 80px -20px rgba(11,18,32,.5)", overflow:"hidden" }}>
+        <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", padding:"16px 20px", borderBottom:"1px solid var(--line)" }}>
+          <div style={{ display:"flex", alignItems:"center", gap:9 }}>
+            <Layers size={17} color="var(--accent-deep)" />
+            <h3 style={{ margin:0, fontSize:16 }}>Catalog image deliveries</h3>
+          </div>
+          <button onClick={onClose} style={{ border:"none", background:"none", cursor:"pointer", color:"var(--muted2)" }}><X size={18} /></button>
+        </div>
+
+        <div style={{ padding:"16px 20px" }}>
+          {!rows && (
+            <div>
+              <div style={{ fontSize:13, color:"var(--muted)", lineHeight:1.55 }}>
+                Deliveries are tracked in Metabase's <a href={CATALOG_QUESTION_URL} target="_blank" rel="noreferrer" style={{ color:"var(--accent-deep)" }}>Image to Catalog Mapping</a> question.
+                {CATALOG_PUBLIC_JSON_URL
+                  ? " Fetching the latest data…"
+                  : " Auto-fetch isn't configured yet (needs a Metabase admin to enable public sharing on that question) — meanwhile, open it, use Download results → JSON, and import the file here."}
+              </div>
+              <div style={{ display:"flex", gap:8, marginTop:14, flexWrap:"wrap" }}>
+                {CATALOG_PUBLIC_JSON_URL && (
+                  <button className="btn solid" onClick={autoFetch} disabled={loading}>
+                    {loading ? <><RefreshCw size={13} className="spin" /> Fetching…</> : <><RefreshCw size={13} /> Fetch from Metabase</>}
+                  </button>
+                )}
+                <button className="btn ghost" style={{ color:"var(--accent-deep)", border:"1px solid var(--line)", background:"var(--card)" }} onClick={() => fileRef.current && fileRef.current.click()}>
+                  <Upload size={13} /> Import JSON export
+                </button>
+                <button className="btn ghost" style={{ color:"var(--muted)", border:"1px solid var(--line)", background:"var(--card)" }} onClick={() => setPasteOpen(o => !o)}>
+                  <FileText size={13} /> Paste JSON
+                </button>
+                <input ref={fileRef} type="file" accept=".json,application/json" style={{ display:"none" }}
+                  onChange={e => { onFile(e.target.files && e.target.files[0]); e.target.value = ""; }} />
+              </div>
+              {pasteOpen && (
+                <div style={{ marginTop:10 }}>
+                  <textarea value={pasteText} onChange={e => setPasteText(e.target.value)} placeholder='[{"image_id":"…","org_id":"…","org_name":"…"}, …]'
+                    style={{ width:"100%", border:"1px solid var(--line)", borderRadius:9, padding:"9px 12px", fontFamily:"var(--font-mono)", fontSize:12, resize:"vertical", minHeight:90, outline:"none" }} />
+                  <div style={{ display:"flex", justifyContent:"flex-end", marginTop:8 }}>
+                    <button className="btn solid" onClick={onPaste} disabled={!pasteText.trim()}>Load</button>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {rows && groups && (
+            <div>
+              <div style={{ fontSize:12.5, color:"var(--muted)" }}>
+                {rows.length} delivery rows · {groups.linked.length + groups.ignored.length + groups.internal.length + groups.unmatched.length} orgs ·{" "}
+                {groups.linked.length} linked → {linkedImageCount} images will sync
+              </div>
+
+              {groups.unmatched.length > 0 && (
+                <>
+                  <div style={secTitle}>Needs mapping — link to a deal or ignore</div>
+                  <div style={listBox}>
+                    {groups.unmatched.map(o => {
+                      const chosen = pick[o.org_id] !== undefined ? pick[o.org_id] : (o.suggestion ? o.suggestion.id : "");
+                      return (
+                        <div key={o.org_id} style={orgRow}>
+                          <div style={{ flex:"1 1 160px", minWidth:140 }}>
+                            <strong>{o.org_name || "(unnamed org)"}</strong>
+                            {o.suggestion && pick[o.org_id] === undefined && <span style={{ marginLeft:6, fontSize:10.5, color:"var(--accent-deep)" }}>suggested ↓</span>}
+                          </div>
+                          <span style={countChip}>{o.count} img</span>
+                          <div style={{ flex:"1 1 190px", minWidth:180 }}>
+                            <DealSearchPicker deals={deals} value={chosen} onChange={id => setPick(p => ({ ...p, [o.org_id]: id }))} />
+                          </div>
+                          <button className="btn solid" style={{ padding:"5px 11px", fontSize:12 }} onClick={() => saveLink(o, chosen)} disabled={!chosen}><Link2 size={12} /> Link</button>
+                          <button className="btn ghost" style={{ padding:"5px 9px", fontSize:12, color:"var(--muted)", border:"1px solid var(--line)", background:"var(--card)" }} onClick={() => ignoreOrg(o)}>Ignore</button>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </>
+              )}
+
+              {groups.linked.length > 0 && (
+                <>
+                  <div style={secTitle}>Linked orgs</div>
+                  <div style={listBox}>
+                    {groups.linked.map(o => (
+                      <div key={o.org_id} style={orgRow}>
+                        <div style={{ flex:"1 1 160px", minWidth:140 }}><strong>{o.org_name}</strong></div>
+                        <span style={countChip}>{o.count} img</span>
+                        <div style={{ flex:"1 1 160px", fontSize:12, color:"var(--muted)" }}>→ {o.deal ? o.deal.company : "(deal not in current view)"}</div>
+                        <button className="btn ghost" style={{ padding:"5px 9px", fontSize:12, color:"var(--muted)", border:"1px solid var(--line)", background:"var(--card)" }} onClick={() => unlinkOrg(o)}>Unlink</button>
+                      </div>
+                    ))}
+                  </div>
+                </>
+              )}
+
+              {groups.internal.length > 0 && (
+                <>
+                  <div style={{ ...secTitle, display:"flex", alignItems:"center", gap:10 }}>
+                    <span>Looks internal ({groups.internal.length})</span>
+                    <button className="btn ghost" style={{ padding:"3px 9px", fontSize:11, color:"var(--muted)", border:"1px solid var(--line)", background:"var(--card)" }} onClick={ignoreAllInternal}>Ignore all</button>
+                  </div>
+                  <div style={{ ...listBox, maxHeight:140 }}>
+                    {groups.internal.map(o => (
+                      <div key={o.org_id} style={orgRow}>
+                        <div style={{ flex:"1 1 200px", color:"var(--muted)" }}>{o.org_name}</div>
+                        <span style={countChip}>{o.count} img</span>
+                        <button className="btn ghost" style={{ padding:"5px 9px", fontSize:12, color:"var(--muted)", border:"1px solid var(--line)", background:"var(--card)" }} onClick={() => ignoreOrg(o)}>Ignore</button>
+                        <button className="btn ghost" style={{ padding:"5px 9px", fontSize:12, color:"var(--accent-deep)", border:"1px solid var(--line)", background:"var(--card)" }} onClick={() => saveLink(o, pick[o.org_id])} disabled={!pick[o.org_id]}>Link…</button>
+                        <div style={{ flex:"0 1 170px", minWidth:160 }}>
+                          <DealSearchPicker deals={deals} value={pick[o.org_id] || ""} onChange={id => setPick(p => ({ ...p, [o.org_id]: id }))} />
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </>
+              )}
+
+              {groups.ignored.length > 0 && (
+                <div style={{ marginTop:12, fontSize:11.5, color:"var(--muted2)" }}>
+                  {groups.ignored.length} org{groups.ignored.length === 1 ? "" : "s"} ignored ({groups.ignored.slice(0, 6).map(o => o.org_name).join(", ")}{groups.ignored.length > 6 ? "…" : ""}) —{" "}
+                  <button style={{ border:"none", background:"none", cursor:"pointer", color:"var(--accent-deep)", fontSize:11.5, padding:0 }}
+                    onClick={() => groups.ignored.forEach(unlinkOrg)}>reset</button>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+
+        <div style={{ display:"flex", gap:8, justifyContent:"flex-end", padding:"14px 20px", borderTop:"1px solid var(--line)" }}>
+          <button className="btn ghost" style={{ color:"var(--muted)", border:"1px solid var(--line)", background:"var(--card)" }} onClick={onClose}>Close</button>
+          <button className="btn solid" onClick={doSync} disabled={syncing || !rows || !groups || groups.linked.length === 0}>
+            {syncing ? <><RefreshCw size={13} className="spin" /> Syncing…</> : <><RefreshCw size={13} /> Sync {linkedImageCount || ""} images</>}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function QualityChecksGlobal({ deals, canEdit, onOpen, toast, currentUserName }) {
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
   const [editRow, setEditRow] = useState(null); // the QC entry being edited, or null
   const [filter, setFilter] = useState("all"); // all | Pass | Fail
   const [showImport, setShowImport] = useState(false); // IPR import modal
+  const [showCatalog, setShowCatalog] = useState(false); // catalog delivery sync modal
   const [syncing, setSyncing] = useState(false);       // auto-populate in progress
 
   const load = async () => {
@@ -2718,6 +3099,7 @@ function QualityChecksGlobal({ deals, canEdit, onOpen, toast }) {
                 {syncing ? <><RefreshCw size={14} className="spin" /> Syncing…</> : <><RefreshCw size={14} /> Sync captured images</>}
               </button>
               <button className="btn ghost" style={{ color:"var(--accent-deep)", border:"1px solid var(--line)", background:"var(--card)" }} onClick={() => setShowImport(true)}><Satellite size={14} /> Import from IPR</button>
+              <button className="btn ghost" style={{ color:"var(--accent-deep)", border:"1px solid var(--line)", background:"var(--card)" }} onClick={() => setShowCatalog(true)} title="Images cataloged to customer workspaces (tasking / archive / manual API deliveries)"><Layers size={14} /> Catalog deliveries</button>
               <button className="btn solid" onClick={() => setShowForm(true)}><Plus size={14} /> New QC entry</button>
             </>
           )}
@@ -2727,6 +3109,11 @@ function QualityChecksGlobal({ deals, canEdit, onOpen, toast }) {
       {showImport && (
         <IprImportModal deals={deals} toast={toast}
           onClose={() => setShowImport(false)} onDone={load} />
+      )}
+
+      {showCatalog && (
+        <CatalogSyncModal deals={deals} toast={toast} currentUserName={currentUserName}
+          onClose={() => setShowCatalog(false)} onDone={load} />
       )}
 
       {(showForm || editRow) && (
@@ -4705,6 +5092,39 @@ function CommercialLegalTracker({ items, canEdit, onSave }) {
   );
 }
 
+// Read-only log of images cataloged to this deal's Aurora org(s), fed by the
+// catalog delivery sync (Quality Checks → Catalog deliveries).
+function DeliveredImagesBlock({ items }) {
+  const [showAll, setShowAll] = useState(false);
+  if (!items || !items.length) {
+    return <div className="empty"><Layers size={15} /> No cataloged deliveries yet — link this deal's Aurora org under Quality Checks → Catalog deliveries, then sync.</div>;
+  }
+  const shown = showAll ? items : items.slice(0, 8);
+  const fmtDate = (iso) => iso ? new Date(iso).toLocaleDateString("en-GB", { day:"2-digit", month:"short", year:"numeric" }) : "—";
+  return (
+    <div style={{ overflowX:"auto" }}>
+      <table className="qc-table">
+        <thead><tr><th>Image ID</th><th>Order</th><th>Task</th><th>Delivered</th></tr></thead>
+        <tbody>
+          {shown.map(di => (
+            <tr key={di.id}>
+              <td style={{ fontFamily:"var(--font-mono)", fontSize:11.5 }}>{di.imageId}</td>
+              <td style={{ fontSize:11.5 }}>{di.orderType || "—"}</td>
+              <td style={{ fontFamily:"var(--font-mono)", fontSize:11, color:"var(--muted)", maxWidth:140, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{di.taskId || "—"}</td>
+              <td style={{ fontSize:11.5, whiteSpace:"nowrap" }}>{fmtDate(di.deliveredAt)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      {items.length > 8 && (
+        <button onClick={() => setShowAll(s => !s)} style={{ border:"none", background:"none", cursor:"pointer", color:"var(--accent-deep)", fontSize:12.5, padding:"8px 2px 0" }}>
+          {showAll ? "Show fewer" : `Show all ${items.length}`}
+        </button>
+      )}
+    </div>
+  );
+}
+
 function ExecutionTab({ d, canEdit, onUpdate, onSaveField }) {
   const e = d.execution;
   const st = d.sectionStamps || {};
@@ -4768,6 +5188,11 @@ function ExecutionTab({ d, canEdit, onUpdate, onSaveField }) {
           onUploadShot={async (file) => await uploadFile(d.id, file)} />
       </Block>
 
+      {/* Images cataloged / delivered to this customer's workspace */}
+      <Block icon={Layers} title={`Delivered images${(e.deliveredImages||[]).length ? ` (${e.deliveredImages.length})` : ""}`}>
+        <DeliveredImagesBlock items={e.deliveredImages||[]} />
+      </Block>
+
       <div className="cols">
         <Block icon={Layers} title="Sample data delivered">
           <SampleDataAdder items={e.sampleData} canEdit={canEdit}
@@ -4807,6 +5232,16 @@ function ExecutionTab({ d, canEdit, onUpdate, onSaveField }) {
               placeholder="Aurora workspace name or ID" />
             <EditableField k="Workspace link" value={e.auroraUrl} field="aurora_url" canEdit={canEdit} onSave={onSaveField}
               placeholder="https://…" mono />
+            {(e.linkedOrgs||[]).length > 0 && (
+              <div style={{ marginTop:8 }}>
+                <div className="k">Linked catalog org{e.linkedOrgs.length === 1 ? "" : "s"}</div>
+                <div style={{ display:"flex", gap:6, flexWrap:"wrap", marginTop:4 }}>
+                  {e.linkedOrgs.map(o => (
+                    <span key={o.orgId} title={o.orgId} style={{ fontSize:11.5, padding:"3px 9px", borderRadius:999, border:"1px solid var(--line)", background:"var(--bg)", color:"var(--muted)" }}>{o.orgName}</span>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
         </Block>
 
@@ -5977,7 +6412,7 @@ async function fetchPassports({ pipeline, stage, ownerFilter, search, archivedVi
 }
 
 async function fetchPassportDetail(id) {
-  const [passport, contacts, pocs, risks, sampleData, captureLog, actionItems, meetingNotes, activityFeed, attachments, feedback, collaborators] = await Promise.all([
+  const [passport, contacts, pocs, risks, sampleData, captureLog, actionItems, meetingNotes, activityFeed, attachments, feedback, collaborators, deliveredImages, catalogLinks] = await Promise.all([
     sbGet("handover_passports", `?id=eq.${id}`).then(r => r[0]),
     sbGet("deal_contacts", `?passport_id=eq.${id}`),
     sbGet("deal_pocs", `?passport_id=eq.${id}`),
@@ -5990,8 +6425,10 @@ async function fetchPassportDetail(id) {
     sbGet("attachments", `?passport_id=eq.${id}`),
     sbGet("customer_feedback", `?passport_id=eq.${id}&order=feedback_date.desc`),
     sbGet("deal_collaborators", `?passport_id=eq.${id}&order=created_at.asc`).catch(() => []),
+    sbGet("delivered_images", `?passport_id=eq.${id}&order=delivered_at.desc.nullslast`).catch(() => []),
+    sbGet("catalog_org_links", `?passport_id=eq.${id}&status=eq.linked`).catch(() => []),
   ]);
-  return { passport, contacts: contacts||[], pocs: pocs||[], risks: risks||[], sampleData: sampleData||[], captureLog: captureLog||[], actionItems: actionItems||[], meetingNotes: meetingNotes||[], activityFeed: activityFeed||[], attachments: attachments||[], feedback: feedback||[], collaborators: collaborators||[] };
+  return { passport, contacts: contacts||[], pocs: pocs||[], risks: risks||[], sampleData: sampleData||[], captureLog: captureLog||[], actionItems: actionItems||[], meetingNotes: meetingNotes||[], activityFeed: activityFeed||[], attachments: attachments||[], feedback: feedback||[], collaborators: collaborators||[], deliveredImages: deliveredImages||[], catalogLinks: catalogLinks||[] };
 }
 
 function calcReadiness(passport, contacts) {
@@ -6372,7 +6809,7 @@ function DealsSplit({ deals, onOpen, ownerFilter, setOwnerFilter }) {
    ================================================================ */
 
 function PassportDetail({ data, onBack, canEdit, canPostNote, onRefresh, onAssign, onNotifyAll, onPostToSlack, slackChannel, slackSending, slackStatus, toast, currentUserName }) {
-  const { passport: p, contacts, pocs, risks, sampleData, captureLog, actionItems, meetingNotes, activityFeed, attachments, feedback, collaborators } = data;
+  const { passport: p, contacts, pocs, risks, sampleData, captureLog, actionItems, meetingNotes, activityFeed, attachments, feedback, collaborators, deliveredImages, catalogLinks } = data;
   const { score, items: readinessItems } = calcReadiness(p, contacts);
 
   // Map Supabase passport → the shape Passport component expects
@@ -6449,6 +6886,11 @@ function PassportDetail({ data, onBack, canEdit, canPostNote, onRefresh, onAssig
       actionItems: actionItems.map(a => ({
         id: a.id, task: a.task, owner: a.owner, due: a.due_date, done: a.done,
       })),
+      deliveredImages: (deliveredImages || []).map(di => ({
+        id: di.id, imageId: di.image_id, orderType: di.order_type || "",
+        taskId: di.task_id || "", deliveredAt: di.delivered_at, orgName: di.org_name || "",
+      })),
+      linkedOrgs: (catalogLinks || []).map(l => ({ orgId: l.org_id, orgName: l.org_name })),
     },
     notes: {
       meetings: meetingNotes.map(n => ({ id: n.id, date: n.note_date || "", author: n.author, text: n.body })),
@@ -7710,7 +8152,7 @@ function AppMain({ currentUser, canEdit, canPostNote, onSignOut }) {
           : view === "dashboard"
             ? <DashboardLive deals={deals} onOpen={openPassport} />
             : view === "qc"
-              ? <QualityChecksGlobal deals={deals} canEdit={canEdit} onOpen={openPassport} toast={toast} />
+              ? <QualityChecksGlobal deals={deals} canEdit={canEdit} onOpen={openPassport} toast={toast} currentUserName={currentUser.name} />
               : view === "mvp"
                 ? <MvpImagesGlobal deals={deals} canEdit={canEdit} onOpen={openPassport} toast={toast} />
                 : view === "maps"

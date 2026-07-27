@@ -279,6 +279,29 @@ CREATE TABLE public.quality_checks (
   ipr_info text
 );
 
+-- Catalog image sync (Metabase "Image to Catalog Mapping", question 636) —
+-- see supabase/migrations/20260727_catalog_image_sync.sql for the rationale.
+CREATE TABLE public.catalog_org_links (
+  org_id text NOT NULL,
+  org_name text NOT NULL,
+  passport_id uuid,
+  status text DEFAULT 'linked'::text NOT NULL,
+  created_by text,
+  created_at timestamp with time zone DEFAULT now() NOT NULL
+);
+
+CREATE TABLE public.delivered_images (
+  id uuid DEFAULT uuid_generate_v4() NOT NULL,
+  passport_id uuid,
+  org_id text NOT NULL,
+  org_name text,
+  image_id text NOT NULL,
+  order_type text,
+  task_id text,
+  delivered_at timestamp with time zone,
+  synced_at timestamp with time zone DEFAULT now() NOT NULL
+);
+
 -- ---------------------------------------------------------------------------
 -- Primary keys, uniques, checks
 -- ---------------------------------------------------------------------------
@@ -303,6 +326,11 @@ ALTER TABLE public.app_users ADD CONSTRAINT app_users_email_key UNIQUE (email);
 ALTER TABLE public.handover_passports ADD CONSTRAINT handover_passports_hubspot_deal_id_key UNIQUE (hubspot_deal_id);
 ALTER TABLE public.quality_checks ADD CONSTRAINT quality_checks_qc_result_check CHECK ((qc_result = ANY (ARRAY['Pass'::text, 'Fail'::text, 'Awaiting QC'::text])));
 ALTER TABLE public.quality_checks ADD CONSTRAINT quality_checks_type_check CHECK ((type = ANY (ARRAY['Sample'::text, 'Paid'::text])));
+ALTER TABLE public.catalog_org_links ADD CONSTRAINT catalog_org_links_pkey PRIMARY KEY (org_id);
+ALTER TABLE public.catalog_org_links ADD CONSTRAINT catalog_org_links_status_check CHECK ((status = ANY (ARRAY['linked'::text, 'ignored'::text])));
+ALTER TABLE public.catalog_org_links ADD CONSTRAINT catalog_org_links_status_passport_check CHECK ((status = 'linked' AND passport_id IS NOT NULL) OR (status = 'ignored' AND passport_id IS NULL));
+ALTER TABLE public.delivered_images ADD CONSTRAINT delivered_images_pkey PRIMARY KEY (id);
+ALTER TABLE public.delivered_images ADD CONSTRAINT delivered_images_org_image_key UNIQUE (org_id, image_id);
 
 -- ---------------------------------------------------------------------------
 -- Foreign keys
@@ -322,6 +350,8 @@ ALTER TABLE public.deal_sample_data ADD CONSTRAINT deal_sample_data_passport_id_
 ALTER TABLE public.meeting_notes ADD CONSTRAINT meeting_notes_passport_id_fkey FOREIGN KEY (passport_id) REFERENCES handover_passports(id) ON DELETE CASCADE;
 ALTER TABLE public.notifications ADD CONSTRAINT notifications_passport_id_fkey FOREIGN KEY (passport_id) REFERENCES handover_passports(id) ON DELETE SET NULL;
 ALTER TABLE public.quality_checks ADD CONSTRAINT quality_checks_passport_id_fkey FOREIGN KEY (passport_id) REFERENCES handover_passports(id) ON DELETE SET NULL;
+ALTER TABLE public.catalog_org_links ADD CONSTRAINT catalog_org_links_passport_id_fkey FOREIGN KEY (passport_id) REFERENCES handover_passports(id) ON DELETE CASCADE;
+ALTER TABLE public.delivered_images ADD CONSTRAINT delivered_images_passport_id_fkey FOREIGN KEY (passport_id) REFERENCES handover_passports(id) ON DELETE CASCADE;
 
 -- ---------------------------------------------------------------------------
 -- Indexes
@@ -340,6 +370,8 @@ CREATE INDEX idx_meeting_notes_hs_eng ON public.meeting_notes USING btree (hs_en
 CREATE INDEX idx_notifications_passport ON public.notifications USING btree (passport_id, created_at);
 CREATE INDEX idx_quality_checks_created ON public.quality_checks USING btree (created_at DESC);
 CREATE INDEX idx_quality_checks_passport ON public.quality_checks USING btree (passport_id);
+CREATE INDEX idx_catalog_links_passport ON public.catalog_org_links USING btree (passport_id);
+CREATE INDEX idx_delivered_images_passport ON public.delivered_images USING btree (passport_id, delivered_at DESC);
 
 -- ---------------------------------------------------------------------------
 -- Functions
@@ -430,6 +462,8 @@ ALTER TABLE public.handover_passports ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.meeting_notes ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.notifications ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.quality_checks ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.catalog_org_links ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.delivered_images ENABLE ROW LEVEL SECURITY;
 
 -- ---------------------------------------------------------------------------
 -- Policies
@@ -504,6 +538,14 @@ CREATE POLICY "delete quality_checks" ON public.quality_checks FOR DELETE TO pub
 CREATE POLICY "insert quality_checks" ON public.quality_checks FOR INSERT TO public WITH CHECK (can_edit());
 CREATE POLICY "read quality_checks" ON public.quality_checks FOR SELECT TO public USING ((auth.role() = 'authenticated'::text));
 CREATE POLICY "update quality_checks" ON public.quality_checks FOR UPDATE TO public USING (can_edit());
+CREATE POLICY read_catalog_org_links ON public.catalog_org_links FOR SELECT TO public USING ((auth.role() = 'authenticated'::text));
+CREATE POLICY insert_catalog_org_links ON public.catalog_org_links FOR INSERT TO public WITH CHECK (can_edit());
+CREATE POLICY update_catalog_org_links ON public.catalog_org_links FOR UPDATE TO public USING (can_edit());
+CREATE POLICY delete_catalog_org_links ON public.catalog_org_links FOR DELETE TO public USING (can_edit());
+CREATE POLICY read_delivered_images ON public.delivered_images FOR SELECT TO public USING ((auth.role() = 'authenticated'::text));
+CREATE POLICY insert_delivered_images ON public.delivered_images FOR INSERT TO public WITH CHECK (can_edit());
+CREATE POLICY update_delivered_images ON public.delivered_images FOR UPDATE TO public USING (can_edit());
+CREATE POLICY delete_delivered_images ON public.delivered_images FOR DELETE TO public USING (can_edit());
 
 -- ---------------------------------------------------------------------------
 -- Storage
