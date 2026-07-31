@@ -3703,6 +3703,15 @@ function HandoverStatus({ d, canEdit, onUpdate }) {
   );
 }
 
+// ── Offering tag — what the deal covers: imagery, analytics, or both ──────
+// Colors follow the spectral header ramp. null = untagged.
+const OFFERINGS = [
+  { key: "imagery",   label: "Imagery only",        short: "IMG", color: "#03d4ff" },
+  { key: "analytics", label: "Analytics",           short: "ANL", color: "#98eb00" },
+  { key: "both",      label: "Imagery + Analytics", short: "I+A", color: "#ecb423" },
+];
+const offeringOf = (key) => OFFERINGS.find(o => o.key === key) || null;
+
 function Passport({ deal, onBack, canEdit, canPostNote, onUpdate, onAssign, onNotifyAll, onPostToSlack, onPushPlanhat, slackChannel, slackSending, slackStatus, toast }) {
   const [tab, setTab] = useState("profile");
   const [showChecklist, setShowChecklist] = useState(false);
@@ -3747,6 +3756,27 @@ function Passport({ deal, onBack, canEdit, canPostNote, onUpdate, onAssign, onNo
                 }}>
                 {deal.isEap ? "EAP" : "+ EAP"}
               </button>
+              {(() => {
+                const off = offeringOf(deal.offering);
+                // Cycle imagery → analytics → both → untagged so tagging is one
+                // click from the header, same idiom as the EAP pill.
+                const next = () => {
+                  const idx = OFFERINGS.findIndex(o => o.key === deal.offering);
+                  return idx === -1 ? OFFERINGS[0].key : (idx === OFFERINGS.length - 1 ? null : OFFERINGS[idx + 1].key);
+                };
+                return (
+                  <button onClick={() => canEdit && onUpdate({ _setOffering: { value: next() } })} disabled={!canEdit}
+                    title={canEdit ? "Click to cycle: imagery only → analytics → imagery + analytics → untagged" : ""}
+                    className="hd-pill"
+                    style={{
+                      fontFamily: "var(--font-mono)", fontSize: 9.5, letterSpacing: ".14em", cursor: canEdit ? "pointer" : "default",
+                      borderColor: off ? off.color + "80" : "var(--hair2)",
+                      color: off ? off.color : "var(--muted2)", background: "transparent",
+                    }}>
+                    {off ? off.label.toUpperCase() : "+ OFFERING"}
+                  </button>
+                );
+              })()}
             </div>
             <h1>{deal.company}</h1>
           </div>
@@ -6371,7 +6401,7 @@ const CORE_PIPELINES_LIST = [
   "Reseller Pipeline",
 ];
 
-async function fetchPassports({ pipeline, stage, ownerFilter, search, archivedView } = {}) {
+async function fetchPassports({ pipeline, stage, ownerFilter, search, archivedView, offeringFilter } = {}) {
   const pipes = (pipeline && pipeline !== "all") ? [pipeline] : CORE_PIPELINES_LIST;
   // Use `in.()` with double-quoted values — required so pipeline names with
   // special chars (e.g. "Bespoke Analytics (EMEA & APAC)") are treated literally.
@@ -6382,8 +6412,12 @@ async function fetchPassports({ pipeline, stage, ownerFilter, search, archivedVi
   // route timeline, and the light content columns drive the readiness ring.
   // aoi_type extracts only the GeoJSON "type" key so 300 rows don't haul full
   // geometry blobs — presence is all calcReadiness needs.
-  let params = `?select=id,hubspot_deal_id,company,deal_id_display,hubspot_stage,hubspot_stage_idx,hubspot_amount,hubspot_last_contacted,hubspot_last_contact_owner,hubspot_synced_at,owner_director,owner_se,owner_cs,owner_analytics,pipeline,last_activity_label,updated_at,handed_to_cs,handed_to_cs_at,handed_to_analytics,handed_to_analytics_at,is_eap,archived,archived_at,archived_reason,use_case,pain_points,data_sources,bandset,cadence,problem_statement,objectives,success_criteria,next_steps,aoi_type:aoi_geojson->>type&pipeline=in.(${pipeQ})&order=updated_at.desc&limit=300`;
+  let params = `?select=id,hubspot_deal_id,company,deal_id_display,hubspot_stage,hubspot_stage_idx,hubspot_amount,hubspot_last_contacted,hubspot_last_contact_owner,hubspot_synced_at,owner_director,owner_se,owner_cs,owner_analytics,pipeline,last_activity_label,updated_at,handed_to_cs,handed_to_cs_at,handed_to_analytics,handed_to_analytics_at,is_eap,offering,archived,archived_at,archived_reason,use_case,pain_points,data_sources,bandset,cadence,problem_statement,objectives,success_criteria,next_steps,aoi_type:aoi_geojson->>type&pipeline=in.(${pipeQ})&order=updated_at.desc&limit=300`;
   if (stage !== undefined && stage !== "all") params += `&hubspot_stage_idx=eq.${stage}`;
+  // offeringFilter: strict tag match; "untagged" surfaces deals still to be tagged
+  if (offeringFilter && offeringFilter !== "all") {
+    params += offeringFilter === "untagged" ? "&offering=is.null" : `&offering=eq.${offeringFilter}`;
+  }
   // archivedView: "active" (default, hide archived) | "archived" (only archived) | "all"
   if (!archivedView || archivedView === "active") params += `&archived=eq.false`;
   else if (archivedView === "archived") params += `&archived=eq.true`;
@@ -6406,7 +6440,14 @@ async function fetchPassports({ pipeline, stage, ownerFilter, search, archivedVi
   }
   if (search) {
     const s = search.toLowerCase();
-    data = data.filter(d => (d.company||"").toLowerCase().includes(s) || (d.deal_id_display||"").toLowerCase().includes(s));
+    // Offering matches on the label, so "imagery" also finds "Imagery +
+    // Analytics" deals (they do include imagery) — and vice versa.
+    data = data.filter(d => {
+      const off = d.offering ? offeringOf(d.offering) : null;
+      return (d.company||"").toLowerCase().includes(s)
+        || (d.deal_id_display||"").toLowerCase().includes(s)
+        || (off && off.label.toLowerCase().includes(s));
+    });
   }
   return data;
 }
@@ -6598,7 +6639,7 @@ const PIPE_COLORS = {
   "Other": "#929BAB",
 };
 
-function DealListLive({ deals, loading, onOpen, pipelineFilter, setPipelineFilter, stageFilter, setStageFilter, ownerFilter, setOwnerFilter, searchQ, setSearchQ, archivedView, setArchivedView }) {
+function DealListLive({ deals, loading, onOpen, pipelineFilter, setPipelineFilter, stageFilter, setStageFilter, ownerFilter, setOwnerFilter, searchQ, setSearchQ, archivedView, setArchivedView, offeringFilter, setOfferingFilter }) {
   return (
     <>
       <h2 className="section-title">Deals</h2>
@@ -6636,6 +6677,16 @@ function DealListLive({ deals, loading, onOpen, pipelineFilter, setPipelineFilte
             {["Discovery","Technical Validation","Quote / Solution Scoping","Proposal","Contracting & Negotiation","Closed Won","Closed Lost"].map((s,i) =>
               <option key={i} value={i}>{s}</option>
             )}
+          </select>
+          <ChevronDown size={15} className="chev" />
+        </div>
+
+        {/* Offering filter — imagery / analytics / both */}
+        <div className="cp-select">
+          <select value={offeringFilter} onChange={e => setOfferingFilter(e.target.value)}>
+            <option value="all">All offerings</option>
+            {OFFERINGS.map(o => <option key={o.key} value={o.key}>{o.label}</option>)}
+            <option value="untagged">Untagged</option>
           </select>
           <ChevronDown size={15} className="chev" />
         </div>
@@ -6695,7 +6746,7 @@ function DealListLive({ deals, loading, onOpen, pipelineFilter, setPipelineFilte
         <div className="empty">
           <Search size={16} />
           <span>No deals match these filters.</span>
-          <button onClick={() => { setSearchQ(""); setOwnerFilter(""); setPipelineFilter("all"); setStageFilter("all"); setArchivedView("active"); }}>Clear filters</button>
+          <button onClick={() => { setSearchQ(""); setOwnerFilter(""); setPipelineFilter("all"); setStageFilter("all"); setArchivedView("active"); setOfferingFilter("all"); }}>Clear filters</button>
         </div>
       ) : (
         <DealsSplit deals={deals} onOpen={onOpen} ownerFilter={ownerFilter} setOwnerFilter={setOwnerFilter} />
@@ -6753,6 +6804,10 @@ function DealsSplit({ deals, onOpen, ownerFilter, setOwnerFilter }) {
               <span style={{ width: 7, height: 7, borderRadius: "50%", flex: "none", background: PIPE_COLORS[d.pipeline] || "#929BAB" }} />
               <span style={{ fontSize: 13, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{d.company}</span>
               {d.is_eap && <Star size={10} fill="var(--energy)" color="var(--energy)" style={{ flex: "none" }} />}
+              {d.offering && (() => {
+                const o = offeringOf(d.offering);
+                return <span className="mono" title={o.label} style={{ fontSize: 8.5, letterSpacing: ".08em", color: o.color, border: `1px solid ${o.color}55`, borderRadius: 4, padding: "1px 4px", flex: "none" }}>{o.short}</span>;
+              })()}
             </div>
             <div className="mono" style={{ fontSize: 10, color: "var(--muted)", marginTop: 3 }}>
               {d.deal_id_display || d.id} · {d.hubspot_amount ? "$" + Math.round(d.hubspot_amount / 1000) + "k" : "—"} · {STAGES[d.hubspot_stage_idx] || "—"}
@@ -6765,6 +6820,7 @@ function DealsSplit({ deals, onOpen, ownerFilter, setOwnerFilter }) {
         <div className="klabel" style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
           <span style={{ color: "var(--accent)" }}>● {STAGES[sel.hubspot_stage_idx] || "—"}</span>
           <span>{sel.deal_id_display || sel.id}</span>
+          {sel.offering && <span style={{ color: offeringOf(sel.offering).color }}>{offeringOf(sel.offering).label}</span>}
           {sel.archived && <span style={{ color: "var(--mining)" }}>Archived</span>}
         </div>
         <div style={{ fontFamily: "var(--font-display)", fontWeight: 500, fontSize: 27, letterSpacing: "-.02em", margin: "10px 0 18px" }}>
@@ -6835,6 +6891,7 @@ function PassportDetail({ data, onBack, canEdit, canPostNote, onRefresh, onAssig
       backToSe: !!p.handed_back_to_se, backToSeAt: p.handed_back_to_se_at, backToSeBy: p.handed_back_to_se_by, backToSeNote: p.handed_back_to_se_note || "",
     },
     isEap: !!p.is_eap,
+    offering: p.offering || null,
     archived: !!p.archived, archivedAt: p.archived_at, archivedReason: p.archived_reason,
     profile: {
       contacts: contacts.map(c => ({ id: c.id, name: c.name, role: c.role, email: c.email })),
@@ -7199,6 +7256,12 @@ function PassportDetail({ data, onBack, canEdit, canPostNote, onRefresh, onAssig
     // EAP (Early Access Program) flag
     if (updated._toggleEap) {
       await sbPatch("handover_passports", p.id, { is_eap: updated._toggleEap.value });
+      await onRefresh();
+      return;
+    }
+    // Offering tag (imagery / analytics / both / null = untagged)
+    if (updated._setOffering) {
+      await sbPatch("handover_passports", p.id, { offering: updated._setOffering.value });
       await onRefresh();
       return;
     }
@@ -7734,6 +7797,7 @@ function AppMain({ currentUser, canEdit, canPostNote, onSignOut }) {
   const [ownerFilter, setOwnerFilter] = useState("");
   const [searchQ, setSearchQ] = useState("");
   const [archivedView, setArchivedView] = useState("active"); // active | archived | all
+  const [offeringFilter, setOfferingFilter] = useState("all"); // all | imagery | analytics | both | untagged
 
   // ── Passport detail state ───────────────────────────────────
   const [openId, setOpenId] = useState(null);
@@ -7782,6 +7846,7 @@ function AppMain({ currentUser, canEdit, canPostNote, onSignOut }) {
         ownerFilter: ownerFilter || null,
         search: searchQ || null,
         archivedView,
+        offeringFilter,
       });
       setDeals(data);
     } catch (e) {
@@ -7792,7 +7857,7 @@ function AppMain({ currentUser, canEdit, canPostNote, onSignOut }) {
   };
 
   // Reload when filters change
-  useEffect(() => { loadDeals(); }, [pipelineFilter, stageFilter, ownerFilter, archivedView]);
+  useEffect(() => { loadDeals(); }, [pipelineFilter, stageFilter, ownerFilter, archivedView, offeringFilter]);
 
   // On first load, if the URL has ?deal=<id>, open that passport directly
   // (enables sharing a direct link to a specific deal).
@@ -8171,6 +8236,8 @@ function AppMain({ currentUser, canEdit, canPostNote, onSignOut }) {
                 setSearchQ={setSearchQ}
                 archivedView={archivedView}
                 setArchivedView={setArchivedView}
+                offeringFilter={offeringFilter}
+                setOfferingFilter={setOfferingFilter}
               />
         }
       </div>

@@ -92,7 +92,8 @@ CREATE TABLE public.handover_passports (
   handed_back_to_se boolean DEFAULT false,
   handed_back_to_se_at timestamp with time zone,
   handed_back_to_se_by text,
-  handed_back_to_se_note text
+  handed_back_to_se_note text,
+  offering text
 );
 
 CREATE TABLE public.action_items (
@@ -324,6 +325,7 @@ ALTER TABLE public.notifications ADD CONSTRAINT notifications_pkey PRIMARY KEY (
 ALTER TABLE public.quality_checks ADD CONSTRAINT quality_checks_pkey PRIMARY KEY (id);
 ALTER TABLE public.app_users ADD CONSTRAINT app_users_email_key UNIQUE (email);
 ALTER TABLE public.handover_passports ADD CONSTRAINT handover_passports_hubspot_deal_id_key UNIQUE (hubspot_deal_id);
+ALTER TABLE public.handover_passports ADD CONSTRAINT handover_passports_offering_check CHECK ((offering = ANY (ARRAY['imagery'::text, 'analytics'::text, 'both'::text])));
 ALTER TABLE public.quality_checks ADD CONSTRAINT quality_checks_qc_result_check CHECK ((qc_result = ANY (ARRAY['Pass'::text, 'Fail'::text, 'Awaiting QC'::text])));
 ALTER TABLE public.quality_checks ADD CONSTRAINT quality_checks_type_check CHECK ((type = ANY (ARRAY['Sample'::text, 'Paid'::text])));
 ALTER TABLE public.catalog_org_links ADD CONSTRAINT catalog_org_links_pkey PRIMARY KEY (org_id);
@@ -364,6 +366,7 @@ CREATE INDEX idx_feedback_passport ON public.customer_feedback USING btree (pass
 CREATE INDEX idx_passports_hubspot ON public.handover_passports USING btree (hubspot_deal_id);
 CREATE INDEX idx_passports_owner_cs ON public.handover_passports USING btree (owner_cs);
 CREATE INDEX idx_passports_owner_se ON public.handover_passports USING btree (owner_se);
+CREATE INDEX idx_passports_offering ON public.handover_passports USING btree (offering);
 CREATE INDEX idx_passports_pipeline ON public.handover_passports USING btree (pipeline);
 CREATE INDEX idx_passports_stage ON public.handover_passports USING btree (hubspot_stage_idx);
 CREATE INDEX idx_meeting_notes_hs_eng ON public.meeting_notes USING btree (hs_engagement_id);
