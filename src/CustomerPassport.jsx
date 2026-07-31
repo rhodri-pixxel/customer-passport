@@ -3756,25 +3756,14 @@ function Passport({ deal, onBack, canEdit, canPostNote, onUpdate, onAssign, onNo
                 }}>
                 {deal.isEap ? "EAP" : "+ EAP"}
               </button>
-              {(() => {
+              {deal.offering && (() => {
+                // Read-only badge — the offering is ticked in Customer Profile.
                 const off = offeringOf(deal.offering);
-                // Cycle imagery → analytics → both → untagged so tagging is one
-                // click from the header, same idiom as the EAP pill.
-                const next = () => {
-                  const idx = OFFERINGS.findIndex(o => o.key === deal.offering);
-                  return idx === -1 ? OFFERINGS[0].key : (idx === OFFERINGS.length - 1 ? null : OFFERINGS[idx + 1].key);
-                };
                 return (
-                  <button onClick={() => canEdit && onUpdate({ _setOffering: { value: next() } })} disabled={!canEdit}
-                    title={canEdit ? "Click to cycle: imagery only → analytics → imagery + analytics → untagged" : ""}
-                    className="hd-pill"
-                    style={{
-                      fontFamily: "var(--font-mono)", fontSize: 9.5, letterSpacing: ".14em", cursor: canEdit ? "pointer" : "default",
-                      borderColor: off ? off.color + "80" : "var(--hair2)",
-                      color: off ? off.color : "var(--muted2)", background: "transparent",
-                    }}>
-                    {off ? off.label.toUpperCase() : "+ OFFERING"}
-                  </button>
+                  <span className="hd-pill" title="Offering — set in Customer Profile"
+                    style={{ fontFamily: "var(--font-mono)", fontSize: 9.5, letterSpacing: ".14em", borderColor: off.color + "80", color: off.color, background: "transparent" }}>
+                    {off.label.toUpperCase()}
+                  </span>
                 );
               })()}
             </div>
@@ -4512,6 +4501,35 @@ function EditableList({ items, field, canEdit, onSave, emptyIcon: EmptyIcon, emp
   );
 }
 
+// Tick the offerings this deal covers; the combination maps to the single
+// offering tag (imagery / analytics / both) used by list chips and filters.
+function OfferingPicker({ offering, canEdit, onSet }) {
+  const imagery = offering === "imagery" || offering === "both";
+  const analytics = offering === "analytics" || offering === "both";
+  const off = offeringOf(offering);
+  const toggle = (which) => {
+    if (!canEdit) return;
+    const img = which === "imagery" ? !imagery : imagery;
+    const anl = which === "analytics" ? !analytics : analytics;
+    onSet(img && anl ? "both" : img ? "imagery" : anl ? "analytics" : null);
+  };
+  const box = (checked, label, which) => (
+    <label style={{ display:"flex", alignItems:"center", gap:7, fontSize:13, cursor: canEdit ? "pointer" : "default" }}>
+      <input type="checkbox" checked={checked} disabled={!canEdit} onChange={() => toggle(which)} style={{ accentColor:"var(--accent)" }} />
+      {label}
+    </label>
+  );
+  return (
+    <div style={{ display:"flex", alignItems:"center", gap:18, flexWrap:"wrap" }}>
+      {box(imagery, "Imagery", "imagery")}
+      {box(analytics, "Analytics", "analytics")}
+      <span style={{ fontFamily:"var(--font-mono)", fontSize:10, letterSpacing:".12em", textTransform:"uppercase", padding:"3px 10px", borderRadius:999, border:`1px solid ${off ? off.color + "80" : "var(--hair2)"}`, color: off ? off.color : "var(--muted2)" }}>
+        {off ? off.label : "Untagged"}
+      </span>
+    </div>
+  );
+}
+
 function ProfileTab({ d, canEdit, onSaveField, onUpdate }) {
   const t = d.profile.tech;
   const st = d.sectionStamps || {};
@@ -4531,6 +4549,11 @@ function ProfileTab({ d, canEdit, onSaveField, onUpdate }) {
           </div>
         </Block>
       </div>
+
+      <Block icon={Layers} title="Pixxel offering">
+        <div className="field-help">Tick everything we're offering this customer. The combination becomes the deal's tag — imagery only, analytics, or both — shown across the app and filterable from the Deals list.</div>
+        <OfferingPicker offering={d.offering} canEdit={canEdit} onSet={(value) => onUpdate({ _setOffering: { value } })} />
+      </Block>
 
       <Block icon={Target} title="Use case & support needs">
         <div className="field-help">What they use Pixxel for, and what they need from us to succeed. The problem behind it lives in Objectives.</div>
