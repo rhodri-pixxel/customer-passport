@@ -2091,10 +2091,10 @@ const IPR_QC_READY_STATUSES = ["Sent to Aurora", "Datahub upload completed"];
 // (query, satImagePairs, processingStatus, startDate, …). Returns { items, total }.
 async function iprFetch(params = {}) {
   const qs = new URLSearchParams();
-  qs.set("page", "1");
+  qs.set("page", String(params.page || 1));
   qs.set("pageSize", String(params.pageSize || 200));
   Object.entries(params).forEach(([k, v]) => {
-    if (k === "pageSize") return;
+    if (k === "pageSize" || k === "page") return;
     if (v !== undefined && v !== null && v !== "") qs.set(k, String(v));
   });
   const r = await fetch(`${IPR_API}/api/metadata/detailed?${qs.toString()}`);
@@ -2233,23 +2233,40 @@ function mapIprItemToCaptured(item, deal) {
   };
 }
 
-// Pull QC-ready images for every deal into the feed. Upserts on the canonical
-// image_key, so re-running is idempotent and costs nothing. Company matching is
-// intentionally loose (IPR AOI ids are generic) — a wrong deal match only
-// mislabels a feed row, it no longer assigns work to anyone.
+// Page through an IPR query until it's exhausted. Capped so a bad filter can't
+// pull the entire archive; if the cap is hit the caller reports it as truncated
+// rather than pretending the feed is complete.
+const IPR_MAX_PAGES = 25;
+async function iprFetchAll(base, pageSize = 200) {
+  const out = [];
+  let truncated = false;
+  for (let page = 1; page <= IPR_MAX_PAGES; page++) {
+    const { items, total } = await iprFetch({ ...base, page, pageSize });
+    out.push(...items);
+    if (!items.length || out.length >= total) return { items: out, truncated: false };
+    if (page === IPR_MAX_PAGES) truncated = true;
+  }
+  return { items: out, truncated };
+}
+
+// How far back the feed reaches. The feed is a rolling window, not an archive.
+const IPR_FEED_DAYS = 30;
+
+// Pull every QC-ready image from the last IPR_FEED_DAYS days into the feed.
+// Queried by STATUS ONLY — deliberately not per deal — so this mirrors the IPR
+// dashboard instead of a company-name-filtered slice of it. Deal attribution is
+// best-effort and purely cosmetic: a blank customer on a feed row costs nothing,
+// where a wrong guess used to cost someone their QC queue. Upserts on the
+// canonical image_key, so re-running is idempotent.
 async function syncCapturedFromIpr(deals) {
+  const since = new Date(Date.now() - IPR_FEED_DAYS * 86400000).toISOString().slice(0, 10);
   const byKey = new Map();
-  for (const deal of (deals || [])) {
-    if (!deal.company) continue;
-    let items = [];
-    try {
-      for (const status of IPR_QC_READY_STATUSES) {
-        const { items: got } = await iprFetch({ query: deal.company, processingStatus: status, pageSize: 200 });
-        items = items.concat(got);
-      }
-    } catch (_) { continue; }
-    for (const item of items) {
-      const row = mapIprItemToCaptured(item, deal);
+  let truncated = false;
+  for (const status of IPR_QC_READY_STATUSES) {
+    const res = await iprFetchAll({ processingStatus: status, startDate: since });
+    if (res.truncated) truncated = true;
+    for (const item of res.items) {
+      const row = mapIprItemToCaptured(item, iprMatchDeal(item, deals));
       if (row.image_key) byKey.set(row.image_key, row);
     }
   }
@@ -2257,7 +2274,7 @@ async function syncCapturedFromIpr(deals) {
   for (let i = 0; i < rows.length; i += 500) {
     await sbUpsert("captured_images", rows.slice(i, i + 500), "image_key");
   }
-  return { synced: rows.length };
+  return { synced: rows.length, since, truncated };
 }
 
 // Notify the linked deal's CS when a QC entry becomes complete (result set to
@@ -3166,6 +3183,7 @@ function QualityChecksGlobal({ deals, canEdit, onOpen, toast, currentUserName })
   const [captured, setCaptured] = useState([]);
   const [promoteFrom, setPromoteFrom] = useState(null); // feed row being sent to QC
   const [capturedErr, setCapturedErr] = useState("");   // e.g. table not migrated yet
+  const [feedErr, setFeedErr] = useState("");           // background refresh couldn't reach IPR
   const [showImport, setShowImport] = useState(false); // IPR import modal
   const [showCatalog, setShowCatalog] = useState(false); // catalog delivery sync modal
   const [syncing, setSyncing] = useState(false);       // auto-populate in progress
@@ -3217,15 +3235,36 @@ function QualityChecksGlobal({ deals, canEdit, onOpen, toast, currentUserName })
     catch (e) { toast("Save failed: " + e.message); }
   };
 
-  const syncCaptured = async () => {
+  const syncCaptured = async ({ auto = false } = {}) => {
     setSyncing(true);
     try {
-      const { synced } = await syncCapturedFromIpr(deals);
-      toast(`IPR feed updated — ${synced} image${synced === 1 ? "" : "s"}. Nothing added to QC entries.`);
+      const { synced, truncated } = await syncCapturedFromIpr(deals);
+      toast(`IPR feed updated — ${synced} image${synced === 1 ? "" : "s"} from the last ${IPR_FEED_DAYS} days${truncated ? " (hit the page cap — may be incomplete)" : ""}. Nothing added to QC entries.`);
+      setFeedErr("");
       await load();
-    } catch (e) { toast("Sync failed: " + e.message); }
+    } catch (e) {
+      // A background refresh that can't reach IPR (off the Pixxel network) is
+      // expected, not an incident — show it in the feed header, don't interrupt.
+      if (auto) setFeedErr(e.message || String(e));
+      else toast("Sync failed: " + e.message);
+    }
     finally { setSyncing(false); }
   };
+
+  // "Every 24 hours" without a server: IPR is only reachable from Pixxel's
+  // network, so the sync has to run in a browser. The first person with edit
+  // rights to open this page after the feed goes 24h stale refreshes it for
+  // everyone. Runs once per mount; the upsert makes a double-run harmless.
+  const autoTried = useRef(false);
+  useEffect(() => {
+    if (loading || syncing || !canEdit || autoTried.current || capturedErr) return;
+    const newest = captured.reduce((m, c) => (c.synced_at && c.synced_at > m ? c.synced_at : m), "");
+    const ageMs = newest ? Date.now() - new Date(newest).getTime() : Infinity;
+    if (ageMs > 24 * 60 * 60 * 1000) {
+      autoTried.current = true;
+      syncCaptured({ auto: true });
+    }
+  }, [loading, syncing, canEdit, captured, capturedErr]);
   // Promote a feed image into real QC work. Opens the normal QC form prefilled
   // from the IPR record; the assignee is picked there, which is the whole point.
   // The feed row is never edited — it only records which QC entry it produced.
@@ -3260,6 +3299,7 @@ function QualityChecksGlobal({ deals, canEdit, onOpen, toast, currentUserName })
   const awaitingCount = tabRows.filter(r => r.qc_result === "Awaiting QC").length;
   const dealById = {};
   for (const d of (deals || [])) dealById[d.id] = d;
+  const feedNewest = captured.reduce((m, c) => (c.synced_at && c.synced_at > m ? c.synced_at : m), "");
   const fmtDay = (iso) => iso ? new Date(iso).toLocaleDateString("en-GB", { day:"2-digit", month:"short", year:"numeric" }) : "—";
 
   return (
@@ -3291,7 +3331,7 @@ function QualityChecksGlobal({ deals, canEdit, onOpen, toast, currentUserName })
           )}
           {canEdit && !showForm && !editRow && (
             <>
-              <button className="btn ghost" style={{ color:"var(--accent-deep)", border:"1px solid var(--line)", background:"var(--card)" }} onClick={syncCaptured} disabled={syncing} title="Pull newly captured images (Sent to Aurora / Datahub upload completed) for all deals">
+              <button className="btn ghost" style={{ color:"var(--accent-deep)", border:"1px solid var(--line)", background:"var(--card)" }} onClick={() => syncCaptured()} disabled={syncing} title={`Refresh the IPR feed — every QC-ready image from the last ${IPR_FEED_DAYS} days. Writes to the feed only, never to QC entries.`}>
                 {syncing ? <><RefreshCw size={14} className="spin" /> Syncing…</> : <><RefreshCw size={14} /> Sync captured images</>}
               </button>
               <button className="btn ghost" style={{ color:"var(--accent-deep)", border:"1px solid var(--line)", background:"var(--card)" }} onClick={() => setShowImport(true)}><Satellite size={14} /> Import from IPR</button>
@@ -3320,8 +3360,17 @@ function QualityChecksGlobal({ deals, canEdit, onOpen, toast, currentUserName })
 
       {tab === "feed" && !loading && (
         <div style={{ fontSize:12, color:"var(--muted)", margin:"0 0 10px" }}>
-          Read-only mirror of the IPR dashboard — everything that cleared the pipeline. Nothing here is QC work.
-          Use <b>Assign to SE</b> on the few that need a human look; that creates a QC entry and leaves this list untouched.
+          Read-only mirror of the IPR dashboard — everything that cleared the pipeline in the last {IPR_FEED_DAYS} days.
+          Nothing here is QC work. Use <b>Assign to SE</b> on the few that need a human look; that creates a QC entry
+          and leaves this list untouched.
+          <div style={{ marginTop:4 }}>
+            {syncing
+              ? <span style={{ color:"var(--accent-deep)" }}><RefreshCw size={11} className="spin" style={{ verticalAlign:"-1px" }} /> Refreshing…</span>
+              : feedNewest
+                ? <>Last refreshed <b style={{ color:"var(--ink)" }}>{new Date(feedNewest).toLocaleString("en-GB", { day:"2-digit", month:"short", hour:"2-digit", minute:"2-digit" })}</b> · refreshes itself once a day when someone opens this page on the Pixxel network.</>
+                : <>Never refreshed — press <b>Sync captured images</b>.</>}
+            {feedErr && <span style={{ color:"var(--bad)" }}> · couldn't reach IPR ({feedErr}). Are you on the Pixxel network?</span>}
+          </div>
         </div>
       )}
 
