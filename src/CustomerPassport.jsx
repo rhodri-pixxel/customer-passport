@@ -3165,6 +3165,7 @@ function QualityChecksGlobal({ deals, canEdit, onOpen, toast, currentUserName })
   const [delivered, setDelivered] = useState([]);
   const [captured, setCaptured] = useState([]);
   const [promoteFrom, setPromoteFrom] = useState(null); // feed row being sent to QC
+  const [capturedErr, setCapturedErr] = useState("");   // e.g. table not migrated yet
   const [showImport, setShowImport] = useState(false); // IPR import modal
   const [showCatalog, setShowCatalog] = useState(false); // catalog delivery sync modal
   const [syncing, setSyncing] = useState(false);       // auto-populate in progress
@@ -3172,12 +3173,15 @@ function QualityChecksGlobal({ deals, canEdit, onOpen, toast, currentUserName })
   const load = async () => {
     setLoading(true);
     try {
+      // Keep the feed's load error rather than swallowing it — an empty tab and
+      // a missing captured_images table look identical otherwise.
       const [qc, dl, cap] = await Promise.all([
         fetchAllQc(),
         fetchAllDelivered().catch(() => []),
-        fetchCapturedImages().catch(() => []),
+        fetchCapturedImages().then(r => ({ ok: r })).catch(e => ({ err: e })),
       ]);
-      setRows(qc); setDelivered(dl || []); setCaptured(cap || []);
+      setRows(qc); setDelivered(dl || []);
+      setCaptured(cap.ok || []); setCapturedErr(cap.err ? (cap.err.message || String(cap.err)) : "");
     } finally { setLoading(false); }
   };
   useEffect(() => { load(); }, []);
@@ -3364,8 +3368,10 @@ function QualityChecksGlobal({ deals, canEdit, onOpen, toast, currentUserName })
                     </td>}
                   </tr>
                 );
-              }) : <tr><td colSpan={canEdit ? 8 : 7} style={{ textAlign:"center", padding:30, color:"var(--muted2)" }}>
-                Feed is empty — run Sync captured images to pull from the IPR dashboard.
+              }) : <tr><td colSpan={canEdit ? 8 : 7} style={{ textAlign:"center", padding:30, color: capturedErr ? "var(--bad)" : "var(--muted2)" }}>
+                {capturedErr
+                  ? <>Couldn't load the feed — has the <b>captured_images</b> migration been run on this database?<div style={{ fontFamily:"var(--font-mono)", fontSize:11, marginTop:6 }}>{capturedErr}</div></>
+                  : "Feed is empty — run Sync captured images to pull from the IPR dashboard."}
               </td></tr>}
             </tbody>
           </table>
