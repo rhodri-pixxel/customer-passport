@@ -300,7 +300,9 @@ CREATE TABLE public.delivered_images (
   order_type text,
   task_id text,
   delivered_at timestamp with time zone,
-  synced_at timestamp with time zone DEFAULT now() NOT NULL
+  synced_at timestamp with time zone DEFAULT now() NOT NULL,
+  -- paid | sample | NULL (NULL = fall back to the order_type default)
+  delivery_kind text
 );
 
 -- ---------------------------------------------------------------------------

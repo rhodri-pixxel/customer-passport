@@ -5142,18 +5142,33 @@ function RiskAdder({ risks, canEdit, onAdd, onDelete }) {
   );
 }
 
-function SampleDataAdder({ items, canEdit, onAdd, onDelete }) {
+// Free-text sample notes, plus any cataloged delivery the SE has classified as
+// a sample. Those stay in delivered_images (moving them would lose the catalog
+// provenance and break re-sync) — they're only *shown* here, and can be pushed
+// back to Delivered images with the same toggle.
+function SampleDataAdder({ items, deliveredSamples = [], canEdit, onAdd, onDelete, onSetKind }) {
   const [open, setOpen] = useState(false);
   const [text, setText] = useState("");
   const submit = () => { if (!text.trim()) return; onAdd(text.trim()); setText(""); setOpen(false); };
+  const fmtDate = (iso) => iso ? new Date(iso).toLocaleDateString("en-GB", { day:"2-digit", month:"short", year:"numeric" }) : "";
   return (
     <>
+      {deliveredSamples.map(di => (
+        <div className="li" key={di.id} style={{ display:"flex", alignItems:"center", gap:6, flexWrap:"wrap" }}>
+          <span className="b" />
+          <span style={{ flex:"1 1 190px", fontFamily:"var(--font-mono)", fontSize:11.5 }}>{di.imageId}</span>
+          <span style={{ fontSize:11, color:"var(--muted2)", whiteSpace:"nowrap" }}>
+            {di.orderType || "—"}{di.deliveredAt ? ` · ${fmtDate(di.deliveredAt)}` : ""}
+          </span>
+          {canEdit && <KindToggle kind="sample" onChange={k => onSetKind(di.id, k)} />}
+        </div>
+      ))}
       {items.length ? items.map((s, i) => (
         <div className="li" key={s.id || i} style={{ display:"flex", alignItems:"flex-start", gap:6 }}>
           <span className="b" /><span style={{ flex:1 }}>{s.text}</span>
           {canEdit && <button onClick={() => onDelete(s.id)} title="Delete" style={{ border:"none", background:"none", color:"var(--muted2)", cursor:"pointer", fontSize:13 }}>✕</button>}
         </div>
-      )) : !open && <div className="empty"><Layers size={15} /> Nothing delivered yet.</div>}
+      )) : (!open && !deliveredSamples.length) && <div className="empty"><Layers size={15} /> Nothing delivered yet.</div>}
       {canEdit && (open ? (
         <div style={{ marginTop:8, display:"flex", flexDirection:"column", gap:8 }}>
           <textarea autoFocus placeholder="Image IDs and notes, e.g. FF03_20260421_xyz — delivered to client 21 Apr" value={text} onChange={e => setText(e.target.value)}
@@ -5252,11 +5267,39 @@ function CommercialLegalTracker({ items, canEdit, onSave }) {
   );
 }
 
+// Paid work vs unpaid sample. TASKING orders are normally paid and ARCHIVE
+// orders normally samples, but that's only a default — sample imagery does get
+// tasked sometimes — so an explicit delivery_kind set by the SE always wins.
+function deliveryKind(di) {
+  if (di.deliveryKind === "paid" || di.deliveryKind === "sample") return di.deliveryKind;
+  return String(di.orderType || "").toUpperCase() === "TASKING" ? "paid" : "sample";
+}
+
+// Two-state switch for reclassifying a delivery. Whichever side isn't current
+// is the one you can click, which is also what moves the row between the
+// Delivered images and Sample data delivered blocks.
+function KindToggle({ kind, onChange }) {
+  const cell = (v, label) => (
+    <button key={v} onClick={() => { if (v !== kind) onChange(v); }} disabled={v === kind}
+      title={v === kind ? `Currently ${label.toLowerCase()}` : `Mark as ${label.toLowerCase()}`}
+      style={{
+        padding:"2px 8px", fontSize:11, fontWeight:600, border:"none", cursor: v === kind ? "default" : "pointer",
+        background: v === kind ? (v === "paid" ? "var(--accent-soft)" : "rgba(236,180,35,.16)") : "transparent",
+        color: v === kind ? (v === "paid" ? "var(--accent-deep)" : "var(--energy)") : "var(--muted2)",
+      }}>{label}</button>
+  );
+  return (
+    <span style={{ display:"inline-flex", border:"1px solid var(--line)", borderRadius:999, overflow:"hidden" }}>
+      {cell("paid", "Paid")}{cell("sample", "Sample")}
+    </span>
+  );
+}
+
 // Read-only log of images cataloged to this deal's Aurora org(s), fed by the
 // catalog delivery sync (Quality Checks → Catalog deliveries). "Delivered"
 // here means cataloged to the customer's Aurora org — an infrastructure fact,
 // not "we shared it with them"; sharing is logged by hand on the capture log.
-function DeliveredImagesBlock({ items }) {
+function DeliveredImagesBlock({ items, totalDelivered, canEdit, onSetKind }) {
   const [showAll, setShowAll] = useState(false);
   const fmtDate = (iso) => iso ? new Date(iso).toLocaleDateString("en-GB", { day:"2-digit", month:"short", year:"numeric" }) : "—";
   // Where this list came from and how stale it is. Without it an empty table
@@ -5277,7 +5320,11 @@ function DeliveredImagesBlock({ items }) {
     return (
       <>
         {provenance}
-        <div className="empty"><Layers size={15} /> No cataloged deliveries yet — link this deal's Aurora org under Quality Checks → Catalog deliveries, then sync.</div>
+        <div className="empty"><Layers size={15} />
+          {totalDelivered
+            ? ` All ${totalDelivered} cataloged deliver${totalDelivered === 1 ? "y is" : "ies are"} marked as samples — see Sample data delivered.`
+            : " No cataloged deliveries yet — link this deal's Aurora org above, then run Quality Checks → Catalog deliveries."}
+        </div>
       </>
     );
   }
@@ -5289,7 +5336,7 @@ function DeliveredImagesBlock({ items }) {
       {provenance}
       <div style={{ overflowX:"auto" }}>
         <table className="qc-table">
-          <thead><tr><th>Image ID</th><th>Order</th><th>Task</th><th>Delivered</th></tr></thead>
+          <thead><tr><th>Image ID</th><th>Order</th><th>Task</th><th>Delivered</th>{canEdit && <th>Type</th>}</tr></thead>
           <tbody>
             {shown.map(di => (
               <tr key={di.id}>
@@ -5297,6 +5344,7 @@ function DeliveredImagesBlock({ items }) {
                 <td style={{ fontSize:11.5 }}>{di.orderType || "—"}</td>
                 <td style={{ fontFamily:"var(--font-mono)", fontSize:11, color:"var(--muted)", maxWidth:140, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{di.taskId || "—"}</td>
                 <td style={{ fontSize:11.5, whiteSpace:"nowrap" }}>{fmtDate(di.deliveredAt)}</td>
+                {canEdit && <td><KindToggle kind="paid" onChange={k => onSetKind(di.id, k)} /></td>}
               </tr>
             ))}
           </tbody>
@@ -5407,6 +5455,12 @@ function ExecutionTab({ d, canEdit, onUpdate, onSaveField }) {
       created_by: "You",
     }});
   };
+  // Cataloged deliveries split by paid/sample; the toggle moves rows between
+  // the two blocks below by writing delivery_kind, not by moving the record.
+  const allDelivered = e.deliveredImages || [];
+  const paidImages = allDelivered.filter(di => deliveryKind(di) === "paid");
+  const sampleImages = allDelivered.filter(di => deliveryKind(di) === "sample");
+  const setDeliveredKind = (id, kind) => onUpdate({ _setDeliveredKind: { id, kind } });
 
   return (
     <>
@@ -5434,14 +5488,17 @@ function ExecutionTab({ d, canEdit, onUpdate, onSaveField }) {
           onUploadShot={async (file) => await uploadFile(d.id, file)} />
       </Block>
 
-      {/* Images cataloged / delivered to this customer's workspace */}
-      <Block icon={Layers} title={`Delivered images${(e.deliveredImages||[]).length ? ` (${e.deliveredImages.length})` : ""}`}>
-        <DeliveredImagesBlock items={e.deliveredImages||[]} />
+      {/* Images cataloged / delivered to this customer's workspace, split into
+          paid work and unpaid samples — see deliveryKind for the default. */}
+      <Block icon={Layers} title={`Delivered images${paidImages.length ? ` (${paidImages.length})` : ""}`}>
+        <DeliveredImagesBlock items={paidImages} totalDelivered={allDelivered.length}
+          canEdit={canEdit} onSetKind={setDeliveredKind} />
       </Block>
 
       <div className="cols">
-        <Block icon={Layers} title="Sample data delivered">
-          <SampleDataAdder items={e.sampleData} canEdit={canEdit}
+        <Block icon={Layers} title={`Sample data delivered${sampleImages.length ? ` (${sampleImages.length})` : ""}`}>
+          <SampleDataAdder items={e.sampleData} deliveredSamples={sampleImages} canEdit={canEdit}
+            onSetKind={setDeliveredKind}
             onAdd={(text) => onUpdate({ _addSample: text })}
             onDelete={(id) => onUpdate({ _deleteRecord: { table:"deal_sample_data", id } })} />
         </Block>
@@ -5469,15 +5526,8 @@ function ExecutionTab({ d, canEdit, onUpdate, onSaveField }) {
         {/* Aurora workspace */}
         <Block icon={Layers} title="Aurora workspace">
           <div className="kv">
-            {e.auroraUrl && (
-              <a href={e.auroraUrl} target="_blank" rel="noreferrer" style={{ display:"inline-flex", alignItems:"center", gap:6, fontSize:13, color:"var(--accent-deep)", fontWeight:500, marginBottom:6 }}>
-                <ExternalLink size={13} /> Open workspace
-              </a>
-            )}
             <EditableField k="Workspace / project" value={e.auroraWorkspace} field="aurora_workspace" canEdit={canEdit} onSave={onSaveField}
-              placeholder="Aurora workspace name or ID" />
-            <EditableField k="Workspace link" value={e.auroraUrl} field="aurora_url" canEdit={canEdit} onSave={onSaveField}
-              placeholder="https://…" mono />
+              placeholder="Aurora workspace name" />
             <CatalogOrgLinker orgs={e.linkedOrgs || []} canEdit={canEdit}
               onLink={(orgId) => onUpdate({ _linkCatalogOrg: { orgId } })}
               onUnlink={(orgId) => onUpdate({ _unlinkCatalogOrg: { orgId } })} />
@@ -5649,13 +5699,9 @@ function CSSummaryTab({ d, canEdit, onSaveField, onUpdate }) {
       <div className="cols">
         <Block icon={Layers} title="Aurora workspace">
           <div className="kv">
-            {e.auroraUrl && (
-              <a href={e.auroraUrl} target="_blank" rel="noreferrer" style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 13, color: "var(--accent-deep)", fontWeight: 500, marginBottom: 6 }}>
-                <ExternalLink size={13} /> Open workspace
-              </a>
-            )}
-            <SummaryKV k="Workspace / project / org ID" v={e.auroraWorkspace} />
-            <SummaryKV k="Workspace link" v={e.auroraUrl} mono />
+            <SummaryKV k="Workspace / project" v={e.auroraWorkspace} />
+            <SummaryKV k="Linked catalog org"
+              v={(e.linkedOrgs || []).map(o => o.orgName).join(", ")} />
           </div>
         </Block>
         <Block icon={FileText} title="Commercial & legal formalities">
@@ -7155,7 +7201,7 @@ function PassportDetail({ data, onBack, canEdit, canPostNote, onRefresh, onAssig
       deliveredImages: (deliveredImages || []).map(di => ({
         id: di.id, imageId: di.image_id, orderType: di.order_type || "",
         taskId: di.task_id || "", deliveredAt: di.delivered_at, orgName: di.org_name || "",
-        syncedAt: di.synced_at,
+        syncedAt: di.synced_at, deliveryKind: di.delivery_kind || null,
       })),
       linkedOrgs: (catalogLinks || []).map(l => ({ orgId: l.org_id, orgName: l.org_name })),
     },
@@ -7239,6 +7285,15 @@ function PassportDetail({ data, onBack, canEdit, canPostNote, onRefresh, onAssig
       await deleteCatalogLink(updated._unlinkCatalogOrg.orgId);
       await onRefresh();
       toast("Org unlinked");
+      return;
+    }
+    // Reclassify a cataloged delivery as paid work or an unpaid sample, which
+    // is what moves it between Delivered images and Sample data delivered.
+    if (updated._setDeliveredKind) {
+      const { id, kind } = updated._setDeliveredKind;
+      await sbPatch("delivered_images", id, { delivery_kind: kind });
+      await onRefresh();
+      toast(kind === "sample" ? "Moved to Sample data delivered" : "Moved to Delivered images");
       return;
     }
     // Capture log entry — edit
