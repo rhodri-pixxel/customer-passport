@@ -2041,6 +2041,12 @@ function CollaboratorsRow({ collaborators, canEdit, onAdd, onDelete }) {
 async function fetchAllQc() {
   return sbGet("quality_checks", "?order=created_at.desc&limit=500");
 }
+// Every cataloged delivery across all deals — the read-only roster behind the
+// Delivered images sub-tab. These are not QC work: they're already in the
+// customer's workspace, so they live in their own table and never carry a verdict.
+async function fetchAllDelivered() {
+  return sbGet("delivered_images", "?order=delivered_at.desc.nullslast&limit=1000");
+}
 async function addQcEntry(entry) {
   const result = await sbPost("quality_checks", entry);
   // Notify the assignee in Slack when a QC entry is assigned to them
@@ -2216,24 +2222,16 @@ async function autoPopulateFromIpr(deals) {
         items = items.concat(got);
       }
     } catch (_) { continue; }
-    let dealNew = 0;
     for (const item of items) {
       const id = qcDedupKey(iprImageId(item));
       if (!id || existing.has(id)) { skipped++; continue; }
-      await sbPost("quality_checks", mapIprItemToQc(item, deal));
+      // Deliberately unassigned. The sync's job is to surface new captures, not
+      // to hand them to whoever happens to be the deal's SE — these land in the
+      // Unassigned sub-tab and an SE claims one by putting their name on it.
+      // No Slack either: nobody is on the hook until someone takes it.
+      await sbPost("quality_checks", { ...mapIprItemToQc(item, deal), assignee: null, assignee_email: null });
       existing.add(id);
-      added++; dealNew++;
-    }
-    // One summary DM to the deal's SE for the images just added (no SE → no ping).
-    const seName = deal.owners ? deal.owners.se : null;
-    if (dealNew && seName && slackFor(seName)) {
-      try {
-        await sendSlackNotification("mention", {
-          mentionedPerson: seName, mentioned_slack: slackFor(seName), mentionedBy: "IPR sync",
-          company: deal.company, dealId: deal.id,
-          noteText: `${dealNew} new image${dealNew === 1 ? "" : "s"} captured for ${deal.company} — awaiting your QC.`,
-        }, deal.id);
-      } catch (_) { /* best-effort */ }
+      added++;
     }
   }
   return { added, skipped };
@@ -3110,13 +3108,20 @@ function QualityChecksGlobal({ deals, canEdit, onOpen, toast, currentUserName })
   const [showForm, setShowForm] = useState(false);
   const [editRow, setEditRow] = useState(null); // the QC entry being edited, or null
   const [filter, setFilter] = useState("all"); // all | Pass | Fail
+  // Sub-tabs split the page by who owns the work, so an automated feed of new
+  // images can exist without burying the entries someone was actually given.
+  const [tab, setTab] = useState("assigned");  // assigned | unassigned | delivered
+  const [delivered, setDelivered] = useState([]);
   const [showImport, setShowImport] = useState(false); // IPR import modal
   const [showCatalog, setShowCatalog] = useState(false); // catalog delivery sync modal
   const [syncing, setSyncing] = useState(false);       // auto-populate in progress
 
   const load = async () => {
     setLoading(true);
-    try { setRows(await fetchAllQc()); } finally { setLoading(false); }
+    try {
+      const [qc, dl] = await Promise.all([fetchAllQc(), fetchAllDelivered().catch(() => [])]);
+      setRows(qc); setDelivered(dl || []);
+    } finally { setLoading(false); }
   };
   useEffect(() => { load(); }, []);
 
@@ -3159,25 +3164,44 @@ function QualityChecksGlobal({ deals, canEdit, onOpen, toast, currentUserName })
     catch (e) { toast("Delete failed: " + e.message); }
   };
 
-  const filtered = filter === "all" ? rows : rows.filter(r => r.qc_result === filter);
-  const passCount = rows.filter(r => r.qc_result === "Pass").length;
-  const failCount = rows.filter(r => r.qc_result === "Fail").length;
-  const awaitingCount = rows.filter(r => r.qc_result === "Awaiting QC").length;
+  // Assigned = someone owns it. Unassigned = the pool an automated sync drops
+  // new captures into, which an SE claims by putting a name on it.
+  const assignedRows = rows.filter(r => r.assignee);
+  const unassignedRows = rows.filter(r => !r.assignee);
+  const tabRows = tab === "assigned" ? assignedRows : unassignedRows;
+  const filtered = filter === "all" ? tabRows : tabRows.filter(r => r.qc_result === filter);
+  const passCount = tabRows.filter(r => r.qc_result === "Pass").length;
+  const failCount = tabRows.filter(r => r.qc_result === "Fail").length;
+  const awaitingCount = tabRows.filter(r => r.qc_result === "Awaiting QC").length;
+  const dealById = {};
+  for (const d of (deals || [])) dealById[d.id] = d;
+  const fmtDay = (iso) => iso ? new Date(iso).toLocaleDateString("en-GB", { day:"2-digit", month:"short", year:"numeric" }) : "—";
 
   return (
     <div className="cp-page-inner">
       <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom: 18, flexWrap:"wrap", gap:10 }}>
         <div>
           <h2 className="section-title" style={{ marginBottom: 2 }}>Quality Checks</h2>
-          <div style={{ fontSize:13, color:"var(--muted)" }}>{rows.length} entries · {awaitingCount} awaiting · {passCount} pass · {failCount} fail</div>
-        </div>
-        <div style={{ display:"flex", gap:8, alignItems:"center" }}>
-          <div className="seg">
-            <button className={filter==="all"?"on":""} onClick={() => setFilter("all")}>All</button>
-            <button className={filter==="Awaiting QC"?"on":""} onClick={() => setFilter("Awaiting QC")}>Awaiting</button>
-            <button className={filter==="Pass"?"on":""} onClick={() => setFilter("Pass")}>Pass</button>
-            <button className={filter==="Fail"?"on":""} onClick={() => setFilter("Fail")}>Fail</button>
+          <div style={{ fontSize:13, color:"var(--muted)" }}>
+            {tab === "delivered"
+              ? `${delivered.length} cataloged deliver${delivered.length === 1 ? "y" : "ies"} · already in customer workspaces`
+              : `${tabRows.length} entr${tabRows.length === 1 ? "y" : "ies"} · ${awaitingCount} awaiting · ${passCount} pass · ${failCount} fail`}
           </div>
+        </div>
+        <div style={{ display:"flex", gap:8, alignItems:"center", flexWrap:"wrap" }}>
+          <div className="seg">
+            <button className={tab==="assigned"?"on":""} onClick={() => setTab("assigned")}>Assigned ({assignedRows.length})</button>
+            <button className={tab==="unassigned"?"on":""} onClick={() => setTab("unassigned")}>Unassigned ({unassignedRows.length})</button>
+            <button className={tab==="delivered"?"on":""} onClick={() => setTab("delivered")}>Delivered ({delivered.length})</button>
+          </div>
+          {tab !== "delivered" && (
+            <div className="seg">
+              <button className={filter==="all"?"on":""} onClick={() => setFilter("all")}>All</button>
+              <button className={filter==="Awaiting QC"?"on":""} onClick={() => setFilter("Awaiting QC")}>Awaiting</button>
+              <button className={filter==="Pass"?"on":""} onClick={() => setFilter("Pass")}>Pass</button>
+              <button className={filter==="Fail"?"on":""} onClick={() => setFilter("Fail")}>Fail</button>
+            </div>
+          )}
           {canEdit && !showForm && !editRow && (
             <>
               <button className="btn ghost" style={{ color:"var(--accent-deep)", border:"1px solid var(--line)", background:"var(--card)" }} onClick={syncCaptured} disabled={syncing} title="Pull newly captured images (Sent to Aurora / Datahub upload completed) for all deals">
@@ -3206,7 +3230,41 @@ function QualityChecksGlobal({ deals, canEdit, onOpen, toast, currentUserName })
           onSubmit={submit} onCancel={() => { setShowForm(false); setEditRow(null); }} />
       )}
 
-      {loading ? <div className="empty"><RefreshCw size={15} className="spin" /> Loading…</div> : (
+      {tab === "unassigned" && !loading && (
+        <div style={{ fontSize:12, color:"var(--muted)", margin:"0 0 10px" }}>
+          New captures land here with nobody on the hook. Open one and set an assignee to claim it — it moves to Assigned.
+        </div>
+      )}
+
+      {loading ? <div className="empty"><RefreshCw size={15} className="spin" /> Loading…</div> : tab === "delivered" ? (
+        <div style={{ overflowX: "auto", background:"var(--card)", border:"1px solid var(--line)", borderRadius: 14 }}>
+          <table className="qc-table">
+            <thead><tr><th>Customer</th><th>Workspace</th><th>Image ID</th><th>Order</th><th>Type</th><th>Delivered</th></tr></thead>
+            <tbody>
+              {delivered.length ? delivered.map(r => {
+                const deal = dealById[r.passport_id];
+                const kind = deliveryKind({ deliveryKind: r.delivery_kind, orderType: r.order_type });
+                return (
+                  <tr key={r.id}>
+                    <td>{deal
+                      ? <button onClick={() => onOpen && onOpen(deal.id)} style={{ border:"none", background:"none", padding:0, cursor:"pointer", color:"var(--accent-deep)", fontSize:12.5, fontWeight:500 }}>{deal.company}</button>
+                      : <span style={{ color:"var(--muted2)", fontSize:12 }}>—</span>}</td>
+                    <td style={{ fontSize:12, color:"var(--muted)" }}>{r.org_name || "—"}</td>
+                    <td style={{ fontFamily:"var(--font-mono)", fontSize:11.5 }}>{r.image_id}</td>
+                    <td style={{ fontSize:11.5 }}>{r.order_type || "—"}</td>
+                    <td><span className="tag" style={{ fontWeight:600,
+                      background: kind === "paid" ? "var(--accent-soft)" : "rgba(236,180,35,.16)",
+                      color: kind === "paid" ? "var(--accent-deep)" : "var(--energy)" }}>{kind === "paid" ? "Paid" : "Sample"}</span></td>
+                    <td style={{ fontSize:11.5, whiteSpace:"nowrap" }}>{fmtDay(r.delivered_at)}</td>
+                  </tr>
+                );
+              }) : <tr><td colSpan={6} style={{ textAlign:"center", padding:30, color:"var(--muted2)" }}>
+                Nothing synced yet — link a deal's Aurora org on its Execution tab, then run Catalog deliveries.
+              </td></tr>}
+            </tbody>
+          </table>
+        </div>
+      ) : (
         <div style={{ overflowX: "auto", background:"var(--card)", border:"1px solid var(--line)", borderRadius: 14 }}>
           <table className="qc-table">
             <thead>
@@ -3218,7 +3276,9 @@ function QualityChecksGlobal({ deals, canEdit, onOpen, toast, currentUserName })
             </thead>
             <tbody>
               {filtered.length ? filtered.map(r => <QcRow key={r.id} row={r} canEdit={canEdit} onDelete={remove} onEdit={(row) => { setEditRow(row); setShowForm(false); window.scrollTo({ top: 0, behavior: "smooth" }); }} showOrg />)
-                : <tr><td colSpan={canEdit ? 13 : 12} style={{ textAlign:"center", padding:30, color:"var(--muted2)" }}>No QC entries yet.</td></tr>}
+                : <tr><td colSpan={canEdit ? 13 : 12} style={{ textAlign:"center", padding:30, color:"var(--muted2)" }}>
+                  {tab === "unassigned" ? "Nothing unclaimed — every QC entry has an owner." : "No assigned QC entries yet."}
+                </td></tr>}
             </tbody>
           </table>
         </div>
