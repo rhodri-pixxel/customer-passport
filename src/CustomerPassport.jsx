@@ -5282,24 +5282,18 @@ function DeliveredImagesBlock({ items }) {
     );
   }
   const shown = showAll ? items : items.slice(0, 8);
-  const qcTag = (r) => {
-    if (!r) return <span style={{ fontSize:11, color:"var(--muted2)" }}>No QC</span>;
-    const [fg, bg] = r === "Pass" ? ["var(--forest)", "rgba(0,192,48,.14)"]
-      : r === "Fail" ? ["var(--mining)", "rgba(247,110,47,.14)"]
-      : ["var(--energy)", "rgba(236,180,35,.14)"];
-    return <span className="tag" style={{ background:bg, color:fg, fontWeight:600 }}>{r}</span>;
-  };
+  // No QC column here on purpose: anything cataloged to the customer's
+  // workspace has already cleared QC, so a per-image verdict would be noise.
   return (
     <div>
       {provenance}
       <div style={{ overflowX:"auto" }}>
         <table className="qc-table">
-          <thead><tr><th>Image ID</th><th>QC</th><th>Order</th><th>Task</th><th>Delivered</th></tr></thead>
+          <thead><tr><th>Image ID</th><th>Order</th><th>Task</th><th>Delivered</th></tr></thead>
           <tbody>
             {shown.map(di => (
               <tr key={di.id}>
                 <td style={{ fontFamily:"var(--font-mono)", fontSize:11.5 }}>{di.imageId}</td>
-                <td title={di.qcUsecase || undefined}>{qcTag(di.qcResult)}</td>
                 <td style={{ fontSize:11.5 }}>{di.orderType || "—"}</td>
                 <td style={{ fontFamily:"var(--font-mono)", fontSize:11, color:"var(--muted)", maxWidth:140, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{di.taskId || "—"}</td>
                 <td style={{ fontSize:11.5, whiteSpace:"nowrap" }}>{fmtDate(di.deliveredAt)}</td>
@@ -5312,6 +5306,66 @@ function DeliveredImagesBlock({ items }) {
         <button onClick={() => setShowAll(s => !s)} style={{ border:"none", background:"none", cursor:"pointer", color:"var(--accent-deep)", fontSize:12.5, padding:"8px 2px 0" }}>
           {showAll ? "Show fewer" : `Show all ${items.length}`}
         </button>
+      )}
+    </div>
+  );
+}
+
+// Link this deal to its Aurora org(s) by pasting the workspace UUID, instead of
+// importing the whole catalog export and hunting for the deal in the review
+// list. Same catalog_org_links row either way — this is just the shortcut for
+// when you already know the org, which is the normal case from the deal side.
+function CatalogOrgLinker({ orgs, canEdit, onLink, onUnlink }) {
+  const [raw, setRaw] = useState("");
+  const [busy, setBusy] = useState(false);
+  // Accept a bare UUID or anything containing one, so a pasted Aurora URL works.
+  const uuid = (String(raw).match(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i) || [])[0] || "";
+  const dirty = raw.trim().length > 0;
+  const submit = async () => {
+    if (!uuid || busy) return;
+    setBusy(true);
+    try { await onLink(uuid.toLowerCase()); setRaw(""); }
+    finally { setBusy(false); }
+  };
+  return (
+    <div style={{ marginTop:8 }}>
+      <div className="k">Linked catalog org{orgs.length === 1 ? "" : "s"}</div>
+      {orgs.length > 0 && (
+        <div style={{ display:"flex", gap:6, flexWrap:"wrap", marginTop:4 }}>
+          {orgs.map(o => (
+            <span key={o.orgId} title={o.orgId}
+              style={{ fontSize:11.5, padding:"3px 9px", borderRadius:999, border:"1px solid var(--line)", background:"var(--bg)", color:"var(--muted)", display:"inline-flex", alignItems:"center", gap:6 }}>
+              {o.orgName}
+              {canEdit && (
+                <button onClick={() => onUnlink(o.orgId)} title="Unlink this org"
+                  style={{ border:"none", background:"none", cursor:"pointer", color:"var(--muted2)", padding:0, display:"inline-flex" }}><X size={11} /></button>
+              )}
+            </span>
+          ))}
+        </div>
+      )}
+      {canEdit && (
+        <>
+          <div style={{ display:"flex", gap:6, marginTop:6, flexWrap:"wrap" }}>
+            <input value={raw} onChange={e => setRaw(e.target.value)}
+              onKeyDown={e => { if (e.key === "Enter") submit(); }}
+              placeholder="Paste Aurora org / workspace ID"
+              style={{ flex:"1 1 230px", minWidth:200, border:"1px solid var(--line)", borderRadius:8, padding:"6px 10px", fontFamily:"var(--font-mono)", fontSize:12, outline:"none" }} />
+            <button className="btn solid" style={{ padding:"6px 12px", fontSize:12 }} onClick={submit} disabled={!uuid || busy}>
+              <Link2 size={12} /> {busy ? "Linking…" : "Link"}
+            </button>
+          </div>
+          <div style={{ fontSize:11, color:"var(--muted2)", marginTop:5 }}>
+            {dirty && !uuid
+              ? "That doesn't contain a valid org UUID."
+              : orgs.length
+                ? "Linked. Deliveries for this org sync into the table above."
+                : "The org UUID from the customer's Aurora workspace. Once linked, the catalog sync picks it up automatically — no need to map it by hand."}
+          </div>
+        </>
+      )}
+      {!canEdit && orgs.length === 0 && (
+        <div style={{ fontSize:12, color:"var(--muted2)", marginTop:2 }}>None linked yet.</div>
       )}
     </div>
   );
@@ -5424,16 +5478,9 @@ function ExecutionTab({ d, canEdit, onUpdate, onSaveField }) {
               placeholder="Aurora workspace name or ID" />
             <EditableField k="Workspace link" value={e.auroraUrl} field="aurora_url" canEdit={canEdit} onSave={onSaveField}
               placeholder="https://…" mono />
-            {(e.linkedOrgs||[]).length > 0 && (
-              <div style={{ marginTop:8 }}>
-                <div className="k">Linked catalog org{e.linkedOrgs.length === 1 ? "" : "s"}</div>
-                <div style={{ display:"flex", gap:6, flexWrap:"wrap", marginTop:4 }}>
-                  {e.linkedOrgs.map(o => (
-                    <span key={o.orgId} title={o.orgId} style={{ fontSize:11.5, padding:"3px 9px", borderRadius:999, border:"1px solid var(--line)", background:"var(--bg)", color:"var(--muted)" }}>{o.orgName}</span>
-                  ))}
-                </div>
-              </div>
-            )}
+            <CatalogOrgLinker orgs={e.linkedOrgs || []} canEdit={canEdit}
+              onLink={(orgId) => onUpdate({ _linkCatalogOrg: { orgId } })}
+              onUnlink={(orgId) => onUpdate({ _unlinkCatalogOrg: { orgId } })} />
           </div>
         </Block>
 
@@ -6615,7 +6662,7 @@ async function fetchPassports({ pipeline, stage, ownerFilter, search, archivedVi
 }
 
 async function fetchPassportDetail(id) {
-  const [passport, contacts, pocs, risks, sampleData, captureLog, actionItems, meetingNotes, activityFeed, attachments, feedback, collaborators, deliveredImages, catalogLinks, qcRows] = await Promise.all([
+  const [passport, contacts, pocs, risks, sampleData, captureLog, actionItems, meetingNotes, activityFeed, attachments, feedback, collaborators, deliveredImages, catalogLinks] = await Promise.all([
     sbGet("handover_passports", `?id=eq.${id}`).then(r => r[0]),
     sbGet("deal_contacts", `?passport_id=eq.${id}`),
     sbGet("deal_pocs", `?passport_id=eq.${id}`),
@@ -6630,10 +6677,8 @@ async function fetchPassportDetail(id) {
     sbGet("deal_collaborators", `?passport_id=eq.${id}&order=created_at.asc`).catch(() => []),
     sbGet("delivered_images", `?passport_id=eq.${id}&order=delivered_at.desc.nullslast`).catch(() => []),
     sbGet("catalog_org_links", `?passport_id=eq.${id}&status=eq.linked`).catch(() => []),
-    // QC verdicts for this deal — joined onto delivered images on the Execution tab
-    sbGet("quality_checks", `?passport_id=eq.${id}&select=image_id,qc_result,usecase,assignee`).catch(() => []),
   ]);
-  return { passport, contacts: contacts||[], pocs: pocs||[], risks: risks||[], sampleData: sampleData||[], captureLog: captureLog||[], actionItems: actionItems||[], meetingNotes: meetingNotes||[], activityFeed: activityFeed||[], attachments: attachments||[], feedback: feedback||[], collaborators: collaborators||[], deliveredImages: deliveredImages||[], catalogLinks: catalogLinks||[], qcRows: qcRows||[] };
+  return { passport, contacts: contacts||[], pocs: pocs||[], risks: risks||[], sampleData: sampleData||[], captureLog: captureLog||[], actionItems: actionItems||[], meetingNotes: meetingNotes||[], activityFeed: activityFeed||[], attachments: attachments||[], feedback: feedback||[], collaborators: collaborators||[], deliveredImages: deliveredImages||[], catalogLinks: catalogLinks||[] };
 }
 
 function calcReadiness(passport, contacts) {
@@ -7029,15 +7074,7 @@ function DealsSplit({ deals, onOpen, ownerFilter, setOwnerFilter }) {
    ================================================================ */
 
 function PassportDetail({ data, onBack, canEdit, canPostNote, onRefresh, onAssign, onNotifyAll, onPostToSlack, slackChannel, slackSending, slackStatus, toast, currentUserName }) {
-  const { passport: p, contacts, pocs, risks, sampleData, captureLog, actionItems, meetingNotes, activityFeed, attachments, feedback, collaborators, deliveredImages, catalogLinks, qcRows } = data;
-  // QC verdicts keyed by canonical satellite+frame, so a catalog image id
-  // (FF01_20260729_00501045_0000017513_L2A) finds the QC row logged against
-  // the IPR/hand-typed id for the same frame ("FF01 17513"). See normalizeImageId.
-  const qcByImage = {};
-  for (const q of (qcRows || [])) {
-    const k = normalizeImageId(q.image_id);
-    if (k && !qcByImage[k]) qcByImage[k] = q;
-  }
+  const { passport: p, contacts, pocs, risks, sampleData, captureLog, actionItems, meetingNotes, activityFeed, attachments, feedback, collaborators, deliveredImages, catalogLinks } = data;
   const { score, items: readinessItems } = calcReadiness(p, contacts);
 
   // Map Supabase passport → the shape Passport component expects
@@ -7115,16 +7152,11 @@ function PassportDetail({ data, onBack, canEdit, canPostNote, onRefresh, onAssig
       actionItems: actionItems.map(a => ({
         id: a.id, task: a.task, owner: a.owner, due: a.due_date, done: a.done,
       })),
-      deliveredImages: (deliveredImages || []).map(di => {
-        const qc = qcByImage[normalizeImageId(di.image_id)] || null;
-        return {
-          id: di.id, imageId: di.image_id, orderType: di.order_type || "",
-          taskId: di.task_id || "", deliveredAt: di.delivered_at, orgName: di.org_name || "",
-          syncedAt: di.synced_at,
-          qcResult: qc ? qc.qc_result : null,
-          qcUsecase: qc ? (qc.usecase || "") : "",
-        };
-      }),
+      deliveredImages: (deliveredImages || []).map(di => ({
+        id: di.id, imageId: di.image_id, orderType: di.order_type || "",
+        taskId: di.task_id || "", deliveredAt: di.delivered_at, orgName: di.org_name || "",
+        syncedAt: di.synced_at,
+      })),
       linkedOrgs: (catalogLinks || []).map(l => ({ orgId: l.org_id, orgName: l.org_name })),
     },
     notes: {
@@ -7186,6 +7218,27 @@ function PassportDetail({ data, onBack, canEdit, canPostNote, onRefresh, onAssig
           text: `:satellite: Capture log update on *${p.company}*: *${ce.status}*${reason}. ${ce.note || ""}`.trim(),
           by: currentUserName, channelId: slackChannel ? slackChannel.id : undefined, passportId: p.id });
       if (sent) toast(`Capture logged · notified ${sent} owner${sent !== 1 ? "s" : ""} in Slack`);
+      return;
+    }
+    // Link this deal's Aurora org for the catalog delivery sync. org_name is
+    // NOT NULL and only used as a display label, so seed it with the company
+    // name; the next sync shows the real org name in the review list.
+    if (updated._linkCatalogOrg) {
+      await saveCatalogLinks([{
+        org_id: updated._linkCatalogOrg.orgId,
+        org_name: p.company || "(unnamed org)",
+        passport_id: p.id,
+        status: "linked",
+        created_by: currentUserName || null,
+      }]);
+      await onRefresh();
+      toast("Aurora org linked — run Quality Checks → Catalog deliveries to pull its images");
+      return;
+    }
+    if (updated._unlinkCatalogOrg) {
+      await deleteCatalogLink(updated._unlinkCatalogOrg.orgId);
+      await onRefresh();
+      toast("Org unlinked");
       return;
     }
     // Capture log entry — edit
