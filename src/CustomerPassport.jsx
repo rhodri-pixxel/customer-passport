@@ -2385,13 +2385,10 @@ async function deleteCatalogLink(orgId) {
 }
 
 // Sync catalog rows into the passport: upsert delivered_images for every row
-// whose org is linked to a passport, then create Awaiting-QC rows for delivered
-// images that have no QC entry yet. Dedup runs on the canonical satellite+frame
-// key (see normalizeImageId), so a catalog id and the IPR/hand-typed id for the
-// same frame collapse to one QC row instead of two. Catalog rows still carry
-// created_by "Catalog import" to keep their provenance visible. No Slack pings
-// here: the first sync backfills months of deliveries and would flood every SE.
-async function syncCatalogRows(rows, links, deals) {
+// whose org is linked to a passport, and refresh those orgs' names from the
+// export. Orgs with no link are read and skipped — they never reach the
+// database. Touches delivered_images only; QC rows are never created here.
+async function syncCatalogRows(rows, links) {
   const linkByOrg = {};
   for (const l of links || []) if (l.status === "linked" && l.passport_id) linkByOrg[l.org_id] = l;
   // The source has a few duplicated (org, image) pairs — last row wins.
@@ -2420,34 +2417,12 @@ async function syncCatalogRows(rows, links, deals) {
       created_by: linkByOrg[orgId].created_by || null,
     }));
   if (renamed.length) await saveCatalogLinks(renamed);
-  const existing = await existingQcImageIds();
-  const TEAM_FLAT = Object.values(TEAM_MEMBERS).flat();
-  const qcRows = [];
-  for (const row of toSync) {
-    const key = qcDedupKey(row.image_id);
-    if (!key || existing.has(key)) continue;
-    existing.add(key);
-    const deal = (deals || []).find(d => d.id === row.passport_id);
-    const seName = deal && deal.owners ? deal.owners.se : null;
-    const sePerson = seName ? TEAM_FLAT.find(p => p.name === seName) : null;
-    qcRows.push({
-      organization: (deal && deal.company) || row.org_name || "Unknown",
-      passport_id: row.passport_id,
-      usecase: "",
-      qc_result: "Awaiting QC",
-      image_id: row.image_id,
-      assignee: seName || null,
-      assignee_email: sePerson ? sePerson.email : null,
-      qc_notes: "",
-      location: "",
-      mvp_image: false,
-      created_by: "Catalog import",
-    });
-  }
-  for (let i = 0; i < qcRows.length; i += 200) {
-    await sbPost("quality_checks", qcRows.slice(i, i + 200));
-  }
-  return { imagesSynced: toSync.length, qcCreated: qcRows.length, orgsNamed: renamed.length };
+  // Deliberately does NOT create QC rows. Anything in the customer's catalog
+  // has already been delivered, so an "Awaiting QC" row for it is backwards —
+  // and auto-assigning hundreds of them to whoever happens to be the deal's SE
+  // buries the entries someone actually chose to review. QC work is created by
+  // hand (Log QC entry) or by explicit selection in the IPR import.
+  return { imagesSynced: toSync.length, orgsNamed: renamed.length };
 }
 
 // Searchable deal picker — type to filter instead of scrolling a long dropdown
@@ -2960,8 +2935,8 @@ function CatalogSyncModal({ deals, onClose, onDone, toast, currentUserName }) {
   const doSync = async () => {
     setSyncing(true);
     try {
-      const { imagesSynced, qcCreated, orgsNamed } = await syncCatalogRows(rows, links, deals);
-      toast(`Synced ${imagesSynced} delivered image${imagesSynced === 1 ? "" : "s"} · ${qcCreated} new QC row${qcCreated === 1 ? "" : "s"}${orgsNamed ? ` · named ${orgsNamed} workspace${orgsNamed === 1 ? "" : "s"}` : ""}`);
+      const { imagesSynced, orgsNamed } = await syncCatalogRows(rows, links);
+      toast(`Synced ${imagesSynced} delivered image${imagesSynced === 1 ? "" : "s"}${orgsNamed ? ` · named ${orgsNamed} workspace${orgsNamed === 1 ? "" : "s"}` : ""}`);
       onDone && onDone();
       onClose();
     } catch (e) { toast("Sync failed: " + e.message); }
