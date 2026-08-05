@@ -2886,6 +2886,7 @@ function CatalogSyncModal({ deals, onClose, onDone, toast, currentUserName }) {
   const [pasteOpen, setPasteOpen] = useState(false);
   const [pasteText, setPasteText] = useState("");
   const [pick, setPick] = useState({});     // org_id → passport_id chosen in a picker
+  const [showUnlinked, setShowUnlinked] = useState(false); // orgs with no deal — skipped, so hidden by default
   const fileRef = useRef(null);
 
   const reloadLinks = async () => { try { setLinks(await fetchCatalogLinks()); } catch (_) { setLinks([]); } };
@@ -3024,10 +3025,26 @@ function CatalogSyncModal({ deals, onClose, onDone, toast, currentUserName }) {
             <div>
               <div style={{ fontSize:12.5, color:"var(--muted)" }}>
                 {rows.length} delivery rows · {groups.linked.length + groups.ignored.length + groups.internal.length + groups.unmatched.length} orgs ·{" "}
-                {groups.linked.length} linked → {linkedImageCount} images will sync
+                <b style={{ color:"var(--ink)" }}>{groups.linked.length} linked → {linkedImageCount} images will sync</b>
+              </div>
+              <div style={{ fontSize:11.5, color:"var(--muted2)", marginTop:4 }}>
+                Orgs that aren't linked to a deal are read but never written — no delivered images, no QC rows.
+                Link a deal's workspace from its Execution tab, or expand below.
               </div>
 
-              {groups.unmatched.length > 0 && (
+              {/* Unlinked orgs are collapsed by default. Linking now happens from
+                  the deal (Execution → Aurora workspace), so this list is a
+                  fallback — showing hundreds of internal orgs by default made the
+                  import look like a mapping chore it isn't. */}
+              {(groups.unmatched.length > 0 || groups.internal.length > 0) && (
+                <button onClick={() => setShowUnlinked(v => !v)}
+                  style={{ border:"none", background:"none", cursor:"pointer", color:"var(--accent-deep)", fontSize:12, padding:"10px 0 0" }}>
+                  {showUnlinked ? "Hide" : "Show"} {groups.unmatched.length + groups.internal.length} unlinked org
+                  {groups.unmatched.length + groups.internal.length === 1 ? "" : "s"} (skipped)
+                </button>
+              )}
+
+              {showUnlinked && groups.unmatched.length > 0 && (
                 <>
                   <div style={secTitle}>Needs mapping — link to a deal or ignore</div>
                   <div style={listBox}>
@@ -3068,7 +3085,7 @@ function CatalogSyncModal({ deals, onClose, onDone, toast, currentUserName }) {
                 </>
               )}
 
-              {groups.internal.length > 0 && (
+              {showUnlinked && groups.internal.length > 0 && (
                 <>
                   <div style={{ ...secTitle, display:"flex", alignItems:"center", gap:10 }}>
                     <span>Looks internal ({groups.internal.length})</span>
@@ -3090,7 +3107,7 @@ function CatalogSyncModal({ deals, onClose, onDone, toast, currentUserName }) {
                 </>
               )}
 
-              {groups.ignored.length > 0 && (
+              {showUnlinked && groups.ignored.length > 0 && (
                 <div style={{ marginTop:12, fontSize:11.5, color:"var(--muted2)" }}>
                   {groups.ignored.length} org{groups.ignored.length === 1 ? "" : "s"} ignored ({groups.ignored.slice(0, 6).map(o => o.org_name).join(", ")}{groups.ignored.length > 6 ? "…" : ""}) —{" "}
                   <button style={{ border:"none", background:"none", cursor:"pointer", color:"var(--accent-deep)", fontSize:11.5, padding:0 }}

@@ -10,9 +10,21 @@
 --
 -- Nullable on purpose: existing rows keep working and the catalog sync doesn't
 -- have to guess, it just leaves the column alone.
+--
+-- Written to be re-runnable: re-applying this file is a no-op rather than an
+-- "already exists" error.
 
-ALTER TABLE public.delivered_images ADD COLUMN delivery_kind text;
+ALTER TABLE public.delivered_images ADD COLUMN IF NOT EXISTS delivery_kind text;
 
-ALTER TABLE public.delivered_images
-  ADD CONSTRAINT delivered_images_delivery_kind_check
-  CHECK (delivery_kind IS NULL OR delivery_kind = ANY (ARRAY['paid'::text, 'sample'::text]));
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conname = 'delivered_images_delivery_kind_check'
+      AND conrelid = 'public.delivered_images'::regclass
+  ) THEN
+    ALTER TABLE public.delivered_images
+      ADD CONSTRAINT delivered_images_delivery_kind_check
+      CHECK (delivery_kind IS NULL OR delivery_kind = ANY (ARRAY['paid'::text, 'sample'::text]));
+  END IF;
+END $$;
