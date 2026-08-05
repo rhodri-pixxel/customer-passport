@@ -2206,13 +2206,39 @@ async function existingQcImageIds() {
   return new Set(rows.map(r => qcDedupKey(r.image_id)).filter(Boolean));
 }
 
-// Auto-populate: for each active deal, pull captured/QC-ready images whose AOI text
-// matches the company name, and create QC rows assigned to that deal's SE. Company
-// matching is intentionally loose. Inserts directly (not via addQcEntry) so the SE
-// gets ONE summary Slack ping per deal instead of one per image. Returns { added, skipped }.
-async function autoPopulateFromIpr(deals) {
-  let added = 0, skipped = 0;
-  const existing = await existingQcImageIds();
+// ── IPR feed ──────────────────────────────────────────────────────
+// Mirror of the IPR dashboard: every image that has cleared the pipeline.
+// These are NOT QC work — most never need a human — so they go to
+// captured_images, never quality_checks. An SE promotes the few that do.
+async function fetchCapturedImages() {
+  return sbGet("captured_images", "?order=synced_at.desc&limit=1000");
+}
+
+// Map one IPR metadata item → a captured_images row. Deliberately carries no
+// assignee and no verdict: ownership only exists once someone promotes it.
+function mapIprItemToCaptured(item, deal) {
+  const cloud = item.cloud_cover_percentage != null ? Number(item.cloud_cover_percentage) : null;
+  return {
+    image_key: normalizeImageId(iprImageId(item)),
+    image_id: iprImageId(item),
+    passport_id: deal ? deal.id : null,
+    organization: (deal && deal.company) || item.aoi_id || "",
+    satellite: (item.satellite_id || "").trim() || null,
+    bandset: item.bandset || null,
+    location: item.aoi_id
+      || (item.latitude != null && item.longitude != null ? `${item.latitude.toFixed(3)}, ${item.longitude.toFixed(3)}` : null),
+    processing_status: item.processing_status || null,
+    cloud_cover: cloud,
+    ipr_info: [item.processing_status || "", cloud != null ? `${Math.round(cloud)}% cloud` : ""].filter(Boolean).join(" · "),
+  };
+}
+
+// Pull QC-ready images for every deal into the feed. Upserts on the canonical
+// image_key, so re-running is idempotent and costs nothing. Company matching is
+// intentionally loose (IPR AOI ids are generic) — a wrong deal match only
+// mislabels a feed row, it no longer assigns work to anyone.
+async function syncCapturedFromIpr(deals) {
+  const byKey = new Map();
   for (const deal of (deals || [])) {
     if (!deal.company) continue;
     let items = [];
@@ -2223,18 +2249,15 @@ async function autoPopulateFromIpr(deals) {
       }
     } catch (_) { continue; }
     for (const item of items) {
-      const id = qcDedupKey(iprImageId(item));
-      if (!id || existing.has(id)) { skipped++; continue; }
-      // Deliberately unassigned. The sync's job is to surface new captures, not
-      // to hand them to whoever happens to be the deal's SE — these land in the
-      // Unassigned sub-tab and an SE claims one by putting their name on it.
-      // No Slack either: nobody is on the hook until someone takes it.
-      await sbPost("quality_checks", { ...mapIprItemToQc(item, deal), assignee: null, assignee_email: null });
-      existing.add(id);
-      added++;
+      const row = mapIprItemToCaptured(item, deal);
+      if (row.image_key) byKey.set(row.image_key, row);
     }
   }
-  return { added, skipped };
+  const rows = [...byKey.values()];
+  for (let i = 0; i < rows.length; i += 500) {
+    await sbUpsert("captured_images", rows.slice(i, i + 500), "image_key");
+  }
+  return { synced: rows.length };
 }
 
 // Notify the linked deal's CS when a QC entry becomes complete (result set to
@@ -2462,30 +2485,38 @@ function DealSearchPicker({ deals, value, onChange }) {
   );
 }
 
-function QcForm({ onSubmit, onCancel, defaultOrg, defaultPassportId, deals, initial }) {
-  // `initial` = an existing QC row → the form opens pre-filled in edit mode
+function QcForm({ onSubmit, onCancel, defaultOrg, defaultPassportId, deals, initial, fromCapture }) {
+  // `initial` = an existing QC row → the form opens pre-filled in edit mode.
+  // `fromCapture` = an IPR feed row being promoted → pre-fills the image details
+  // so the only real decision left is who reviews it.
+  const cap = fromCapture || null;
   const [form, setForm] = useState({
-    organization: (initial && initial.organization) || defaultOrg || "",
+    organization: (initial && initial.organization) || (cap && cap.organization) || defaultOrg || "",
     usecase: (initial && initial.usecase) || "",
-    bandset: (initial && initial.bandset) || "",
-    ipr_info: (initial && initial.ipr_info) || "",  // preserved on edit; not user-editable
+    bandset: (initial && initial.bandset) || (cap && cap.bandset) || "",
+    ipr_info: (initial && initial.ipr_info) || (cap && cap.ipr_info) || "",  // preserved on edit; not user-editable
     priority: (initial && initial.priority) || "Medium",
     qc_result: (initial && initial.qc_result) || "Awaiting QC",
-    image_id: (initial && initial.image_id) || "",
+    image_id: (initial && initial.image_id) || (cap && cap.image_id) || "",
     type: (initial && initial.type) || "Sample",
     assignee: (initial && initial.assignee) || "",
     qc_notes: (initial && initial.qc_notes) || "",
-    location: (initial && initial.location) || "",
+    location: (initial && initial.location) || (cap && cap.location) || "",
     mvp_image: !!(initial && initial.mvp_image),
     feedback_milestone: (initial && initial.feedback_milestone) || "",
     qc_required_by: (initial && initial.qc_required_by) || "",
-    passport_id: (initial && initial.passport_id) || defaultPassportId || "",
+    passport_id: (initial && initial.passport_id) || (cap && cap.passport_id) || defaultPassportId || "",
   });
   const [uploading, setUploading] = useState(false);
   const [shotPath, setShotPath] = useState((initial && initial.photo_evidence_path) || "");
+  const [err, setErr] = useState("");
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
+  // New entries must name a reviewer — QC work exists because someone was given
+  // it. Edits are exempt so older unassigned rows stay editable.
   const submit = () => {
-    if (!form.organization.trim()) return;
+    if (!form.organization.trim()) { setErr("Organization is required."); return; }
+    if (!initial && !form.assignee) { setErr("Pick an SE to assign this to — QC entries can't be unassigned."); return; }
+    setErr("");
     const assigneePerson = Object.values(TEAM_MEMBERS).flat().find(p => p.name === form.assignee);
     const payload = {
       ...form,
@@ -2625,7 +2656,13 @@ function QcForm({ onSubmit, onCancel, defaultOrg, defaultPassportId, deals, init
           />
         )}
       </div>
-      <div style={{ display:"flex", gap:8, justifyContent:"flex-end" }}>
+      <div style={{ display:"flex", gap:8, justifyContent:"flex-end", alignItems:"center", flexWrap:"wrap" }}>
+        {cap && !err && (
+          <span style={{ marginRight:"auto", fontSize:11.5, color:"var(--muted2)" }}>
+            From the IPR feed · {cap.image_id} — pick who reviews it.
+          </span>
+        )}
+        {err && <span style={{ marginRight:"auto", fontSize:12, color:"var(--bad)" }}>{err}</span>}
         <button className="btn ghost" style={{ color:"var(--muted)", border:"1px solid var(--line)", background:"var(--card)" }} onClick={onCancel}>Cancel</button>
         <button className="btn solid" onClick={submit}><Camera size={13} /> {initial ? "Save changes" : "Save QC entry"}</button>
       </div>
@@ -2633,10 +2670,22 @@ function QcForm({ onSubmit, onCancel, defaultOrg, defaultPassportId, deals, init
   );
 }
 
-function QcRow({ row, canEdit, onDelete, onEdit, showOrg }) {
+function QcRow({ row, canEdit, onDelete, onEdit, showOrg, needsAssignee, alreadyDelivered }) {
   return (
     <tr>
-      {showOrg && <td style={{ fontWeight:600 }}>{row.organization}</td>}
+      {showOrg && (
+        <td style={{ fontWeight:600 }}>
+          {row.organization}
+          {needsAssignee && (
+            <AlertTriangle size={12} title="No assignee — QC entries should be assigned to an SE"
+              style={{ color:"var(--energy)", marginLeft:6, verticalAlign:"-2px" }} />
+          )}
+          {alreadyDelivered && (
+            <Layers size={12} title="This image is already delivered to the customer, so it doesn't need QC — safe to delete"
+              style={{ color:"var(--accent-deep)", marginLeft:5, verticalAlign:"-2px" }} />
+          )}
+        </td>
+      )}
       <td>{row.usecase || "—"}</td>
       <td>{row.bandset || "—"}</td>
       <td><span className="tag" style={{ background: row.qc_result === "Pass" ? "rgba(0,192,48,.14)" : row.qc_result === "Fail" ? "rgba(247,110,47,.14)" : "rgba(236,180,35,.14)", color: row.qc_result === "Pass" ? "var(--forest)" : row.qc_result === "Fail" ? "var(--mining)" : "var(--energy)", fontWeight:600 }}>{row.qc_result}</span></td>
@@ -3112,8 +3161,10 @@ function QualityChecksGlobal({ deals, canEdit, onOpen, toast, currentUserName })
   const [filter, setFilter] = useState("all"); // all | Pass | Fail
   // Sub-tabs split the page by who owns the work, so an automated feed of new
   // images can exist without burying the entries someone was actually given.
-  const [tab, setTab] = useState("assigned");  // assigned | unassigned | delivered
+  const [tab, setTab] = useState("qc");        // qc | feed | delivered
   const [delivered, setDelivered] = useState([]);
+  const [captured, setCaptured] = useState([]);
+  const [promoteFrom, setPromoteFrom] = useState(null); // feed row being sent to QC
   const [showImport, setShowImport] = useState(false); // IPR import modal
   const [showCatalog, setShowCatalog] = useState(false); // catalog delivery sync modal
   const [syncing, setSyncing] = useState(false);       // auto-populate in progress
@@ -3121,8 +3172,12 @@ function QualityChecksGlobal({ deals, canEdit, onOpen, toast, currentUserName })
   const load = async () => {
     setLoading(true);
     try {
-      const [qc, dl] = await Promise.all([fetchAllQc(), fetchAllDelivered().catch(() => [])]);
-      setRows(qc); setDelivered(dl || []);
+      const [qc, dl, cap] = await Promise.all([
+        fetchAllQc(),
+        fetchAllDelivered().catch(() => []),
+        fetchCapturedImages().catch(() => []),
+      ]);
+      setRows(qc); setDelivered(dl || []); setCaptured(cap || []);
     } finally { setLoading(false); }
   };
   useEffect(() => { load(); }, []);
@@ -3141,12 +3196,18 @@ function QualityChecksGlobal({ deals, canEdit, onOpen, toast, currentUserName })
         logQcToCaptureLog({ prevResult, entry: merged, author: currentUserName });
       }
       else {
-        await addQcEntry(entry);
-        toast("QC entry saved");
+        const created = await addQcEntry(entry);
+        toast(promoteFrom ? "Assigned — QC entry created from the IPR feed" : "QC entry saved");
         // A QC logged straight as Pass/Fail (no Awaiting step) still belongs on the timeline
         logQcToCaptureLog({ prevResult: null, entry, author: currentUserName });
+        // Record which feed image produced this entry, so the feed can show
+        // "In QC" and the same image can't be promoted twice.
+        const newId = Array.isArray(created) ? (created[0] && created[0].id) : (created && created.id);
+        if (promoteFrom && newId) {
+          try { await sbPatch("captured_images", promoteFrom.id, { qc_id: newId }); } catch (_) { /* best-effort */ }
+        }
       }
-      setShowForm(false); setEditRow(null);
+      setShowForm(false); setEditRow(null); setPromoteFrom(null);
       await load();
     }
     catch (e) { toast("Save failed: " + e.message); }
@@ -3155,22 +3216,40 @@ function QualityChecksGlobal({ deals, canEdit, onOpen, toast, currentUserName })
   const syncCaptured = async () => {
     setSyncing(true);
     try {
-      const { added, skipped } = await autoPopulateFromIpr(deals);
-      toast(added ? `Synced ${added} new image${added === 1 ? "" : "s"} (${skipped} already present)` : `No new captured images to add (${skipped} already present)`);
+      const { synced } = await syncCapturedFromIpr(deals);
+      toast(`IPR feed updated — ${synced} image${synced === 1 ? "" : "s"}. Nothing added to QC entries.`);
       await load();
     } catch (e) { toast("Sync failed: " + e.message); }
     finally { setSyncing(false); }
+  };
+  // Promote a feed image into real QC work. Opens the normal QC form prefilled
+  // from the IPR record; the assignee is picked there, which is the whole point.
+  // The feed row is never edited — it only records which QC entry it produced.
+  const promoteToQc = (c) => {
+    setTab("qc");
+    setEditRow(null);
+    setPromoteFrom(c);
+    setShowForm(true);
+    window.scrollTo({ top: 0, behavior: "smooth" });
   };
   const remove = async (id) => {
     try { await deleteQcEntry(id); toast("QC entry deleted"); await load(); }
     catch (e) { toast("Delete failed: " + e.message); }
   };
 
-  // Assigned = someone owns it. Unassigned = the pool an automated sync drops
-  // new captures into, which an SE claims by putting a name on it.
-  const assignedRows = rows.filter(r => r.assignee);
-  const unassignedRows = rows.filter(r => !r.assignee);
-  const tabRows = tab === "assigned" ? assignedRows : unassignedRows;
+  // Every QC entry is human-created work now, so there's one list. Two things
+  // get flagged rather than hidden: entries nobody owns, and entries whose image
+  // has since been delivered to the customer (delivery implies it passed, so the
+  // QC entry is redundant and can be cleared).
+  const deliveredKeys = new Set(delivered.map(d => normalizeImageId(d.image_id)).filter(Boolean));
+  const tabRows = rows;
+  const needsAssignee = (r) => !r.assignee;
+  const alreadyDelivered = (r) => {
+    const k = normalizeImageId(r.image_id);
+    return !!k && deliveredKeys.has(k) && r.qc_result === "Awaiting QC";
+  };
+  const unassignedCount = rows.filter(needsAssignee).length;
+  const deliveredDupCount = rows.filter(alreadyDelivered).length;
   const filtered = filter === "all" ? tabRows : tabRows.filter(r => r.qc_result === filter);
   const passCount = tabRows.filter(r => r.qc_result === "Pass").length;
   const failCount = tabRows.filter(r => r.qc_result === "Fail").length;
@@ -3183,20 +3262,22 @@ function QualityChecksGlobal({ deals, canEdit, onOpen, toast, currentUserName })
     <div className="cp-page-inner">
       <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom: 18, flexWrap:"wrap", gap:10 }}>
         <div>
-          <h2 className="section-title" style={{ marginBottom: 2 }}>Quality Checks</h2>
+          <h2 className="section-title" style={{ marginBottom: 2 }}>Imagery</h2>
           <div style={{ fontSize:13, color:"var(--muted)" }}>
             {tab === "delivered"
               ? `${delivered.length} cataloged deliver${delivered.length === 1 ? "y" : "ies"} · already in customer workspaces`
-              : `${tabRows.length} entr${tabRows.length === 1 ? "y" : "ies"} · ${awaitingCount} awaiting · ${passCount} pass · ${failCount} fail`}
+              : tab === "feed"
+                ? `${captured.length} image${captured.length === 1 ? "" : "s"} through Aurora / Datahub · mirror of the IPR dashboard`
+                : `${tabRows.length} entr${tabRows.length === 1 ? "y" : "ies"} · ${awaitingCount} awaiting · ${passCount} pass · ${failCount} fail`}
           </div>
         </div>
         <div style={{ display:"flex", gap:8, alignItems:"center", flexWrap:"wrap" }}>
           <div className="seg">
-            <button className={tab==="assigned"?"on":""} onClick={() => setTab("assigned")}>Assigned ({assignedRows.length})</button>
-            <button className={tab==="unassigned"?"on":""} onClick={() => setTab("unassigned")}>Unassigned ({unassignedRows.length})</button>
+            <button className={tab==="qc"?"on":""} onClick={() => setTab("qc")}>QC entries ({rows.length})</button>
+            <button className={tab==="feed"?"on":""} onClick={() => setTab("feed")}>IPR feed ({captured.length})</button>
             <button className={tab==="delivered"?"on":""} onClick={() => setTab("delivered")}>Delivered ({delivered.length})</button>
           </div>
-          {tab !== "delivered" && (
+          {tab === "qc" && (
             <div className="seg">
               <button className={filter==="all"?"on":""} onClick={() => setFilter("all")}>All</button>
               <button className={filter==="Awaiting QC"?"on":""} onClick={() => setFilter("Awaiting QC")}>Awaiting</button>
@@ -3228,17 +3309,68 @@ function QualityChecksGlobal({ deals, canEdit, onOpen, toast, currentUserName })
       )}
 
       {(showForm || editRow) && (
-        <QcForm key={editRow ? editRow.id : "new"} deals={deals} initial={editRow}
-          onSubmit={submit} onCancel={() => { setShowForm(false); setEditRow(null); }} />
+        <QcForm key={editRow ? editRow.id : (promoteFrom ? `promote-${promoteFrom.id}` : "new")}
+          deals={deals} initial={editRow} fromCapture={promoteFrom}
+          onSubmit={submit} onCancel={() => { setShowForm(false); setEditRow(null); setPromoteFrom(null); }} />
       )}
 
-      {tab === "unassigned" && !loading && (
+      {tab === "feed" && !loading && (
         <div style={{ fontSize:12, color:"var(--muted)", margin:"0 0 10px" }}>
-          New captures land here with nobody on the hook. Open one and set an assignee to claim it — it moves to Assigned.
+          Read-only mirror of the IPR dashboard — everything that cleared the pipeline. Nothing here is QC work.
+          Use <b>Assign to SE</b> on the few that need a human look; that creates a QC entry and leaves this list untouched.
         </div>
       )}
 
-      {loading ? <div className="empty"><RefreshCw size={15} className="spin" /> Loading…</div> : tab === "delivered" ? (
+      {tab === "qc" && !loading && (unassignedCount > 0 || deliveredDupCount > 0) && (
+        <div style={{ display:"flex", gap:14, flexWrap:"wrap", fontSize:12, margin:"0 0 10px" }}>
+          {unassignedCount > 0 && (
+            <span style={{ color:"var(--muted)" }}>
+              <AlertTriangle size={12} style={{ color:"var(--energy)", verticalAlign:"-2px" }} />{" "}
+              <b style={{ color:"var(--ink)" }}>{unassignedCount}</b> without an assignee
+            </span>
+          )}
+          {deliveredDupCount > 0 && (
+            <span style={{ color:"var(--muted)" }}>
+              <Layers size={12} style={{ color:"var(--accent-deep)", verticalAlign:"-2px" }} />{" "}
+              <b style={{ color:"var(--ink)" }}>{deliveredDupCount}</b> already delivered to the customer — QC not needed, safe to delete
+            </span>
+          )}
+        </div>
+      )}
+
+      {loading ? <div className="empty"><RefreshCw size={15} className="spin" /> Loading…</div> : tab === "feed" ? (
+        <div style={{ overflowX: "auto", background:"var(--card)", border:"1px solid var(--line)", borderRadius: 14 }}>
+          <table className="qc-table">
+            <thead><tr><th>Customer</th><th>Image ID</th><th>Bandset</th><th>Status</th><th>Cloud</th><th>Location</th><th>Synced</th>{canEdit && <th></th>}</tr></thead>
+            <tbody>
+              {captured.length ? captured.map(c => {
+                const deal = dealById[c.passport_id];
+                return (
+                  <tr key={c.id}>
+                    <td>{deal
+                      ? <button onClick={() => onOpen && onOpen(deal.id)} style={{ border:"none", background:"none", padding:0, cursor:"pointer", color:"var(--accent-deep)", fontSize:12.5, fontWeight:500 }}>{deal.company}</button>
+                      : <span style={{ color:"var(--muted2)", fontSize:12 }}>{c.organization || "—"}</span>}</td>
+                    <td style={{ fontFamily:"var(--font-mono)", fontSize:11.5 }}>{c.image_id}</td>
+                    <td style={{ fontSize:11.5 }}>{c.bandset || "—"}</td>
+                    <td style={{ fontSize:11.5, color:"var(--muted)" }}>{c.processing_status || "—"}</td>
+                    <td style={{ fontSize:11.5 }}>{c.cloud_cover != null ? `${Math.round(c.cloud_cover)}%` : "—"}</td>
+                    <td style={{ fontSize:11.5, color:"var(--muted)", maxWidth:160, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{c.location || "—"}</td>
+                    <td style={{ fontSize:11.5, whiteSpace:"nowrap" }}>{fmtDay(c.synced_at)}</td>
+                    {canEdit && <td style={{ whiteSpace:"nowrap" }}>
+                      {c.qc_id
+                        ? <span className="tag" style={{ background:"var(--accent-soft)", color:"var(--accent-deep)", fontWeight:600 }}>In QC</span>
+                        : <button className="btn ghost" style={{ padding:"4px 10px", fontSize:11.5, color:"var(--accent-deep)", border:"1px solid var(--line)", background:"var(--card)" }}
+                            onClick={() => promoteToQc(c)}>Assign to SE</button>}
+                    </td>}
+                  </tr>
+                );
+              }) : <tr><td colSpan={canEdit ? 8 : 7} style={{ textAlign:"center", padding:30, color:"var(--muted2)" }}>
+                Feed is empty — run Sync captured images to pull from the IPR dashboard.
+              </td></tr>}
+            </tbody>
+          </table>
+        </div>
+      ) : tab === "delivered" ? (
         <div style={{ overflowX: "auto", background:"var(--card)", border:"1px solid var(--line)", borderRadius: 14 }}>
           <table className="qc-table">
             <thead><tr><th>Customer</th><th>Workspace</th><th>Image ID</th><th>Order</th><th>Type</th><th>Delivered</th></tr></thead>
@@ -3277,9 +3409,12 @@ function QualityChecksGlobal({ deals, canEdit, onOpen, toast, currentUserName })
               </tr>
             </thead>
             <tbody>
-              {filtered.length ? filtered.map(r => <QcRow key={r.id} row={r} canEdit={canEdit} onDelete={remove} onEdit={(row) => { setEditRow(row); setShowForm(false); window.scrollTo({ top: 0, behavior: "smooth" }); }} showOrg />)
-                : <tr><td colSpan={canEdit ? 13 : 12} style={{ textAlign:"center", padding:30, color:"var(--muted2)" }}>
-                  {tab === "unassigned" ? "Nothing unclaimed — every QC entry has an owner." : "No assigned QC entries yet."}
+              {filtered.length ? filtered.map(r => (
+                <QcRow key={r.id} row={r} canEdit={canEdit} onDelete={remove}
+                  needsAssignee={needsAssignee(r)} alreadyDelivered={alreadyDelivered(r)}
+                  onEdit={(row) => { setEditRow(row); setShowForm(false); window.scrollTo({ top: 0, behavior: "smooth" }); }} showOrg />
+              )) : <tr><td colSpan={canEdit ? 13 : 12} style={{ textAlign:"center", padding:30, color:"var(--muted2)" }}>
+                  No QC entries yet — create one, or assign an image from the IPR feed.
                 </td></tr>}
             </tbody>
           </table>
@@ -8403,7 +8538,7 @@ function AppMain({ currentUser, canEdit, canPostNote, onSignOut }) {
             <BarChart3 size={15} /> Leadership
           </button>
           <button className={view === "qc" ? "on" : ""} onClick={() => { setView("qc"); closePassport(); }}>
-            <Camera size={15} /> Quality Checks
+            <Camera size={15} /> Imagery
           </button>
           <button className={view === "mvp" ? "on" : ""} onClick={() => { setView("mvp"); closePassport(); }}>
             <Star size={15} /> MVP Images
@@ -8421,7 +8556,7 @@ function AppMain({ currentUser, canEdit, canPostNote, onSignOut }) {
           actions={[
             { label: "Sync HubSpot now", run: () => syncHubspot() },
             { label: "Go to Leadership", run: () => { setView("dashboard"); closePassport(); } },
-            { label: "Go to Quality Checks", run: () => { setView("qc"); closePassport(); } },
+            { label: "Go to Imagery", run: () => { setView("qc"); closePassport(); } },
             { label: "Go to Maps", run: () => { setView("maps"); closePassport(); } },
           ]}
           onOpenDeal={(d) => openPassport(d.id)}
