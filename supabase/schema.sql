@@ -284,7 +284,8 @@ CREATE TABLE public.quality_checks (
 -- see supabase/migrations/20260727_catalog_image_sync.sql for the rationale.
 CREATE TABLE public.catalog_org_links (
   org_id text NOT NULL,
-  org_name text NOT NULL,
+  -- NULL until the catalog sync fills it in from the Metabase export; never typed
+  org_name text,
   passport_id uuid,
   status text DEFAULT 'linked'::text NOT NULL,
   created_by text,

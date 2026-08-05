@@ -2405,6 +2405,21 @@ async function syncCatalogRows(rows, links, deals) {
   for (let i = 0; i < toSync.length; i += 500) {
     await sbUpsert("delivered_images", toSync.slice(i, i + 500), "org_id,image_id");
   }
+  // The export is the source of truth for workspace names. A deal linked by
+  // pasting the org UUID alone starts with no name at all; fill it in (and
+  // correct it if Aurora renamed the workspace) so nobody ever types one.
+  const nameByOrg = {};
+  for (const row of rows) if (row.org_name && !nameByOrg[row.org_id]) nameByOrg[row.org_id] = row.org_name;
+  const renamed = Object.keys(linkByOrg)
+    .filter(orgId => nameByOrg[orgId] && nameByOrg[orgId] !== linkByOrg[orgId].org_name)
+    .map(orgId => ({
+      org_id: orgId,
+      org_name: nameByOrg[orgId],
+      passport_id: linkByOrg[orgId].passport_id,
+      status: "linked",
+      created_by: linkByOrg[orgId].created_by || null,
+    }));
+  if (renamed.length) await saveCatalogLinks(renamed);
   const existing = await existingQcImageIds();
   const TEAM_FLAT = Object.values(TEAM_MEMBERS).flat();
   const qcRows = [];
@@ -2432,7 +2447,7 @@ async function syncCatalogRows(rows, links, deals) {
   for (let i = 0; i < qcRows.length; i += 200) {
     await sbPost("quality_checks", qcRows.slice(i, i + 200));
   }
-  return { imagesSynced: toSync.length, qcCreated: qcRows.length };
+  return { imagesSynced: toSync.length, qcCreated: qcRows.length, orgsNamed: renamed.length };
 }
 
 // Searchable deal picker — type to filter instead of scrolling a long dropdown
@@ -2944,8 +2959,8 @@ function CatalogSyncModal({ deals, onClose, onDone, toast, currentUserName }) {
   const doSync = async () => {
     setSyncing(true);
     try {
-      const { imagesSynced, qcCreated } = await syncCatalogRows(rows, links, deals);
-      toast(`Synced ${imagesSynced} delivered image${imagesSynced === 1 ? "" : "s"} · ${qcCreated} new QC row${qcCreated === 1 ? "" : "s"}`);
+      const { imagesSynced, qcCreated, orgsNamed } = await syncCatalogRows(rows, links, deals);
+      toast(`Synced ${imagesSynced} delivered image${imagesSynced === 1 ? "" : "s"} · ${qcCreated} new QC row${qcCreated === 1 ? "" : "s"}${orgsNamed ? ` · named ${orgsNamed} workspace${orgsNamed === 1 ? "" : "s"}` : ""}`);
       onDone && onDone();
       onClose();
     } catch (e) { toast("Sync failed: " + e.message); }
@@ -5379,16 +5394,18 @@ function CatalogOrgLinker({ orgs, canEdit, onLink, onUnlink }) {
     <div style={{ marginTop:8 }}>
       <div className="k">Linked catalog org{orgs.length === 1 ? "" : "s"}</div>
       {orgs.length > 0 && (
-        <div style={{ display:"flex", gap:6, flexWrap:"wrap", marginTop:4 }}>
+        <div style={{ display:"flex", flexDirection:"column", gap:5, marginTop:4 }}>
           {orgs.map(o => (
-            <span key={o.orgId} title={o.orgId}
-              style={{ fontSize:11.5, padding:"3px 9px", borderRadius:999, border:"1px solid var(--line)", background:"var(--bg)", color:"var(--muted)", display:"inline-flex", alignItems:"center", gap:6 }}>
-              {o.orgName}
+            <div key={o.orgId} style={{ display:"flex", alignItems:"center", gap:8, flexWrap:"wrap" }}>
+              {o.orgName
+                ? <span style={{ fontSize:13, fontWeight:500, color:"var(--ink)" }}>{o.orgName}</span>
+                : <span style={{ fontSize:12.5, fontStyle:"italic", color:"var(--muted2)" }}>Name arrives on next sync</span>}
+              <span style={{ fontFamily:"var(--font-mono)", fontSize:10.5, color:"var(--muted2)" }}>{o.orgId}</span>
               {canEdit && (
                 <button onClick={() => onUnlink(o.orgId)} title="Unlink this org"
-                  style={{ border:"none", background:"none", cursor:"pointer", color:"var(--muted2)", padding:0, display:"inline-flex" }}><X size={11} /></button>
+                  style={{ border:"none", background:"none", cursor:"pointer", color:"var(--muted2)", padding:0, display:"inline-flex" }}><X size={12} /></button>
               )}
-            </span>
+            </div>
           ))}
         </div>
       )}
@@ -5407,8 +5424,8 @@ function CatalogOrgLinker({ orgs, canEdit, onLink, onUnlink }) {
             {dirty && !uuid
               ? "That doesn't contain a valid org UUID."
               : orgs.length
-                ? "Linked. Deliveries for this org sync into the table above."
-                : "The org UUID from the customer's Aurora workspace. Once linked, the catalog sync picks it up automatically — no need to map it by hand."}
+                ? "Linked. The workspace name and its deliveries both come from the catalog sync — nothing to type."
+                : "Paste the org UUID from the customer's Aurora workspace. The sync fills in the name and pulls in their cataloged images."}
           </div>
         </>
       )}
@@ -5526,8 +5543,6 @@ function ExecutionTab({ d, canEdit, onUpdate, onSaveField }) {
         {/* Aurora workspace */}
         <Block icon={Layers} title="Aurora workspace">
           <div className="kv">
-            <EditableField k="Workspace / project" value={e.auroraWorkspace} field="aurora_workspace" canEdit={canEdit} onSave={onSaveField}
-              placeholder="Aurora workspace name" />
             <CatalogOrgLinker orgs={e.linkedOrgs || []} canEdit={canEdit}
               onLink={(orgId) => onUpdate({ _linkCatalogOrg: { orgId } })}
               onUnlink={(orgId) => onUpdate({ _unlinkCatalogOrg: { orgId } })} />
@@ -5699,9 +5714,8 @@ function CSSummaryTab({ d, canEdit, onSaveField, onUpdate }) {
       <div className="cols">
         <Block icon={Layers} title="Aurora workspace">
           <div className="kv">
-            <SummaryKV k="Workspace / project" v={e.auroraWorkspace} />
-            <SummaryKV k="Linked catalog org"
-              v={(e.linkedOrgs || []).map(o => o.orgName).join(", ")} />
+            <SummaryKV k="Aurora workspace"
+              v={(e.linkedOrgs || []).map(o => o.orgName || o.orgId).join(", ")} />
           </div>
         </Block>
         <Block icon={FileText} title="Commercial & legal formalities">
@@ -7266,19 +7280,19 @@ function PassportDetail({ data, onBack, canEdit, canPostNote, onRefresh, onAssig
       if (sent) toast(`Capture logged · notified ${sent} owner${sent !== 1 ? "s" : ""} in Slack`);
       return;
     }
-    // Link this deal's Aurora org for the catalog delivery sync. org_name is
-    // NOT NULL and only used as a display label, so seed it with the company
-    // name; the next sync shows the real org name in the review list.
+    // Link this deal's Aurora org for the catalog delivery sync. No name is
+    // stored: the workspace name comes from the Metabase export on the next
+    // sync, so it can't drift from what Aurora actually calls the workspace.
     if (updated._linkCatalogOrg) {
       await saveCatalogLinks([{
         org_id: updated._linkCatalogOrg.orgId,
-        org_name: p.company || "(unnamed org)",
+        org_name: null,
         passport_id: p.id,
         status: "linked",
         created_by: currentUserName || null,
       }]);
       await onRefresh();
-      toast("Aurora org linked — run Quality Checks → Catalog deliveries to pull its images");
+      toast("Aurora org linked — its name and images arrive on the next catalog sync");
       return;
     }
     if (updated._unlinkCatalogOrg) {
