@@ -2682,7 +2682,9 @@ function IprImportModal({ deals, onClose, onDone, toast }) {
   const rowsView = useMemo(() => items.map(it => {
     const id = iprImageId(it);
     const deal = iprMatchDeal(it, deals);
-    const isDup = existing.has(id.toLowerCase());
+    // Compare on the canonical satellite+frame key, which is what
+    // existingQcImageIds() returns — a raw lowercased id never matches it.
+    const isDup = existing.has(qcDedupKey(id));
     return { it, id, deal, isDup };
   }), [items, deals, existing]);
 
@@ -2720,7 +2722,7 @@ function IprImportModal({ deals, onClose, onDone, toast }) {
       setExisting(existSet);
       setItems(uniq);
       // Pre-select everything not already imported
-      setSelected(new Set(uniq.map(iprImageId).filter(id => !existSet.has(id.toLowerCase()))));
+      setSelected(new Set(uniq.map(iprImageId).filter(id => !existSet.has(qcDedupKey(id)))));
     } catch (e) {
       toast("IPR search failed: " + e.message);
       setItems([]); setSelected(new Set());
