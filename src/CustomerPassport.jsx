@@ -2158,10 +2158,46 @@ function mapIprItemToQc(item, deal) {
   };
 }
 
-// Existing image ids already in quality_checks (lowercased) — used to skip dups.
+// ── Image ID normalisation ────────────────────────────────────────
+// The same physical image is written three different ways across our systems:
+//   catalog, Firefly   FF01_20260729_00501045_0000017513_L2A
+//   catalog, legacy TD TD1_005260_20230223_L2A_20230330_03001069
+//   IPR / hand-typed   "FF01 17513", "FF01 0000017513", "FF03:14470"
+// All three carry satellite + frame number; only the field order and the
+// zero-padding differ (TD ids put the frame second, Firefly ids fourth).
+// Canonical form is "{SAT}:{FRAME}" with leading zeros stripped — e.g.
+// "FF01:17513" — which is what dedup and the delivered-image ↔ QC join
+// both compare on. Returns "" when the id doesn't parse.
+function normalizeImageId(raw) {
+  const s = String(raw || "").trim().toUpperCase();
+  if (!s) return "";
+  if (s.includes("_")) {
+    const parts = s.split("_");
+    const sat = parts[0];
+    // TD1/TD2: SAT_frame_captureDate_level_procDate_config
+    // Firefly: SAT_captureDate_configCode_frame_level
+    const frame = /^TD\d+$/.test(sat) ? parts[1] : parts[3];
+    if (!sat || !/^\d+$/.test(frame || "")) return "";
+    return `${sat}:${Number(frame)}`;
+  }
+  // Hand-typed / IPR: satellite and frame split by space, colon or dash.
+  const m = s.match(/^([A-Z]+\d*)[\s:-]+(\d+)$/);
+  return m ? `${m[1]}:${Number(m[2])}` : "";
+}
+
+// Dedup key for quality_checks. Falls back to the raw lowercased id so an
+// id we can't parse still de-duplicates exactly as it did before.
+function qcDedupKey(raw) {
+  return normalizeImageId(raw) || String(raw || "").trim().toLowerCase();
+}
+
+// Existing image ids already in quality_checks, as canonical keys — used to
+// skip dups. Normalised, so an IPR import of "FF01 0000017513" no longer
+// creates a second row alongside a hand-typed "FF01 17513", and a catalog
+// row for the same frame matches both.
 async function existingQcImageIds() {
   const rows = await sbGet("quality_checks", "?select=image_id&limit=5000");
-  return new Set(rows.map(r => (r.image_id || "").trim().toLowerCase()).filter(Boolean));
+  return new Set(rows.map(r => qcDedupKey(r.image_id)).filter(Boolean));
 }
 
 // Auto-populate: for each active deal, pull captured/QC-ready images whose AOI text
@@ -2182,7 +2218,7 @@ async function autoPopulateFromIpr(deals) {
     } catch (_) { continue; }
     let dealNew = 0;
     for (const item of items) {
-      const id = iprImageId(item).toLowerCase();
+      const id = qcDedupKey(iprImageId(item));
       if (!id || existing.has(id)) { skipped++; continue; }
       await sbPost("quality_checks", mapIprItemToQc(item, deal));
       existing.add(id);
@@ -2221,6 +2257,40 @@ async function notifyCsQcComplete({ prevResult, entry, csName }) {
       noteText: `QC ${entry.qc_result} — image ${entry.image_id || "(no id)"}${entry.usecase ? " · " + entry.usecase : ""}. ${entry.qc_notes || ""}`.trim(),
     }, entry.passport_id);
   } catch (_) { /* best-effort */ }
+}
+
+// Mirror a completed QC into the deal's capture log, so the Execution timeline
+// carries QC outcomes next to tasking and capture events instead of leaving them
+// stranded on the QC tab. Same transition guard as notifyCsQcComplete above: it
+// fires once, when the result first becomes Pass/Fail, so re-editing a finished
+// QC row (fixing notes, reassigning) doesn't stack duplicate entries.
+//
+// Deliberately never writes "Shared". Passing QC means the image is good, not
+// that the customer has it — for paid orders that call belongs to CS, who logs
+// the Shared event by hand.
+async function logQcToCaptureLog({ prevResult, entry, author }) {
+  const nowComplete = entry.qc_result === "Pass" || entry.qc_result === "Fail";
+  const wasComplete = prevResult === "Pass" || prevResult === "Fail";
+  if (!nowComplete || wasComplete || !entry.passport_id) return false;
+  const head = [
+    entry.image_id ? `Image ${entry.image_id}` : null,
+    entry.usecase || null,
+    entry.bandset || null,
+  ].filter(Boolean).join(" · ");
+  const note = [head, entry.qc_notes || ""].filter(Boolean).join(" — ");
+  try {
+    await addCaptureLogEntry(entry.passport_id, {
+      entry_date: new Date().toISOString().slice(0, 10),
+      status: entry.qc_result === "Pass" ? "QC Passed" : "QC Failed",
+      fail_reason: null,   // quality_checks has no structured reasons — notes carry the detail
+      note: note || `QC ${entry.qc_result}`,
+      // Same storage bucket as capture-log screenshots, so the evidence image
+      // the reviewer already uploaded renders straight in the timeline.
+      screenshot_path: entry.photo_evidence_path || null,
+      author: author || entry.assignee || "QC",
+    });
+    return true;
+  } catch (_) { return false; /* best-effort — the QC row itself already saved */ }
 }
 
 // ── Catalog delivery sync (Metabase "Image to Catalog Mapping") ─────────
@@ -2316,11 +2386,11 @@ async function deleteCatalogLink(orgId) {
 
 // Sync catalog rows into the passport: upsert delivered_images for every row
 // whose org is linked to a passport, then create Awaiting-QC rows for delivered
-// images that have no QC entry yet. Dedup is an exact image_id match — catalog
-// ids (TD1_005260_…) and IPR ids (FF03 0000004320) use different formats, so a
-// cross-source duplicate is possible; catalog rows carry created_by
-// "Catalog import" to keep them tellable apart. No Slack pings here: the first
-// sync backfills months of deliveries and would flood every SE.
+// images that have no QC entry yet. Dedup runs on the canonical satellite+frame
+// key (see normalizeImageId), so a catalog id and the IPR/hand-typed id for the
+// same frame collapse to one QC row instead of two. Catalog rows still carry
+// created_by "Catalog import" to keep their provenance visible. No Slack pings
+// here: the first sync backfills months of deliveries and would flood every SE.
 async function syncCatalogRows(rows, links, deals) {
   const linkByOrg = {};
   for (const l of links || []) if (l.status === "linked" && l.passport_id) linkByOrg[l.org_id] = l;
@@ -2339,8 +2409,8 @@ async function syncCatalogRows(rows, links, deals) {
   const TEAM_FLAT = Object.values(TEAM_MEMBERS).flat();
   const qcRows = [];
   for (const row of toSync) {
-    const key = row.image_id.toLowerCase();
-    if (existing.has(key)) continue;
+    const key = qcDedupKey(row.image_id);
+    if (!key || existing.has(key)) continue;
     existing.add(key);
     const deal = (deals || []).find(d => d.id === row.passport_id);
     const seName = deal && deal.owners ? deal.owners.se : null;
@@ -3051,9 +3121,17 @@ function QualityChecksGlobal({ deals, canEdit, onOpen, toast, currentUserName })
         toast("QC entry updated");
         // Notify the linked deal's CS when this QC has just been completed
         const deal = deals.find(d => d.id === (entry.passport_id || editRow.passport_id));
-        notifyCsQcComplete({ prevResult, entry: { ...editRow, ...entry }, csName: deal && deal.owners ? deal.owners.cs : null });
+        const merged = { ...editRow, ...entry };
+        notifyCsQcComplete({ prevResult, entry: merged, csName: deal && deal.owners ? deal.owners.cs : null });
+        // …and drop the outcome into that deal's Execution timeline
+        logQcToCaptureLog({ prevResult, entry: merged, author: currentUserName });
       }
-      else { await addQcEntry(entry); toast("QC entry saved"); }
+      else {
+        await addQcEntry(entry);
+        toast("QC entry saved");
+        // A QC logged straight as Pass/Fail (no Awaiting step) still belongs on the timeline
+        logQcToCaptureLog({ prevResult: null, entry, author: currentUserName });
+      }
       setShowForm(false); setEditRow(null);
       await load();
     }
@@ -3143,7 +3221,7 @@ function QualityChecksGlobal({ deals, canEdit, onOpen, toast, currentUserName })
 }
 
 // Per-deal QC tab (filtered to this passport)
-function QcTab({ d, canEdit, toast }) {
+function QcTab({ d, canEdit, toast, currentUserName, onRefresh }) {
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
@@ -3161,11 +3239,22 @@ function QcTab({ d, canEdit, toast }) {
       if (editRow) {
         const prevResult = editRow.qc_result;
         await updateQcEntry(editRow.id, entry);
-        toast("QC entry updated");
+        const merged = { ...editRow, ...entry };
         // Notify this deal's CS when the QC has just been completed
-        notifyCsQcComplete({ prevResult, entry: { ...editRow, ...entry }, csName: d.owners ? d.owners.cs : null });
+        notifyCsQcComplete({ prevResult, entry: merged, csName: d.owners ? d.owners.cs : null });
+        // …and mirror the outcome onto the Execution capture log
+        const logged = await logQcToCaptureLog({ prevResult, entry: merged, author: currentUserName });
+        toast(logged ? `QC entry updated · "${merged.qc_result === "Pass" ? "QC Passed" : "QC Failed"}" added to the capture log` : "QC entry updated");
+        // Reload the passport so Execution shows the new entry without a page reload
+        if (logged && onRefresh) await onRefresh();
       }
-      else { await addQcEntry(entry); toast("QC entry saved"); }
+      else {
+        await addQcEntry(entry);
+        // A QC logged straight as Pass/Fail (no Awaiting step) still belongs on the timeline
+        const logged = await logQcToCaptureLog({ prevResult: null, entry, author: currentUserName });
+        toast(logged ? `QC entry saved · "${entry.qc_result === "Pass" ? "QC Passed" : "QC Failed"}" added to the capture log` : "QC entry saved");
+        if (logged && onRefresh) await onRefresh();
+      }
       setShowForm(false); setEditRow(null);
       await load();
     }
@@ -3712,7 +3801,7 @@ const OFFERINGS = [
 ];
 const offeringOf = (key) => OFFERINGS.find(o => o.key === key) || null;
 
-function Passport({ deal, onBack, canEdit, canPostNote, onUpdate, onAssign, onNotifyAll, onPostToSlack, onPushPlanhat, slackChannel, slackSending, slackStatus, toast }) {
+function Passport({ deal, onBack, canEdit, canPostNote, onUpdate, onAssign, onNotifyAll, onPostToSlack, onPushPlanhat, slackChannel, slackSending, slackStatus, toast, currentUserName, onRefresh }) {
   const [tab, setTab] = useState("profile");
   const [showChecklist, setShowChecklist] = useState(false);
   const [assignOpen, setAssignOpen] = useState(null);
@@ -3974,7 +4063,7 @@ function Passport({ deal, onBack, canEdit, canPostNote, onUpdate, onAssign, onNo
           {tab === "csummary" && <CSSummaryTab d={deal} canEdit={canEdit} onUpdate={onUpdate} onSaveField={(f,v) => onUpdate({ _fieldUpdate: { field: f, value: v } })} />}
           {tab === "analytics" && <AnalyticsSummaryTab d={deal} canEdit={canEdit} onUpdate={onUpdate} onSaveField={(f,v) => onUpdate({ _fieldUpdate: { field: f, value: v } })} />}
           {tab === "notes" && <NotesTab d={deal} canEdit={canEdit} canPostNote={canPostNote} onUpdate={onUpdate} toast={toast} />}
-          {tab === "qc" && <QcTab d={deal} canEdit={canEdit} toast={toast} />}
+          {tab === "qc" && <QcTab d={deal} canEdit={canEdit} toast={toast} currentUserName={currentUserName} onRefresh={onRefresh} />}
           {tab === "feedback" && <FeedbackTab d={deal} canEdit={canEdit} onUpdate={onUpdate} toast={toast} />}
         </div>
       </div>
@@ -4757,6 +4846,14 @@ function CaptureLog({ entries, canEdit, onAdd, onEdit, onDelete, onUploadShot })
     try { const path = await onUploadShot(file); setForm(f => ({ ...f, shotPath: path })); }
     finally { setUploading(false); }
   };
+  // Images that passed QC but were never logged as Shared. Sharing is a
+  // deliberate human step (for paid orders it's CS's call), so this only
+  // nudges — it never writes a Shared event. Entries arrive newest-first;
+  // a Shared event on the same day as a pass counts as covering it.
+  const lastShared = entries.find(e => e.status === "Shared");
+  const unshared = entries.filter(e =>
+    e.status === "QC Passed" && (!lastShared || e.date > lastShared.date)
+  ).length;
   return (
     <div className="clog-wrap">
       {entries.map((e, i) => (
@@ -4784,6 +4881,16 @@ function CaptureLog({ entries, canEdit, onAdd, onEdit, onDelete, onUploadShot })
         </div>
       ))}
       {entries.length === 0 && <div className="empty"><Camera size={15} /> No capture events logged yet.</div>}
+      {unshared > 0 && (
+        <div style={{ display:"flex", alignItems:"flex-start", gap:8, margin:"10px 0 2px", padding:"9px 12px",
+          borderRadius:9, border:"1px solid var(--line)", background:"var(--accent-soft)", fontSize:12.5, color:"var(--muted)" }}>
+          <AlertTriangle size={14} style={{ color:"var(--warn)", flexShrink:0, marginTop:1 }} />
+          <span>
+            <b style={{ color:"var(--ink)" }}>{unshared} image{unshared === 1 ? "" : "s"} passed QC</b> with no <b>Shared</b> event logged since.
+            Passing QC doesn't share imagery — {canEdit ? "log a Shared event once it's gone to the customer." : "CS logs that step once it's gone to the customer."}
+          </span>
+        </div>
+      )}
       {canEdit && !open && (
         <div className="clog-add" onClick={() => setOpen(true)}><Plus size={15} /> Log capture event</div>
       )}
@@ -5146,29 +5253,61 @@ function CommercialLegalTracker({ items, canEdit, onSave }) {
 }
 
 // Read-only log of images cataloged to this deal's Aurora org(s), fed by the
-// catalog delivery sync (Quality Checks → Catalog deliveries).
+// catalog delivery sync (Quality Checks → Catalog deliveries). "Delivered"
+// here means cataloged to the customer's Aurora org — an infrastructure fact,
+// not "we shared it with them"; sharing is logged by hand on the capture log.
 function DeliveredImagesBlock({ items }) {
   const [showAll, setShowAll] = useState(false);
+  const fmtDate = (iso) => iso ? new Date(iso).toLocaleDateString("en-GB", { day:"2-digit", month:"short", year:"numeric" }) : "—";
+  // Where this list came from and how stale it is. Without it an empty table
+  // reads the same as "nobody has run the import in a month".
+  const lastSynced = (items || []).reduce((max, di) => (di.syncedAt && di.syncedAt > max ? di.syncedAt : max), "");
+  const provenance = (
+    <div style={{ fontSize:11.5, color:"var(--muted2)", marginBottom:8, display:"flex", alignItems:"center", gap:6, flexWrap:"wrap" }}>
+      <RefreshCw size={11} />
+      <span>
+        {lastSynced ? <>Last synced <b style={{ color:"var(--muted)" }}>{fmtDate(lastSynced)}</b> · </> : null}
+        Imported by hand from Metabase's{" "}
+        <a href={CATALOG_QUESTION_URL} target="_blank" rel="noreferrer" style={{ color:"var(--accent-deep)" }}>Image to Catalog Mapping</a>
+        {" "}via Quality Checks → Catalog deliveries. Not live.
+      </span>
+    </div>
+  );
   if (!items || !items.length) {
-    return <div className="empty"><Layers size={15} /> No cataloged deliveries yet — link this deal's Aurora org under Quality Checks → Catalog deliveries, then sync.</div>;
+    return (
+      <>
+        {provenance}
+        <div className="empty"><Layers size={15} /> No cataloged deliveries yet — link this deal's Aurora org under Quality Checks → Catalog deliveries, then sync.</div>
+      </>
+    );
   }
   const shown = showAll ? items : items.slice(0, 8);
-  const fmtDate = (iso) => iso ? new Date(iso).toLocaleDateString("en-GB", { day:"2-digit", month:"short", year:"numeric" }) : "—";
+  const qcTag = (r) => {
+    if (!r) return <span style={{ fontSize:11, color:"var(--muted2)" }}>No QC</span>;
+    const [fg, bg] = r === "Pass" ? ["var(--forest)", "rgba(0,192,48,.14)"]
+      : r === "Fail" ? ["var(--mining)", "rgba(247,110,47,.14)"]
+      : ["var(--energy)", "rgba(236,180,35,.14)"];
+    return <span className="tag" style={{ background:bg, color:fg, fontWeight:600 }}>{r}</span>;
+  };
   return (
-    <div style={{ overflowX:"auto" }}>
-      <table className="qc-table">
-        <thead><tr><th>Image ID</th><th>Order</th><th>Task</th><th>Delivered</th></tr></thead>
-        <tbody>
-          {shown.map(di => (
-            <tr key={di.id}>
-              <td style={{ fontFamily:"var(--font-mono)", fontSize:11.5 }}>{di.imageId}</td>
-              <td style={{ fontSize:11.5 }}>{di.orderType || "—"}</td>
-              <td style={{ fontFamily:"var(--font-mono)", fontSize:11, color:"var(--muted)", maxWidth:140, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{di.taskId || "—"}</td>
-              <td style={{ fontSize:11.5, whiteSpace:"nowrap" }}>{fmtDate(di.deliveredAt)}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
+    <div>
+      {provenance}
+      <div style={{ overflowX:"auto" }}>
+        <table className="qc-table">
+          <thead><tr><th>Image ID</th><th>QC</th><th>Order</th><th>Task</th><th>Delivered</th></tr></thead>
+          <tbody>
+            {shown.map(di => (
+              <tr key={di.id}>
+                <td style={{ fontFamily:"var(--font-mono)", fontSize:11.5 }}>{di.imageId}</td>
+                <td title={di.qcUsecase || undefined}>{qcTag(di.qcResult)}</td>
+                <td style={{ fontSize:11.5 }}>{di.orderType || "—"}</td>
+                <td style={{ fontFamily:"var(--font-mono)", fontSize:11, color:"var(--muted)", maxWidth:140, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{di.taskId || "—"}</td>
+                <td style={{ fontSize:11.5, whiteSpace:"nowrap" }}>{fmtDate(di.deliveredAt)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
       {items.length > 8 && (
         <button onClick={() => setShowAll(s => !s)} style={{ border:"none", background:"none", cursor:"pointer", color:"var(--accent-deep)", fontSize:12.5, padding:"8px 2px 0" }}>
           {showAll ? "Show fewer" : `Show all ${items.length}`}
@@ -6476,7 +6615,7 @@ async function fetchPassports({ pipeline, stage, ownerFilter, search, archivedVi
 }
 
 async function fetchPassportDetail(id) {
-  const [passport, contacts, pocs, risks, sampleData, captureLog, actionItems, meetingNotes, activityFeed, attachments, feedback, collaborators, deliveredImages, catalogLinks] = await Promise.all([
+  const [passport, contacts, pocs, risks, sampleData, captureLog, actionItems, meetingNotes, activityFeed, attachments, feedback, collaborators, deliveredImages, catalogLinks, qcRows] = await Promise.all([
     sbGet("handover_passports", `?id=eq.${id}`).then(r => r[0]),
     sbGet("deal_contacts", `?passport_id=eq.${id}`),
     sbGet("deal_pocs", `?passport_id=eq.${id}`),
@@ -6491,8 +6630,10 @@ async function fetchPassportDetail(id) {
     sbGet("deal_collaborators", `?passport_id=eq.${id}&order=created_at.asc`).catch(() => []),
     sbGet("delivered_images", `?passport_id=eq.${id}&order=delivered_at.desc.nullslast`).catch(() => []),
     sbGet("catalog_org_links", `?passport_id=eq.${id}&status=eq.linked`).catch(() => []),
+    // QC verdicts for this deal — joined onto delivered images on the Execution tab
+    sbGet("quality_checks", `?passport_id=eq.${id}&select=image_id,qc_result,usecase,assignee`).catch(() => []),
   ]);
-  return { passport, contacts: contacts||[], pocs: pocs||[], risks: risks||[], sampleData: sampleData||[], captureLog: captureLog||[], actionItems: actionItems||[], meetingNotes: meetingNotes||[], activityFeed: activityFeed||[], attachments: attachments||[], feedback: feedback||[], collaborators: collaborators||[], deliveredImages: deliveredImages||[], catalogLinks: catalogLinks||[] };
+  return { passport, contacts: contacts||[], pocs: pocs||[], risks: risks||[], sampleData: sampleData||[], captureLog: captureLog||[], actionItems: actionItems||[], meetingNotes: meetingNotes||[], activityFeed: activityFeed||[], attachments: attachments||[], feedback: feedback||[], collaborators: collaborators||[], deliveredImages: deliveredImages||[], catalogLinks: catalogLinks||[], qcRows: qcRows||[] };
 }
 
 function calcReadiness(passport, contacts) {
@@ -6888,7 +7029,15 @@ function DealsSplit({ deals, onOpen, ownerFilter, setOwnerFilter }) {
    ================================================================ */
 
 function PassportDetail({ data, onBack, canEdit, canPostNote, onRefresh, onAssign, onNotifyAll, onPostToSlack, slackChannel, slackSending, slackStatus, toast, currentUserName }) {
-  const { passport: p, contacts, pocs, risks, sampleData, captureLog, actionItems, meetingNotes, activityFeed, attachments, feedback, collaborators, deliveredImages, catalogLinks } = data;
+  const { passport: p, contacts, pocs, risks, sampleData, captureLog, actionItems, meetingNotes, activityFeed, attachments, feedback, collaborators, deliveredImages, catalogLinks, qcRows } = data;
+  // QC verdicts keyed by canonical satellite+frame, so a catalog image id
+  // (FF01_20260729_00501045_0000017513_L2A) finds the QC row logged against
+  // the IPR/hand-typed id for the same frame ("FF01 17513"). See normalizeImageId.
+  const qcByImage = {};
+  for (const q of (qcRows || [])) {
+    const k = normalizeImageId(q.image_id);
+    if (k && !qcByImage[k]) qcByImage[k] = q;
+  }
   const { score, items: readinessItems } = calcReadiness(p, contacts);
 
   // Map Supabase passport → the shape Passport component expects
@@ -6966,10 +7115,16 @@ function PassportDetail({ data, onBack, canEdit, canPostNote, onRefresh, onAssig
       actionItems: actionItems.map(a => ({
         id: a.id, task: a.task, owner: a.owner, due: a.due_date, done: a.done,
       })),
-      deliveredImages: (deliveredImages || []).map(di => ({
-        id: di.id, imageId: di.image_id, orderType: di.order_type || "",
-        taskId: di.task_id || "", deliveredAt: di.delivered_at, orgName: di.org_name || "",
-      })),
+      deliveredImages: (deliveredImages || []).map(di => {
+        const qc = qcByImage[normalizeImageId(di.image_id)] || null;
+        return {
+          id: di.id, imageId: di.image_id, orderType: di.order_type || "",
+          taskId: di.task_id || "", deliveredAt: di.delivered_at, orgName: di.org_name || "",
+          syncedAt: di.synced_at,
+          qcResult: qc ? qc.qc_result : null,
+          qcUsecase: qc ? (qc.usecase || "") : "",
+        };
+      }),
       linkedOrgs: (catalogLinks || []).map(l => ({ orgId: l.org_id, orgName: l.org_name })),
     },
     notes: {
@@ -7367,6 +7522,8 @@ function PassportDetail({ data, onBack, canEdit, canPostNote, onRefresh, onAssig
       onBack={onBack}
       canEdit={canEdit}
       canPostNote={canPostNote}
+      currentUserName={currentUserName}
+      onRefresh={onRefresh}
       onUpdate={handleUpdate}
       onAssign={(r, name) => onAssign(r, name)}
       onNotifyAll={onNotifyAll}
