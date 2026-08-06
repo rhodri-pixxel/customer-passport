@@ -2048,36 +2048,50 @@ async function fetchAllQc() {
 async function fetchAllDelivered() {
   return sbGet("delivered_images", "?order=delivered_at.desc.nullslast&limit=1000");
 }
-async function addQcEntry(entry) {
+// Ping whoever a QC entry has just been assigned to.
+//
+// Uses the "mention" event, which slack-notify already handles. It previously
+// sent event "qc_assignment", which that function has no branch for — it threw
+// "Unknown event type", the 500 was swallowed by a bare .catch(), and no QC
+// assignment ping has ever arrived. Adding a dedicated message type would be
+// nicer but needs the edge function redeployed; this needs no deploy.
+async function notifyQcAssignee({ entry, assignedBy }) {
+  const slackId = entry.assignee ? slackFor(entry.assignee) : null;
+  if (!slackId) return;
+  const bits = [
+    entry.image_id ? `Image ${entry.image_id}` : null,
+    entry.usecase || null,
+    entry.bandset || null,
+  ].filter(Boolean).join(" · ");
+  try {
+    await sendSlackNotification("mention", {
+      mentionedPerson: entry.assignee,
+      mentioned_slack: slackId,
+      mentionedBy: assignedBy || "QC",
+      company: entry.organization || "a deal",
+      dealId: entry.image_id || "QC",
+      noteText: `You've been assigned a QC${bits ? ` — ${bits}` : ""}.${entry.qc_notes ? ` ${entry.qc_notes}` : ""}`.trim(),
+    }, entry.passport_id);
+  } catch (_) { /* best-effort */ }
+}
+
+async function addQcEntry(entry, assignedBy) {
   const result = await sbPost("quality_checks", entry);
-  // Notify the assignee in Slack when a QC entry is assigned to them
-  if (entry.assignee && entry.assignee_email) {
-    const slackId = slackFor(entry.assignee);
-    if (slackId) {
-      const resultText = entry.qc_result === "Fail" ? ":x: *Failed*" : ":white_check_mark: *Passed*";
-      fetch(`${SUPABASE_URL}/functions/v1/slack-notify`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "Authorization": `Bearer ${SUPABASE_ANON_KEY}` },
-        body: JSON.stringify({
-          event: "qc_assignment",
-          mentioned_slack: slackId,
-          assignee: entry.assignee,
-          organization: entry.organization,
-          usecase: entry.usecase || "",
-          image_id: entry.image_id || "",
-          qc_result: entry.qc_result,
-          qc_notes: entry.qc_notes || "",
-        }),
-      }).catch(() => {});
-    }
-  }
+  notifyQcAssignee({ entry, assignedBy });
   return result;
 }
 async function deleteQcEntry(id) {
   return sbDelete("quality_checks", id);
 }
-async function updateQcEntry(id, entry) {
-  return sbPatch("quality_checks", id, entry);
+// `prevAssignee` lets the caller ping someone who has just been given an entry
+// that already existed. Claiming from the IPR feed or reassigning is an edit,
+// not an insert, so without this the most common assignment path stays silent.
+async function updateQcEntry(id, entry, { prevAssignee, assignedBy } = {}) {
+  const result = await sbPatch("quality_checks", id, entry);
+  if (entry.assignee && entry.assignee !== prevAssignee) {
+    notifyQcAssignee({ entry: { ...entry, id }, assignedBy });
+  }
+  return result;
 }
 
 // ── IPR Image Status integration ──────────────────────────────
@@ -3209,7 +3223,7 @@ function QualityChecksGlobal({ deals, canEdit, onOpen, toast, currentUserName })
     try {
       if (editRow) {
         const prevResult = editRow.qc_result;
-        await updateQcEntry(editRow.id, entry);
+        await updateQcEntry(editRow.id, entry, { prevAssignee: editRow.assignee, assignedBy: currentUserName });
         toast("QC entry updated");
         // Notify the linked deal's CS when this QC has just been completed
         const deal = deals.find(d => d.id === (entry.passport_id || editRow.passport_id));
@@ -3219,7 +3233,7 @@ function QualityChecksGlobal({ deals, canEdit, onOpen, toast, currentUserName })
         logQcToCaptureLog({ prevResult, entry: merged, author: currentUserName });
       }
       else {
-        const created = await addQcEntry(entry);
+        const created = await addQcEntry(entry, currentUserName);
         toast(promoteFrom ? "Assigned — QC entry created from the IPR feed" : "QC entry saved");
         // A QC logged straight as Pass/Fail (no Awaiting step) still belongs on the timeline
         logQcToCaptureLog({ prevResult: null, entry, author: currentUserName });
@@ -3498,7 +3512,7 @@ function QcTab({ d, canEdit, toast, currentUserName, onRefresh }) {
     try {
       if (editRow) {
         const prevResult = editRow.qc_result;
-        await updateQcEntry(editRow.id, entry);
+        await updateQcEntry(editRow.id, entry, { prevAssignee: editRow.assignee, assignedBy: currentUserName });
         const merged = { ...editRow, ...entry };
         // Notify this deal's CS when the QC has just been completed
         notifyCsQcComplete({ prevResult, entry: merged, csName: d.owners ? d.owners.cs : null });
@@ -3509,7 +3523,7 @@ function QcTab({ d, canEdit, toast, currentUserName, onRefresh }) {
         if (logged && onRefresh) await onRefresh();
       }
       else {
-        await addQcEntry(entry);
+        await addQcEntry(entry, currentUserName);
         // A QC logged straight as Pass/Fail (no Awaiting step) still belongs on the timeline
         const logged = await logQcToCaptureLog({ prevResult: null, entry, author: currentUserName });
         toast(logged ? `QC entry saved · "${entry.qc_result === "Pass" ? "QC Passed" : "QC Failed"}" added to the capture log` : "QC entry saved");
