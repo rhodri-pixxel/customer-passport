@@ -730,6 +730,7 @@ const TEAM_MEMBERS = {
   ],
   se: [
     { name: "Amy Zammit", email: "amy@pixxel.space", slack: "U050FJYSEUU" },
+    { name: "Archita Dey", email: "archita.dey@pixxel.co.in", slack: "U0BN3LM1E82" },
     { name: "Megan Gallagher", email: "megan@pixxel.space", slack: "U056T9UE23V" },
     { name: "Rhodri Phillips", email: "rhodri@pixxel.space", slack: "U092KJ4AKPC" },
     { name: "Ryan Hammock", email: "ryan@pixxel.space", slack: "U057QQ2BA8J" },

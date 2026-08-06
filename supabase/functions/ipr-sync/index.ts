@@ -30,6 +30,7 @@ const IPR_QC_READY_STATUSES = ["Sent to Aurora", "Datahub upload completed"];
 // manually; only used to resolve an assignee's email + Slack id.
 const SE_ROSTER: Record<string, { email: string; slack: string | null }> = {
   "Amy Zammit": { email: "amy@pixxel.space", slack: "U050FJYSEUU" },
+  "Archita Dey": { email: "archita.dey@pixxel.co.in", slack: "U0BN3LM1E82" },
   "Megan Gallagher": { email: "megan@pixxel.space", slack: "U056T9UE23V" },
   "Rhodri Phillips": { email: "rhodri@pixxel.space", slack: "U092KJ4AKPC" },
   "Ryan Hammock": { email: "ryan@pixxel.space", slack: "U057QQ2BA8J" },
