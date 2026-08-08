@@ -109,6 +109,8 @@ function imageUpdateMessage(p) {
 
   const facts = [
     p.qc_result ? { type: "mrkdwn", text: `*QC result*\n${p.qc_result}` } : null,
+    // A Fail without the reason makes people open the app to find out why.
+    p.fail_reasons ? { type: "mrkdwn", text: `*Failure reasons*\n${p.fail_reasons}` } : null,
     p.assignee ? { type: "mrkdwn", text: `*Assignee*\n${p.assignee}` } : null,
     p.date_captured ? { type: "mrkdwn", text: `*Captured*\n${p.date_captured}` } : null,
     p.se_qc_completed_on ? { type: "mrkdwn", text: `*SE QC completed*\n${p.se_qc_completed_on}` } : null,

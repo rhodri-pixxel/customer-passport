@@ -54,7 +54,8 @@ Payload:
   "image_id": "FF03 4320",
   "usecase": "Forest Monitoring",
   "bandset": "Vegetation",
-  "qc_result": "Pass",
+  "qc_result": "Fail",
+  "fail_reasons": "BBR, Other: colour balance",   // only on a Fail
   "assignee": "Amy Zammit",
   "date_captured": "2026-08-01",
   "se_qc_completed_on": "2026-08-08",

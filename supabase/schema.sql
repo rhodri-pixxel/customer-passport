@@ -262,6 +262,8 @@ CREATE TABLE public.quality_checks (
   usecase text,
   priority text,
   qc_result text DEFAULT 'Awaiting QC'::text NOT NULL,
+  -- Same vocabulary/format as capture_log.fail_reason; only set when qc_result = 'Fail'
+  fail_reasons text,
   image_id text,
   type text,
   assignee text,

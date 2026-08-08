@@ -2348,6 +2348,7 @@ function qcJustCompleted(prevResult, entry) {
 // Fields a saved edit is worth reporting, in the order the form reads.
 const QC_TRACKED_FIELDS = [
   ["qc_result", "QC result"],
+  ["fail_reasons", "Failure reasons"],
   ["assignee", "Assignee"],
   ["organization", "Organization"],
   ["image_id", "Image ID"],
@@ -2399,6 +2400,7 @@ async function notifyImageUpdate({ entry, deal, action, changes, by }) {
       usecase: entry.usecase || "",
       bandset: entry.bandset || "",
       qc_result: entry.qc_result || "",
+      fail_reasons: entry.qc_result === "Fail" ? (entry.fail_reasons || "") : "",
       assignee: entry.assignee || "",
       date_captured: entry.date_captured || "",
       se_qc_completed_on: entry.se_qc_completed_on || "",
@@ -2453,6 +2455,63 @@ function slackToastTail(res) {
   return ` · Slack notification FAILED (${res.error})`;
 }
 
+/* ── QC failure reasons ────────────────────────────────────────────
+   Shared by the Execution tab's capture log and the QC entry form, so marking
+   an image failed asks the same question in both places and the answers stay
+   comparable. Stored as one string ("BBR, Other: colour balance") in both
+   capture_log.fail_reason and quality_checks.fail_reasons, which lets a failed
+   QC entry hand its reasons straight to the timeline entry it creates.      */
+const QC_FAIL_REASONS = ["BBR", "Cloud cover", "Geometric", "Bounding-box", "Striping", "Geolocation", "Other"];
+
+// Split a stored "BBR, Other: colour balance" string back into checkboxes +
+// free text. Anything unrecognised is treated as an "Other" note rather than
+// dropped, so hand-written reasons from before this existed still survive a
+// round-trip through the form.
+function parseFailReasons(stored) {
+  const reasons = [], others = [];
+  String(stored || "").split(",").map(s => s.trim()).filter(Boolean).forEach(part => {
+    if (/^Other\s*:/i.test(part)) { reasons.push("Other"); others.push(part.replace(/^Other\s*:\s*/i, "")); }
+    else if (QC_FAIL_REASONS.includes(part)) reasons.push(part);
+    else { reasons.push("Other"); others.push(part); }
+  });
+  return { reasons: [...new Set(reasons)], otherText: others.join(", ") };
+}
+
+// Inverse of parseFailReasons. A ticked "Other" with nothing typed stays a bare
+// "Other" so the pair round-trips losslessly through an edit.
+function joinFailReasons(reasons, otherText) {
+  const txt = (otherText || "").trim();
+  return (reasons || [])
+    .map(r => (r === "Other" && txt ? `Other: ${txt}` : r))
+    .join(", ");
+}
+
+// The checkbox row itself, so the two forms can't drift apart.
+function FailReasonPicker({ reasons, otherText, onToggle, onOtherText, label = "Failure reasons (select all that apply)" }) {
+  return (
+    <div style={{ marginBottom: 10 }}>
+      <div className="k" style={{ fontFamily:"var(--font-mono)", fontSize:"9.5px", letterSpacing:".1em", textTransform:"uppercase", color:"var(--muted2)", marginBottom:6 }}>{label}</div>
+      <div style={{ display:"flex", flexWrap:"wrap", gap:8 }}>
+        {QC_FAIL_REASONS.map(r => (
+          <label key={r} style={{ display:"inline-flex", alignItems:"center", gap:6, fontSize:12.5, padding:"5px 10px", borderRadius:8, border:"1px solid " + (reasons.includes(r) ? "var(--accent)" : "var(--line)"), background: reasons.includes(r) ? "var(--accent-soft)" : "transparent", cursor:"pointer" }}>
+            <input type="checkbox" checked={reasons.includes(r)} onChange={() => onToggle(r)} style={{ accentColor:"var(--accent)" }} />
+            {r}
+          </label>
+        ))}
+      </div>
+      {reasons.includes("Other") && (
+        <input autoFocus placeholder="Describe the other reason…" value={otherText} onChange={e => onOtherText(e.target.value)}
+          style={{ width:"100%", border:"1px solid var(--accent)", borderRadius:8, padding:"8px 11px", fontSize:13, fontFamily:"inherit", marginTop:8, outline:"none" }} />
+      )}
+    </div>
+  );
+}
+
+// Toggle helper for a reasons array — same behaviour in both forms.
+function toggleInList(list, value) {
+  return (list || []).includes(value) ? list.filter(x => x !== value) : [...(list || []), value];
+}
+
 // Mirror a completed QC into the deal's capture log, so the Execution timeline
 // carries QC outcomes next to tasking and capture events instead of leaving them
 // stranded on the QC tab. Fires once, when the result first becomes Pass/Fail,
@@ -2474,7 +2533,9 @@ async function logQcToCaptureLog({ prevResult, entry, author }) {
     await addCaptureLogEntry(entry.passport_id, {
       entry_date: new Date().toISOString().slice(0, 10),
       status: entry.qc_result === "Pass" ? "QC Passed" : "QC Failed",
-      fail_reason: null,   // quality_checks has no structured reasons — notes carry the detail
+      // Same string format both sides, so the reasons the reviewer ticked on
+      // the QC entry land on the timeline entry without re-typing.
+      fail_reason: entry.qc_result === "Fail" ? (entry.fail_reasons || null) : null,
       note: note || `QC ${entry.qc_result}`,
       // Same storage bucket as capture-log screenshots, so the evidence image
       // the reviewer already uploaded renders straight in the timeline.
@@ -2680,6 +2741,7 @@ function QcForm({ onSubmit, onCancel, defaultOrg, defaultPassportId, deals, init
   // `fromCapture` = an IPR feed row being promoted → pre-fills the image details
   // so the only real decision left is who reviews it.
   const cap = fromCapture || null;
+  const initialFail = parseFailReasons(initial && initial.fail_reasons);
   const [form, setForm] = useState({
     organization: (initial && initial.organization) || (cap && cap.organization) || defaultOrg || "",
     usecase: (initial && initial.usecase) || "",
@@ -2687,6 +2749,9 @@ function QcForm({ onSubmit, onCancel, defaultOrg, defaultPassportId, deals, init
     ipr_info: (initial && initial.ipr_info) || (cap && cap.ipr_info) || "",  // preserved on edit; not user-editable
     priority: (initial && initial.priority) || "Medium",
     qc_result: (initial && initial.qc_result) || "Awaiting QC",
+    // Failure reasons, same list the Execution tab's capture log offers.
+    fail_reasons: initialFail.reasons,
+    fail_other: initialFail.otherText,
     image_id: (initial && initial.image_id) || (cap && cap.image_id) || "",
     type: (initial && initial.type) || "Sample",
     assignee: (initial && initial.assignee) || "",
@@ -2715,7 +2780,12 @@ function QcForm({ onSubmit, onCancel, defaultOrg, defaultPassportId, deals, init
     ...f,
     qc_result: r,
     se_qc_completed_on: (r === "Pass" || r === "Fail") ? (f.se_qc_completed_on || todayISO()) : "",
+    // Reasons only mean anything on a Fail. Clearing them on the way out stops
+    // a Pass carrying the ghost of a failure it no longer has.
+    fail_reasons: r === "Fail" ? f.fail_reasons : [],
+    fail_other: r === "Fail" ? f.fail_other : "",
   }));
+  const toggleFailReason = (r) => setForm(f => ({ ...f, fail_reasons: toggleInList(f.fail_reasons, r) }));
   // New entries must name a reviewer — QC work exists because someone was given
   // it. Edits are exempt so older unassigned rows stay editable.
   const submit = () => {
@@ -2730,9 +2800,13 @@ function QcForm({ onSubmit, onCancel, defaultOrg, defaultPassportId, deals, init
       assignee_email: assigneePerson ? assigneePerson.email : null,
       date_captured: form.date_captured || null,
       se_qc_completed_on: form.se_qc_completed_on || null,
+      fail_reasons: form.qc_result === "Fail" ? (joinFailReasons(form.fail_reasons, form.fail_other) || null) : null,
       qc_required_by: form.qc_required_by || null,
       photo_evidence_path: shotPath || null,
     };
+    // fail_other is a form-only field — the free text is folded into
+    // fail_reasons above. PostgREST rejects the whole write on an unknown column.
+    delete payload.fail_other;
     if (!initial) payload.created_by = "You"; // don't overwrite original author on edit
     onSubmit(payload);
   };
@@ -2809,6 +2883,11 @@ function QcForm({ onSubmit, onCancel, defaultOrg, defaultPassportId, deals, init
           </div>
         </div>
       </div>
+      {form.qc_result === "Fail" && (
+        <FailReasonPicker
+          reasons={form.fail_reasons} otherText={form.fail_other}
+          onToggle={toggleFailReason} onOtherText={(v) => set("fail_other", v)} />
+      )}
       <div className="clog-form-row">
         <div>
           <div className="k" style={{ fontFamily:"var(--font-mono)", fontSize:"9.5px", letterSpacing:".1em", textTransform:"uppercase", color:"var(--muted2)", marginBottom:4 }}>Assignee</div>
@@ -2920,7 +2999,14 @@ function QcRow({ row, canEdit, onDelete, onEdit, showOrg, needsAssignee, already
       )}
       <td>{row.usecase || "—"}</td>
       <td>{row.bandset || "—"}</td>
-      <td><span className="tag" style={{ background: row.qc_result === "Pass" ? "rgba(0,192,48,.14)" : row.qc_result === "Fail" ? "rgba(247,110,47,.14)" : "rgba(236,180,35,.14)", color: row.qc_result === "Pass" ? "var(--forest)" : row.qc_result === "Fail" ? "var(--mining)" : "var(--energy)", fontWeight:600 }}>{row.qc_result}</span></td>
+      <td>
+        <span className="tag" style={{ background: row.qc_result === "Pass" ? "rgba(0,192,48,.14)" : row.qc_result === "Fail" ? "rgba(247,110,47,.14)" : "rgba(236,180,35,.14)", color: row.qc_result === "Pass" ? "var(--forest)" : row.qc_result === "Fail" ? "var(--mining)" : "var(--energy)", fontWeight:600 }}>{row.qc_result}</span>
+        {/* Why it failed sits under the verdict rather than in its own column —
+            the table is wide enough already, and the two always read together. */}
+        {row.qc_result === "Fail" && row.fail_reasons && (
+          <div style={{ fontSize:11, color:"var(--mining)", marginTop:3, maxWidth:150 }}>{row.fail_reasons}</div>
+        )}
+      </td>
       <td style={{ fontFamily:"var(--font-mono)", fontSize:12 }}>{row.image_id || "—"}</td>
       <td><span className="tag" style={{ background: row.type === "Paid" ? "var(--accent-soft)" : "var(--line-soft)", color: row.type === "Paid" ? "var(--accent-deep)" : "var(--muted)" }}>{row.type}</span></td>
       <td>{row.assignee || "—"}</td>
@@ -4081,13 +4167,16 @@ function MvpImagesGlobal({ deals, canEdit, onOpen, toast }) {
     for (const r of rows) {
       const deal = dealById[r.passport_id];
       const evidenceUrl = r.photo_evidence_path ? `${SUPABASE_URL}/storage/v1/object/public/${STORAGE_BUCKET}/${r.photo_evidence_path}` : "";
-      const dateStr = r.created_at ? new Date(r.created_at).toLocaleDateString("en-GB", { day:"2-digit", month:"long", year:"numeric" }) : "";
+      // The real acquisition date now that entries carry one. created_at (when
+      // someone logged the QC) is only a fallback for rows predating the column.
+      const captured = r.date_captured || r.feedback_milestone || r.created_at;
+      const dateStr = captured ? new Date(captured).toLocaleDateString("en-GB", { day:"2-digit", month:"long", year:"numeric" }) : "";
       lines.push([
         "",                       // Region — fill on import
         r.bandset || "",          // Bandset (from IPR)
         "",                       // Industry — fill on import
         r.usecase || "",          // Use Case
-        dateStr,                  // Date of capture (QC entry date)
+        dateStr,                  // Date of capture
         r.location || "",         // Location
         r.image_id || "",         // Version / Image ID
         r.organization || (deal ? deal.company : ""),
@@ -5316,7 +5405,8 @@ function ContextTab({ d, canEdit, onSaveField, onUpdate }) {
 }
 
 const CAPTURE_STATUSES = ["Tasked","Captured","QC In Progress","QC Passed","QC Failed","Shared"];
-const QC_FAIL_REASONS = ["BBR","Cloud cover","Geometric","Bounding-box","Striping","Geolocation","Other"];
+// QC_FAIL_REASONS and its parse/join/picker helpers live up with the other QC
+// helpers — the QC entry form offers the same list.
 const STATUS_CLS = { "Tasked":"cs-tasked","Captured":"cs-captured","QC In Progress":"cs-qcprog","QC Passed":"cs-qcpass","QC Failed":"cs-qcfail","Shared":"cs-shared" };
 const STATUS_DOT = { "Tasked":"var(--se)","Captured":"var(--accent)","QC In Progress":"var(--warn)","QC Passed":"var(--ok)","QC Failed":"var(--bad)","Shared":"var(--an)" };
 
@@ -5326,32 +5416,17 @@ function CaptureLog({ entries, canEdit, onAdd, onEdit, onDelete, onUploadShot })
   const emptyForm = () => ({ date: new Date().toISOString().slice(0,10), status:"Tasked", failReasons:[], otherText:"", note:"", shotPath:"" });
   const [form, setForm] = useState(emptyForm());
   const [uploading, setUploading] = useState(false);
-  const toggleReason = (r) => setForm(f => ({ ...f, failReasons: f.failReasons.includes(r) ? f.failReasons.filter(x => x !== r) : [...f.failReasons, r] }));
+  const toggleReason = (r) => setForm(f => ({ ...f, failReasons: toggleInList(f.failReasons, r) }));
   const closeForm = () => { setOpen(false); setEditId(null); setForm(emptyForm()); };
-  // Split a stored "BBR, Other: Color balance" string back into checkboxes + free text
-  const parseReasons = (failReason) => {
-    const failReasons = [], others = [];
-    (failReason || "").split(",").map(s => s.trim()).filter(Boolean).forEach(part => {
-      if (/^Other\s*:/i.test(part)) { failReasons.push("Other"); others.push(part.replace(/^Other\s*:\s*/i, "")); }
-      else if (QC_FAIL_REASONS.includes(part)) failReasons.push(part);
-      else { failReasons.push("Other"); others.push(part); }
-    });
-    return { failReasons: [...new Set(failReasons)], otherText: others.join(", ") };
-  };
   const startEdit = (entry) => {
-    const parsed = entry.status === "QC Failed" ? parseReasons(entry.failReason) : { failReasons: [], otherText: "" };
-    setForm({ date: entry.date || new Date().toISOString().slice(0,10), status: entry.status || "Tasked", failReasons: parsed.failReasons, otherText: parsed.otherText, note: entry.note || "", shotPath: entry.shotPath || "" });
+    const parsed = entry.status === "QC Failed" ? parseFailReasons(entry.failReason) : { reasons: [], otherText: "" };
+    setForm({ date: entry.date || new Date().toISOString().slice(0,10), status: entry.status || "Tasked", failReasons: parsed.reasons, otherText: parsed.otherText, note: entry.note || "", shotPath: entry.shotPath || "" });
     setEditId(entry.id);
     setOpen(true);
   };
   const submit = () => {
     if (!form.note.trim() && form.failReasons.length === 0) { return; }
-    // Build a readable failReason string from the selected reasons + other text
-    let reasonStr = "";
-    if (form.status === "QC Failed") {
-      const parts = form.failReasons.map(r => r === "Other" && form.otherText.trim() ? `Other: ${form.otherText.trim()}` : r);
-      reasonStr = parts.join(", ");
-    }
+    const reasonStr = form.status === "QC Failed" ? joinFailReasons(form.failReasons, form.otherText) : "";
     const payload = { date: form.date, status: form.status, failReason: reasonStr, note: form.note, shotPath: form.shotPath, author:"You" };
     if (editId) onEdit(editId, payload); else onAdd(payload);
     closeForm();
@@ -5429,21 +5504,9 @@ function CaptureLog({ entries, canEdit, onAdd, onEdit, onDelete, onUploadShot })
             </div>
           </div>
           {form.status === "QC Failed" && (
-            <div style={{ marginBottom:10 }}>
-              <div className="k" style={{ fontFamily:"var(--font-mono)", fontSize:"9.5px", letterSpacing:".1em", textTransform:"uppercase", color:"var(--muted2)", marginBottom:6 }}>Failure reasons (select all that apply)</div>
-              <div style={{ display:"flex", flexWrap:"wrap", gap:8 }}>
-                {QC_FAIL_REASONS.map(r => (
-                  <label key={r} style={{ display:"inline-flex", alignItems:"center", gap:6, fontSize:12.5, padding:"5px 10px", borderRadius:8, border:"1px solid " + (form.failReasons.includes(r) ? "var(--accent)" : "var(--line)"), background: form.failReasons.includes(r) ? "var(--accent-soft)" : "transparent", cursor:"pointer" }}>
-                    <input type="checkbox" checked={form.failReasons.includes(r)} onChange={() => toggleReason(r)} style={{ accentColor:"var(--accent)" }} />
-                    {r}
-                  </label>
-                ))}
-              </div>
-              {form.failReasons.includes("Other") && (
-                <input autoFocus placeholder="Describe the other reason…" value={form.otherText} onChange={e => setForm(f => ({ ...f, otherText:e.target.value }))}
-                  style={{ width:"100%", border:"1px solid var(--accent)", borderRadius:8, padding:"8px 11px", fontSize:13, fontFamily:"inherit", marginTop:8, outline:"none" }} />
-              )}
-            </div>
+            <FailReasonPicker
+              reasons={form.failReasons} otherText={form.otherText}
+              onToggle={toggleReason} onOtherText={(v) => setForm(f => ({ ...f, otherText: v }))} />
           )}
           <div>
             <div className="k" style={{ fontFamily:"var(--font-mono)", fontSize:"9.5px", letterSpacing:".1em", textTransform:"uppercase", color:"var(--muted2)", marginBottom:4 }}>Note</div>
