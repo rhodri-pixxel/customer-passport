@@ -87,6 +87,50 @@ function mentionMessage(p) {
   };
 }
 
+// One message for a QC / image entry — assigned, updated or completed.
+//
+// Deliberately ONE post with every recipient @-mentioned together rather than a
+// message each: #customer-passport is a shared channel and four near-identical
+// pings for the same image is how people learn to mute it. `recipients` is built
+// by the app and currently only ever holds the SE and the CS (see
+// IMAGE_NOTIFY_ROLES in src/CustomerPassport.jsx) — sales directors and analytics
+// are deliberately left off. Adding a role later needs no change here.
+function imageUpdateMessage(p) {
+  const people = (p.recipients || []).filter(function (r) { return r && (r.slack || r.name); });
+  const who = people.map(function (r) { return mention(r.name, r.slack); }).join(" ");
+  const deal = p.deal_url ? `<${p.deal_url}|${p.company}>` : `*${p.company}*`;
+  const verb = p.action === "assigned" ? "assigned to you"
+    : p.action === "completed" ? "completed"
+    : "updated";
+  const icon = p.action === "assigned" ? "🛰️" : p.action === "completed" ? "✅" : "📝";
+
+  // "FF03 4320 · Forest Monitoring · Vegetation" — whatever of it we have.
+  const subject = [p.image_id, p.usecase, p.bandset].filter(Boolean).join(" · ") || "Image entry";
+
+  const facts = [
+    p.qc_result ? { type: "mrkdwn", text: `*QC result*\n${p.qc_result}` } : null,
+    p.assignee ? { type: "mrkdwn", text: `*Assignee*\n${p.assignee}` } : null,
+    p.date_captured ? { type: "mrkdwn", text: `*Captured*\n${p.date_captured}` } : null,
+    p.se_qc_completed_on ? { type: "mrkdwn", text: `*SE QC completed*\n${p.se_qc_completed_on}` } : null,
+  ].filter(Boolean);
+
+  return {
+    text: `Image QC ${verb} on ${p.company} — ${subject}`,
+    blocks: [
+      { type: "section", text: { type: "mrkdwn",
+        text: `${icon} ${who ? who + " — " : ""}image QC ${verb} on ${deal}\n*${subject}*` } },
+      ...(facts.length ? [{ type: "section", fields: facts }] : []),
+      // What actually changed, so a "Save changes" ping is worth reading.
+      ...(p.changes ? [{ type: "section", text: { type: "mrkdwn", text: `*Changed*\n${p.changes}` } }] : []),
+      ...(p.qc_notes ? [{ type: "section", text: { type: "mrkdwn", text: `> ${p.qc_notes}` } }] : []),
+      { type: "context", elements: [
+        { type: "mrkdwn", text: `${p.action === "assigned" ? "Assigned" : "Saved"} by ${p.actor || "the Customer Passport"}${p.deal_url ? ` · <${p.deal_url}|open the passport>` : ""}` },
+      ]},
+      { type: "divider" },
+    ],
+  };
+}
+
 function collaboratorMessage(p) {
   const who = mention(p.person, p.person_slack);
   const deal = p.deal_url ? `<${p.deal_url}|${p.company}>` : `*${p.company}*`;
@@ -140,8 +184,25 @@ serve(async function(req) {
       message = mentionMessage(body);
     } else if (event === "collaborator") {
       message = collaboratorMessage(body);
+    } else if (event === "image_update" || event === "qc_assignment") {
+      // qc_assignment is the old name an earlier build of the app sent; keep it
+      // pointing at the same builder so a stale browser tab still gets through.
+      message = imageUpdateMessage(body);
     } else {
-      throw new Error("Unknown event type: " + event);
+      // Never throw on an unrecognised event. A deployed function that is one
+      // release behind the app used to swallow whole notification types with a
+      // 500 that nothing surfaced — a generic message is always better than
+      // silence, and the caller still learns the event was unknown.
+      message = {
+        text: `Customer Passport notification (${event || "no event type"})`,
+        blocks: [
+          { type: "section", text: { type: "mrkdwn", text:
+            `:bell: *Customer Passport* — \`${event || "no event type"}\`${body.company ? ` on *${body.company}*` : ""}` } },
+          { type: "context", elements: [{ type: "mrkdwn", text:
+            "This notification type isn't recognised by the deployed slack-notify function — it may need redeploying." }] },
+          { type: "divider" },
+        ],
+      };
     }
 
     const result = await postToSlack(slackToken, targetChannel, message);
@@ -149,7 +210,8 @@ serve(async function(req) {
     if (body.passport_id) {
       await supabase.from("notifications").insert({
         passport_id: body.passport_id,
-        recipient: body.person || body.postedBy || "team",
+        recipient: (body.recipients || []).map(function (r) { return r && r.name; }).filter(Boolean).join(", ")
+          || body.person || body.mentionedPerson || body.postedBy || "team",
         channel: "slack",
         event_type: event,
         payload: body,

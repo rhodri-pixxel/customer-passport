@@ -270,7 +270,10 @@ CREATE TABLE public.quality_checks (
   location text,
   mvp_image boolean DEFAULT false,
   photo_evidence_path text,
+  -- DEPRECATED — everyone filled this in with the capture date; see date_captured.
   feedback_milestone date,
+  date_captured date,
+  se_qc_completed_on date,
   created_by text,
   created_at timestamp with time zone DEFAULT now() NOT NULL,
   notion_page_id text,

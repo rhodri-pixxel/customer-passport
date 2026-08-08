@@ -2048,50 +2048,32 @@ async function fetchAllQc() {
 async function fetchAllDelivered() {
   return sbGet("delivered_images", "?order=delivered_at.desc.nullslast&limit=1000");
 }
-// Ping whoever a QC entry has just been assigned to.
+// Every deal, unfiltered, for the pickers that link an image entry to a customer.
 //
-// Uses the "mention" event, which slack-notify already handles. It previously
-// sent event "qc_assignment", which that function has no branch for — it threw
-// "Unknown event type", the 500 was swallowed by a bare .catch(), and no QC
-// assignment ping has ever arrived. Adding a dedicated message type would be
-// nicer but needs the edge function redeployed; this needs no deploy.
-async function notifyQcAssignee({ entry, assignedBy }) {
-  const slackId = entry.assignee ? slackFor(entry.assignee) : null;
-  if (!slackId) return;
-  const bits = [
-    entry.image_id ? `Image ${entry.image_id}` : null,
-    entry.usecase || null,
-    entry.bandset || null,
-  ].filter(Boolean).join(" · ");
-  try {
-    await sendSlackNotification("mention", {
-      mentionedPerson: entry.assignee,
-      mentioned_slack: slackId,
-      mentionedBy: assignedBy || "QC",
-      company: entry.organization || "a deal",
-      dealId: entry.image_id || "QC",
-      noteText: `You've been assigned a QC${bits ? ` — ${bits}` : ""}.${entry.qc_notes ? ` ${entry.qc_notes}` : ""}`.trim(),
-    }, entry.passport_id);
-  } catch (_) { /* best-effort */ }
+// The Deals page list is deliberately narrowed by its search box and its
+// pipeline/stage/owner filters. The Imagery page was handed that same narrowed
+// array, so a filter left on the Deals page (or text still sitting in its search
+// box) made every other customer unfindable when logging a QC entry. The picker
+// needs its own list. Light columns only: a name to search on and the owners to
+// notify.
+async function fetchDealsForPicker() {
+  return sbGet(
+    "handover_passports",
+    "?select=id,company,deal_id_display,owner_se,owner_cs,archived&order=company.asc&limit=2000"
+  );
 }
-
-async function addQcEntry(entry, assignedBy) {
-  const result = await sbPost("quality_checks", entry);
-  notifyQcAssignee({ entry, assignedBy });
-  return result;
+// These are plain DB writes. Notifying is the caller's job (see
+// notifyImageUpdate) so it can be awaited and its result reported — a ping fired
+// and forgotten from in here is exactly how QC assignment notifications went
+// missing for weeks without anyone seeing an error.
+async function addQcEntry(entry) {
+  return sbPost("quality_checks", entry);
 }
 async function deleteQcEntry(id) {
   return sbDelete("quality_checks", id);
 }
-// `prevAssignee` lets the caller ping someone who has just been given an entry
-// that already existed. Claiming from the IPR feed or reassigning is an edit,
-// not an insert, so without this the most common assignment path stays silent.
-async function updateQcEntry(id, entry, { prevAssignee, assignedBy } = {}) {
-  const result = await sbPatch("quality_checks", id, entry);
-  if (entry.assignee && entry.assignee !== prevAssignee) {
-    notifyQcAssignee({ entry: { ...entry, id }, assignedBy });
-  }
-  return result;
+async function updateQcEntry(id, entry) {
+  return sbPatch("quality_checks", id, entry);
 }
 
 // ── IPR Image Status integration ──────────────────────────────
@@ -2141,6 +2123,28 @@ function iprImageId(item) {
   return [(item.satellite_id || "").trim(), (item.image_id || "").trim()].filter(Boolean).join(" ");
 }
 
+// The date the satellite acquired the image, as YYYY-MM-DD, or "" if IPR didn't
+// give us one. IPR has spelled this field several ways across versions
+// (capture_datetime, acquisition_date, imaging_date…), so rather than betting on
+// one name we take the first key that looks like a capture/acquisition date and
+// parses. Explicitly ignores processing/upload/sync timestamps — those are when
+// the pipeline touched the image, not when it was taken.
+const IPR_DATE_KEY_RX = /(captur|acquisi|acquir|imaging|sensing|scene|observ)/i;
+const IPR_DATE_SKIP_RX = /(process|upload|sync|deliver|created|modified|ingest)/i;
+function iprCaptureDate(item) {
+  if (!item || typeof item !== "object") return "";
+  const keys = Object.keys(item).filter(k => IPR_DATE_KEY_RX.test(k) && !IPR_DATE_SKIP_RX.test(k));
+  // Prefer keys that also say date/time — e.g. capture_datetime over capture_mode.
+  keys.sort((a, b) => (/(date|time)/i.test(b) ? 1 : 0) - (/(date|time)/i.test(a) ? 1 : 0));
+  for (const k of keys) {
+    const v = item[k];
+    if (!v || typeof v === "boolean") continue;
+    const d = new Date(v);
+    if (!isNaN(d.getTime()) && d.getFullYear() > 2000) return d.toISOString().slice(0, 10);
+  }
+  return "";
+}
+
 // Best-effort link of an IPR item to a deal by company name appearing in its AOI/
 // target text. Unreliable by design (AOI ids are generic) — accepted trade-off
 // until captures carry a shared customer id. Returns the matched deal or null.
@@ -2153,7 +2157,10 @@ function iprMatchDeal(item, deals) {
 // Map one IPR metadata item → a quality_checks row payload. `deal` (optional)
 // links the row to a passport and seeds the SE as assignee.
 function mapIprItemToQc(item, deal) {
-  const assigneeName = deal && deal.owners ? deal.owners.se : null;
+  // dealOwner, not deal.owners.se — the import modal is handed deal LIST rows,
+  // which carry owner_se as a flat column and have no `.owners` object, so the
+  // old read was always undefined and every imported row landed unassigned.
+  const assigneeName = dealOwner(deal, "se");
   const assigneePerson = assigneeName
     ? Object.values(TEAM_MEMBERS).flat().find(p => p.name === assigneeName) : null;
   const cloud = item.cloud_cover_percentage != null ? `${Math.round(item.cloud_cover_percentage)}% cloud` : "";
@@ -2174,6 +2181,7 @@ function mapIprItemToQc(item, deal) {
     qc_notes: "",                 // reviewer fills this in during QC
     ipr_info: iprInfo,
     location,
+    date_captured: iprCaptureDate(item) || null,
     mvp_image: false,
     created_by: "IPR import",
   };
@@ -2244,6 +2252,8 @@ function mapIprItemToCaptured(item, deal) {
       || (item.latitude != null && item.longitude != null ? `${item.latitude.toFixed(3)}, ${item.longitude.toFixed(3)}` : null),
     processing_status: item.processing_status || null,
     cloud_cover: cloud,
+    // Carries through to a promoted QC entry's "Date captured" field.
+    captured_at: iprCaptureDate(item) || null,
     ipr_info: [item.processing_status || "", cloud != null ? `${Math.round(cloud)}% cloud` : ""].filter(Boolean).join(" · "),
   };
 }
@@ -2292,39 +2302,168 @@ async function syncCapturedFromIpr(deals) {
   return { synced: rows.length, since, truncated };
 }
 
-// Notify the linked deal's CS when a QC entry becomes complete (result set to
-// Pass/Fail from a non-complete state). No CS on the deal → no notification.
-async function notifyCsQcComplete({ prevResult, entry, csName }) {
+/* ── Image / QC entry Slack notifications ──────────────────────────
+   Every change to an image entry produces ONE Slack post that mentions the SE
+   and the CS together. It used to be a message per person per trigger, which
+   both spammed #customer-passport and, because each ping was fire-and-forget
+   inside a `catch (_) {}`, failed invisibly.                                */
+
+// Who gets pinged. SE and CS only, deliberately — sales directors and analytics
+// are left off until someone asks for them. Adding a role here is the only
+// change needed; the recipient list and the Slack message both follow it.
+const IMAGE_NOTIFY_ROLES = ["se", "cs"];
+
+// A deal reaches these helpers in one of two shapes: a row from the deal LIST
+// (flat owner_se / owner_cs columns) or the mapped passport detail object
+// (nested owners.se / owners.cs). Reading only the nested one is why the
+// Imagery tab never notified CS — list rows have no `.owners` at all.
+function dealOwner(deal, role) {
+  if (!deal) return null;
+  if (deal.owners) return deal.owners[role] || null;
+  return deal[`owner_${role}`] || null;
+}
+
+// The entry's own assignee (whoever is doing the QC) plus the deal's owners for
+// each notify role, deduped by name so nobody is mentioned twice in one message.
+function imageNotifyRecipients({ entry, deal }) {
+  const names = [entry && entry.assignee].concat(IMAGE_NOTIFY_ROLES.map(r => dealOwner(deal, r)));
+  const seen = new Set();
+  const out = [];
+  for (const name of names) {
+    if (!name || seen.has(name)) continue;
+    seen.add(name);
+    out.push({ name, slack: slackFor(name) });
+  }
+  return out;
+}
+
+// True on the edit where a QC entry first reaches a verdict — the transition,
+// not the state, so re-saving a finished entry doesn't re-announce it.
+function qcJustCompleted(prevResult, entry) {
   const nowComplete = entry.qc_result === "Pass" || entry.qc_result === "Fail";
   const wasComplete = prevResult === "Pass" || prevResult === "Fail";
-  if (!nowComplete || wasComplete || !csName) return;
-  const slackId = slackFor(csName);
-  if (!slackId) return;
+  return nowComplete && !wasComplete;
+}
+
+// Fields a saved edit is worth reporting, in the order the form reads.
+const QC_TRACKED_FIELDS = [
+  ["qc_result", "QC result"],
+  ["assignee", "Assignee"],
+  ["organization", "Organization"],
+  ["image_id", "Image ID"],
+  ["usecase", "Usecase"],
+  ["bandset", "Bandset"],
+  ["type", "Type"],
+  ["location", "Location"],
+  ["date_captured", "Date captured"],
+  ["se_qc_completed_on", "SE QC completed on"],
+  ["qc_required_by", "QC required by"],
+  ["mvp_image", "MVP image"],
+  ["qc_notes", "QC notes"],
+];
+
+// "QC result: Awaiting QC → Pass" lines for whatever actually changed. Notes are
+// summarised rather than quoted in full — the message already carries the text.
+function qcChangeSummary(before, after) {
+  const show = (v) => (v === true ? "Yes" : v === false ? "No" : (v === null || v === undefined || v === "") ? "—" : String(v));
+  const out = [];
+  for (const [key, label] of QC_TRACKED_FIELDS) {
+    if (!(key in (after || {}))) continue;
+    const a = (before || {})[key] ?? null;
+    const b = after[key] ?? null;
+    if (show(a) === show(b)) continue;
+    out.push(key === "qc_notes" ? "• QC notes updated" : `• ${label}: ${show(a)} → ${show(b)}`);
+  }
+  return out;
+}
+
+// One Slack post for an image entry change, to the SE and CS together.
+// `action` is "assigned" | "completed" | "updated".
+//
+// Returns { ok, error, recipients } instead of swallowing failures, so callers
+// can put the outcome in the toast. A best-effort notification nobody can see
+// fail is indistinguishable from a feature that was never built.
+async function notifyImageUpdate({ entry, deal, action, changes, by }) {
+  const recipients = imageNotifyRecipients({ entry, deal });
+  // Nobody to tell isn't a failure — an entry with no assignee and no deal
+  // owners has no audience. Say that plainly instead of crying error.
+  if (!recipients.length) return { ok: false, skipped: true, error: "no SE or CS on this entry", recipients: [] };
+  const passportId = entry.passport_id || (deal && deal.id) || null;
   try {
-    await sendSlackNotification("mention", {
-      mentionedPerson: csName,
-      mentioned_slack: slackId,
-      mentionedBy: "QC",
-      company: entry.organization,
-      dealId: entry.passport_id,
-      noteText: `QC ${entry.qc_result} — image ${entry.image_id || "(no id)"}${entry.usecase ? " · " + entry.usecase : ""}. ${entry.qc_notes || ""}`.trim(),
-    }, entry.passport_id);
-  } catch (_) { /* best-effort */ }
+    const r = await sendSlackNotification("image_update", {
+      recipients,
+      action,
+      actor: by || "the Customer Passport",
+      company: entry.organization || (deal && deal.company) || "a deal",
+      image_id: entry.image_id || "",
+      usecase: entry.usecase || "",
+      bandset: entry.bandset || "",
+      qc_result: entry.qc_result || "",
+      assignee: entry.assignee || "",
+      date_captured: entry.date_captured || "",
+      se_qc_completed_on: entry.se_qc_completed_on || "",
+      qc_notes: entry.qc_notes || "",
+      changes: (changes && changes.length) ? changes.join("\n") : "",
+    }, passportId);
+    if (r && r.ok) return { ok: true, recipients };
+    return { ok: false, error: (r && r.error) || "Slack rejected the message", recipients };
+  } catch (e) {
+    return { ok: false, error: (e && e.message) || String(e), recipients };
+  }
+}
+
+// A bulk import can create dozens of entries at once. One Slack post per image
+// would bury the channel, so group by (deal, assignee) and send a single summary
+// per group — the same rule as everywhere else: one message, SE and CS together.
+async function notifyImageBatchAssigned({ entries, dealsById, by }) {
+  const groups = new Map();
+  for (const e of entries) {
+    const key = `${e.passport_id || "none"}|${e.assignee || "none"}`;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(e);
+  }
+  let sent = 0, failed = 0;
+  for (const group of groups.values()) {
+    const first = group[0];
+    const ids = group.map(e => e.image_id).filter(Boolean);
+    const res = await notifyImageUpdate({
+      entry: {
+        ...first,
+        image_id: group.length === 1 ? (ids[0] || "") : `${group.length} images`,
+        qc_notes: "",
+      },
+      deal: (dealsById && dealsById[first.passport_id]) || null,
+      action: "assigned",
+      by,
+      changes: ids.slice(0, 20).map(id => `• ${id}`).concat(ids.length > 20 ? [`• …and ${ids.length - 20} more`] : []),
+    });
+    if (res.ok) sent++;
+    else if (!res.skipped) failed++;   // "nobody to notify" is not a failure
+  }
+  return { sent, failed };
+}
+
+// Toast tail so the person saving always knows whether Slack actually went out.
+// Failures are stated loudly on purpose: the previous version swallowed them,
+// which is why "notifications aren't coming through" went unexplained for weeks.
+function slackToastTail(res) {
+  if (!res) return "";
+  if (res.ok) return ` · Slack: notified ${res.recipients.map(r => r.name.split(" ")[0]).join(" + ")}`;
+  if (res.skipped) return ` · no Slack notification (${res.error})`;
+  return ` · Slack notification FAILED (${res.error})`;
 }
 
 // Mirror a completed QC into the deal's capture log, so the Execution timeline
 // carries QC outcomes next to tasking and capture events instead of leaving them
-// stranded on the QC tab. Same transition guard as notifyCsQcComplete above: it
-// fires once, when the result first becomes Pass/Fail, so re-editing a finished
-// QC row (fixing notes, reassigning) doesn't stack duplicate entries.
+// stranded on the QC tab. Fires once, when the result first becomes Pass/Fail,
+// so re-editing a finished QC row (fixing notes, reassigning) doesn't stack
+// duplicate entries.
 //
 // Deliberately never writes "Shared". Passing QC means the image is good, not
 // that the customer has it — for paid orders that call belongs to CS, who logs
 // the Shared event by hand.
 async function logQcToCaptureLog({ prevResult, entry, author }) {
-  const nowComplete = entry.qc_result === "Pass" || entry.qc_result === "Fail";
-  const wasComplete = prevResult === "Pass" || prevResult === "Fail";
-  if (!nowComplete || wasComplete || !entry.passport_id) return false;
+  if (!qcJustCompleted(prevResult, entry) || !entry.passport_id) return false;
   const head = [
     entry.image_id ? `Image ${entry.image_id}` : null,
     entry.usecase || null,
@@ -2478,14 +2617,22 @@ async function syncCatalogRows(rows, links) {
   return { imagesSynced: toSync.length, orgsNamed: renamed.length };
 }
 
-// Searchable deal picker — type to filter instead of scrolling a long dropdown
+// Searchable deal picker — type to filter instead of scrolling a long dropdown.
+// `deals` must be the FULL deal list (see fetchDealsForPicker), never the Deals
+// page's filtered array.
+const PICKER_LIMIT = 12;
 function DealSearchPicker({ deals, value, onChange }) {
   const [open, setOpen] = useState(false);
   const [q, setQ] = useState("");
-  const selected = deals.find(d => d.id === value);
-  const matches = q.trim()
-    ? deals.filter(d => d.company.toLowerCase().includes(q.toLowerCase())).slice(0, 8)
-    : deals.slice(0, 8);
+  const list = deals || [];
+  const selected = list.find(d => d.id === value);
+  // Match the deal ID too — people paste those far more often than they type a
+  // company name exactly as HubSpot spells it.
+  const hits = q.trim()
+    ? list.filter(d => `${d.company || ""} ${d.deal_id_display || ""}`.toLowerCase().includes(q.trim().toLowerCase()))
+    : list;
+  const matches = hits.slice(0, PICKER_LIMIT);
+  const moreCount = hits.length - matches.length;
   return (
     <div style={{ position: "relative" }}>
       <div onClick={() => setOpen(o => !o)} className="cp-select" style={{ cursor: "pointer" }}>
@@ -2507,8 +2654,14 @@ function DealSearchPicker({ deals, value, onChange }) {
                 onMouseLeave={e => e.currentTarget.style.background = "transparent"}
                 style={{ display:"block", width:"100%", textAlign:"left", padding:"7px 10px", borderRadius:6, border:"none", background:"transparent", cursor:"pointer", fontSize:12.5, color:"var(--ink)" }}>
                 {d.company}
+                {d.archived && <span style={{ color:"var(--muted2)", fontSize:11 }}> · archived</span>}
               </button>
             ))}
+            {moreCount > 0 && (
+              <div style={{ padding:"6px 10px", fontSize:11.5, color:"var(--muted2)" }}>
+                +{moreCount} more — keep typing to narrow it down
+              </div>
+            )}
             {matches.length === 0 && <div style={{ padding:"8px 10px", fontSize:12, color:"var(--muted2)" }}>No matching deals</div>}
           </div>
         </div>
@@ -2516,6 +2669,11 @@ function DealSearchPicker({ deals, value, onChange }) {
     </div>
   );
 }
+
+const todayISO = () => new Date().toISOString().slice(0, 10);
+// A date column can come back as "2026-08-08" or a full timestamp; <input type="date">
+// only accepts the former.
+const asDateInput = (v) => (v ? String(v).slice(0, 10) : "");
 
 function QcForm({ onSubmit, onCancel, defaultOrg, defaultPassportId, deals, initial, fromCapture }) {
   // `initial` = an existing QC row → the form opens pre-filled in edit mode.
@@ -2535,14 +2693,29 @@ function QcForm({ onSubmit, onCancel, defaultOrg, defaultPassportId, deals, init
     qc_notes: (initial && initial.qc_notes) || "",
     location: (initial && initial.location) || (cap && cap.location) || "",
     mvp_image: !!(initial && initial.mvp_image),
-    feedback_milestone: (initial && initial.feedback_milestone) || "",
-    qc_required_by: (initial && initial.qc_required_by) || "",
+    // Date captured — what the old "Feedback milestone" field was really being
+    // used for. Auto-filled from IPR when the entry is promoted from the feed
+    // (captured_at), falling back to the legacy column on older rows.
+    date_captured: asDateInput(
+      (initial && (initial.date_captured || initial.feedback_milestone)) || (cap && cap.captured_at) || ""
+    ),
+    se_qc_completed_on: asDateInput(initial && initial.se_qc_completed_on),
+    qc_required_by: asDateInput(initial && initial.qc_required_by),
     passport_id: (initial && initial.passport_id) || (cap && cap.passport_id) || defaultPassportId || "",
   });
   const [uploading, setUploading] = useState(false);
   const [shotPath, setShotPath] = useState((initial && initial.photo_evidence_path) || "");
   const [err, setErr] = useState("");
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
+  // Choosing Pass or Fail IS the moment the SE finished the QC, so stamp the
+  // completion date then rather than asking for it separately. Still editable
+  // below, for a review that happened before it got logged. Dropping back to
+  // Awaiting QC clears it — a completion date on unfinished work is a lie.
+  const setResult = (r) => setForm(f => ({
+    ...f,
+    qc_result: r,
+    se_qc_completed_on: (r === "Pass" || r === "Fail") ? (f.se_qc_completed_on || todayISO()) : "",
+  }));
   // New entries must name a reviewer — QC work exists because someone was given
   // it. Edits are exempt so older unassigned rows stay editable.
   const submit = () => {
@@ -2555,7 +2728,8 @@ function QcForm({ onSubmit, onCancel, defaultOrg, defaultPassportId, deals, init
       passport_id: form.passport_id || null,   // empty string → null (uuid column)
       assignee: form.assignee || null,
       assignee_email: assigneePerson ? assigneePerson.email : null,
-      feedback_milestone: form.feedback_milestone || null,
+      date_captured: form.date_captured || null,
+      se_qc_completed_on: form.se_qc_completed_on || null,
       qc_required_by: form.qc_required_by || null,
       photo_evidence_path: shotPath || null,
     };
@@ -2577,8 +2751,16 @@ function QcForm({ onSubmit, onCancel, defaultOrg, defaultPassportId, deals, init
             style={{ width:"100%", border:"1px solid var(--accent)", borderRadius:8, padding:"7px 10px", fontFamily:"inherit", fontSize:13, outline:"none" }} />
         </div>
         <div>
-          <div className="k" style={{ fontFamily:"var(--font-mono)", fontSize:"9.5px", letterSpacing:".1em", textTransform:"uppercase", color:"var(--muted2)", marginBottom:4 }}>Linked deal (optional)</div>
-          <DealSearchPicker deals={deals} value={form.passport_id} onChange={(id) => set("passport_id", id)} />
+          <div className="k" style={{ fontFamily:"var(--font-mono)", fontSize:"9.5px", letterSpacing:".1em", textTransform:"uppercase", color:"var(--muted2)", marginBottom:4 }}>Linked deal {(deals && deals.length) ? "(optional)" : ""}</div>
+          {(deals && deals.length) ? (
+            <DealSearchPicker deals={deals} value={form.passport_id} onChange={(id) => set("passport_id", id)} />
+          ) : (
+            // Opened from a deal's own Execution tab — the customer is already
+            // decided, so show it rather than an empty picker that can only
+            // unlink it.
+            <input value={defaultOrg || "This deal"} readOnly
+              style={{ width:"100%", border:"1px solid var(--line)", borderRadius:8, padding:"7px 10px", fontFamily:"inherit", fontSize:13, outline:"none", background:"var(--line-soft)", color:"var(--muted)" }} />
+          )}
         </div>
       </div>
       <div className="clog-form-row">
@@ -2610,7 +2792,7 @@ function QcForm({ onSubmit, onCancel, defaultOrg, defaultPassportId, deals, init
           <div className="k" style={{ fontFamily:"var(--font-mono)", fontSize:"9.5px", letterSpacing:".1em", textTransform:"uppercase", color:"var(--muted2)", marginBottom:4 }}>Quality Check</div>
           <div style={{ display:"flex", gap:8 }}>
             {[["Awaiting QC","var(--energy)","rgba(236,180,35,.14)","#F0A429"],["Pass","var(--forest)","rgba(0,192,48,.14)","var(--ok)"],["Fail","var(--mining)","rgba(247,110,47,.14)","var(--bad)"]].map(([r,fg,bg,br]) => (
-              <button key={r} onClick={() => set("qc_result", r)} type="button"
+              <button key={r} onClick={() => setResult(r)} type="button"
                 style={{ flex:1, padding:"7px 4px", borderRadius:8, border:"1px solid "+(form.qc_result===r ? br : "var(--line)"),
                   background: form.qc_result===r ? bg : "transparent",
                   color: form.qc_result===r ? fg : "var(--muted)", fontSize:12.5, fontWeight:600, cursor:"pointer", whiteSpace:"nowrap" }}>{r}</button>
@@ -2656,10 +2838,28 @@ function QcForm({ onSubmit, onCancel, defaultOrg, defaultPassportId, deals, init
             style={{ width:"100%", border:"1px solid var(--line)", borderRadius:8, padding:"7px 10px", fontFamily:"inherit", fontSize:13, outline:"none" }} />
         </div>
         <div>
-          <div className="k" style={{ fontFamily:"var(--font-mono)", fontSize:"9.5px", letterSpacing:".1em", textTransform:"uppercase", color:"var(--muted2)", marginBottom:4 }}>Feedback milestone</div>
-          <input type="date" value={form.feedback_milestone} onChange={e => set("feedback_milestone", e.target.value)}
+          <div className="k" style={{ fontFamily:"var(--font-mono)", fontSize:"9.5px", letterSpacing:".1em", textTransform:"uppercase", color:"var(--muted2)", marginBottom:4 }}>Date captured</div>
+          <input type="date" value={form.date_captured} onChange={e => set("date_captured", e.target.value)}
             style={{ width:"100%", border:"1px solid var(--line)", borderRadius:8, padding:"7px 10px", fontFamily:"inherit", fontSize:13, outline:"none" }} />
+          <div style={{ fontSize:11, color:"var(--muted2)", marginTop:3 }}>
+            {cap && cap.captured_at ? "Auto-filled from IPR — edit if it's wrong." : "When the satellite acquired the image."}
+          </div>
         </div>
+      </div>
+      <div className="clog-form-row">
+        <div>
+          <div className="k" style={{ fontFamily:"var(--font-mono)", fontSize:"9.5px", letterSpacing:".1em", textTransform:"uppercase", color:"var(--muted2)", marginBottom:4 }}>SE QC completed on</div>
+          <input type="date" value={form.se_qc_completed_on} onChange={e => set("se_qc_completed_on", e.target.value)}
+            style={{ width:"100%", border:"1px solid var(--line)", borderRadius:8, padding:"7px 10px", fontFamily:"inherit", fontSize:13, outline:"none" }} />
+          <div style={{ fontSize:11, color:"var(--muted2)", marginTop:3 }}>
+            {form.qc_result === "Awaiting QC"
+              ? "Stamped with today's date as soon as you mark this Pass or Fail."
+              : form.se_qc_completed_on
+                ? "Stamped automatically — change it if the QC was done earlier."
+                : "Not recorded. Type the date, or re-pick the result to stamp today."}
+          </div>
+        </div>
+        <div />
       </div>
       <div className="clog-form-row">
         <label style={{ display:"flex", alignItems:"center", gap:7, fontSize:12.5, cursor:"pointer" }}>
@@ -2728,7 +2928,9 @@ function QcRow({ row, canEdit, onDelete, onEdit, showOrg, needsAssignee, already
       <td style={{ fontSize: 12, color: "var(--muted2)" }}>{row.location || "—"}</td>
       <td>{row.mvp_image ? <CheckCircle2 size={14} color="var(--ok)" /> : "—"}</td>
       <td>{row.photo_evidence_path ? <a href={`${SUPABASE_URL}/storage/v1/object/public/${STORAGE_BUCKET}/${row.photo_evidence_path}`} target="_blank" rel="noreferrer"><Camera size={14} color="var(--accent-deep)" /></a> : "—"}</td>
-      <td style={{ fontSize: 12, fontFamily: "var(--font-mono)", color: "var(--muted2)" }}>{row.feedback_milestone || "—"}</td>
+      {/* date_captured supersedes feedback_milestone; older rows only have the latter */}
+      <td style={{ fontSize: 12, fontFamily: "var(--font-mono)", color: "var(--muted2)" }}>{asDateInput(row.date_captured || row.feedback_milestone) || "—"}</td>
+      <td style={{ fontSize: 12, fontFamily: "var(--font-mono)", color: "var(--muted2)" }}>{asDateInput(row.se_qc_completed_on) || "—"}</td>
       <td style={{ fontSize: 11.5, color: "var(--muted2)", maxWidth: 180 }}>{row.ipr_info || "—"}</td>
       {canEdit && (
         <td style={{ whiteSpace: "nowrap" }}>
@@ -2744,7 +2946,7 @@ function QcRow({ row, canEdit, onDelete, onEdit, showOrg, needsAssignee, already
 // name/AOI search, preview them, then create QC rows (Awaiting QC). Each imported
 // image is linked to a deal when its AOI text matches a company name; matched rows
 // inherit that deal's SE as assignee, unmatched rows get the chosen fallback (or none).
-function IprImportModal({ deals, onClose, onDone, toast }) {
+function IprImportModal({ deals, onClose, onDone, toast, currentUserName }) {
   const TEAM_FLAT = Object.values(TEAM_MEMBERS).flat();
   const [mode, setMode] = useState("id");            // "id" | "name"
   const [idInput, setIdInput] = useState("");
@@ -2815,15 +3017,23 @@ function IprImportModal({ deals, onClose, onDone, toast }) {
     if (!chosen.length) { toast("Nothing selected"); return; }
     setImporting(true);
     let added = 0;
+    const created = [];
     const fbPerson = TEAM_FLAT.find(p => p.name === fallbackAssignee);
+    const dealsById = {};
+    for (const d of (deals || [])) dealsById[d.id] = d;
     try {
       for (const r of chosen) {
         const payload = mapIprItemToQc(r.it, r.deal);
         if (!r.deal && fbPerson) { payload.assignee = fbPerson.name; payload.assignee_email = fbPerson.email; }
         await addQcEntry(payload);
+        created.push(payload);
         added++;
       }
-      toast(`Imported ${added} image${added === 1 ? "" : "s"} into Quality Checks`);
+      // One Slack summary per assignee, not one per image.
+      const { sent, failed } = await notifyImageBatchAssigned({ entries: created, dealsById, by: currentUserName });
+      toast(`Imported ${added} image${added === 1 ? "" : "s"} into Quality Checks`
+        + (sent ? ` · ${sent} Slack notification${sent === 1 ? "" : "s"} sent` : "")
+        + (failed ? ` · ${failed} Slack notification${failed === 1 ? "" : "s"} FAILED` : ""));
       onDone && onDone();
       onClose();
     } catch (e) {
@@ -3202,39 +3412,58 @@ function QualityChecksGlobal({ deals, canEdit, onOpen, toast, currentUserName })
   const [showImport, setShowImport] = useState(false); // IPR import modal
   const [showCatalog, setShowCatalog] = useState(false); // catalog delivery sync modal
   const [syncing, setSyncing] = useState(false);       // auto-populate in progress
+  // The Deals page's `deals` prop is filtered by its search box and filters.
+  // This page must never use it to look a customer up — see fetchDealsForPicker.
+  const [allDeals, setAllDeals] = useState([]);
+  const pickDeals = allDeals.length ? allDeals : (deals || []);
 
   const load = async () => {
     setLoading(true);
     try {
       // Keep the feed's load error rather than swallowing it — an empty tab and
       // a missing captured_images table look identical otherwise.
-      const [qc, dl, cap] = await Promise.all([
+      const [qc, dl, cap, all] = await Promise.all([
         fetchAllQc(),
         fetchAllDelivered().catch(() => []),
         fetchCapturedImages().then(r => ({ ok: r })).catch(e => ({ err: e })),
+        fetchDealsForPicker().catch(() => []),
       ]);
       setRows(qc); setDelivered(dl || []);
       setCaptured(cap.ok || []); setCapturedErr(cap.err ? (cap.err.message || String(cap.err)) : "");
+      setAllDeals(all || []);
     } finally { setLoading(false); }
   };
   useEffect(() => { load(); }, []);
 
   const submit = async (entry) => {
     try {
+      // Look the deal up in the FULL list — `deals` is the Deals page's filtered
+      // array, so with a filter on there this used to find nothing and the CS
+      // silently dropped off every notification.
+      const deal = pickDeals.find(d => d.id === (entry.passport_id || (editRow && editRow.passport_id)));
       if (editRow) {
         const prevResult = editRow.qc_result;
-        await updateQcEntry(editRow.id, entry, { prevAssignee: editRow.assignee, assignedBy: currentUserName });
-        toast("QC entry updated");
-        // Notify the linked deal's CS when this QC has just been completed
-        const deal = deals.find(d => d.id === (entry.passport_id || editRow.passport_id));
+        await updateQcEntry(editRow.id, entry);
         const merged = { ...editRow, ...entry };
-        notifyCsQcComplete({ prevResult, entry: merged, csName: deal && deal.owners ? deal.owners.cs : null });
+        // Every save notifies — that's the point of "Save changes" — but the
+        // message says what actually changed so it's worth opening.
+        const changes = qcChangeSummary(editRow, entry);
+        const slack = changes.length
+          ? await notifyImageUpdate({
+              entry: merged, deal, by: currentUserName, changes,
+              action: qcJustCompleted(prevResult, merged) ? "completed" : "updated",
+            })
+          : null;
+        toast(changes.length
+          ? `QC entry updated${slackToastTail(slack)}`
+          : "QC entry saved — nothing changed, so no Slack notification sent");
         // …and drop the outcome into that deal's Execution timeline
         logQcToCaptureLog({ prevResult, entry: merged, author: currentUserName });
       }
       else {
-        const created = await addQcEntry(entry, currentUserName);
-        toast(promoteFrom ? "Assigned — QC entry created from the IPR feed" : "QC entry saved");
+        const created = await addQcEntry(entry);
+        const slack = await notifyImageUpdate({ entry, deal, action: "assigned", by: currentUserName });
+        toast((promoteFrom ? "Assigned — QC entry created from the IPR feed" : "QC entry saved") + slackToastTail(slack));
         // A QC logged straight as Pass/Fail (no Awaiting step) still belongs on the timeline
         logQcToCaptureLog({ prevResult: null, entry, author: currentUserName });
         // Record which feed image produced this entry, so the feed can show
@@ -3253,7 +3482,7 @@ function QualityChecksGlobal({ deals, canEdit, onOpen, toast, currentUserName })
   const syncCaptured = async ({ auto = false } = {}) => {
     setSyncing(true);
     try {
-      const { synced, truncated } = await syncCapturedFromIpr(deals);
+      const { synced, truncated } = await syncCapturedFromIpr(pickDeals);
       toast(`IPR feed updated — ${synced} image${synced === 1 ? "" : "s"} from the last ${IPR_FEED_DAYS} days${truncated ? " (hit the page cap — may be incomplete)" : ""}. Nothing added to QC entries.`);
       setFeedErr("");
       await load();
@@ -3312,8 +3541,10 @@ function QualityChecksGlobal({ deals, canEdit, onOpen, toast, currentUserName })
   const passCount = tabRows.filter(r => r.qc_result === "Pass").length;
   const failCount = tabRows.filter(r => r.qc_result === "Fail").length;
   const awaitingCount = tabRows.filter(r => r.qc_result === "Awaiting QC").length;
+  // Full list, not the Deals page's filtered one — otherwise a filter left on
+  // that page blanks the Customer column on rows that are perfectly well linked.
   const dealById = {};
-  for (const d of (deals || [])) dealById[d.id] = d;
+  for (const d of pickDeals) dealById[d.id] = d;
   const feedNewest = captured.reduce((m, c) => (c.synced_at && c.synced_at > m ? c.synced_at : m), "");
   const fmtDay = (iso) => iso ? new Date(iso).toLocaleDateString("en-GB", { day:"2-digit", month:"short", year:"numeric" }) : "—";
 
@@ -3358,18 +3589,18 @@ function QualityChecksGlobal({ deals, canEdit, onOpen, toast, currentUserName })
       </div>
 
       {showImport && (
-        <IprImportModal deals={deals} toast={toast}
+        <IprImportModal deals={pickDeals} toast={toast} currentUserName={currentUserName}
           onClose={() => setShowImport(false)} onDone={load} />
       )}
 
       {showCatalog && (
-        <CatalogSyncModal deals={deals} toast={toast} currentUserName={currentUserName}
+        <CatalogSyncModal deals={pickDeals} toast={toast} currentUserName={currentUserName}
           onClose={() => setShowCatalog(false)} onDone={load} />
       )}
 
       {(showForm || editRow) && (
         <QcForm key={editRow ? editRow.id : (promoteFrom ? `promote-${promoteFrom.id}` : "new")}
-          deals={deals} initial={editRow} fromCapture={promoteFrom}
+          deals={pickDeals} initial={editRow} fromCapture={promoteFrom}
           onSubmit={submit} onCancel={() => { setShowForm(false); setEditRow(null); setPromoteFrom(null); }} />
       )}
 
@@ -3474,7 +3705,8 @@ function QualityChecksGlobal({ deals, canEdit, onOpen, toast, currentUserName })
             <thead>
               <tr>
                 <th>Organization</th><th>Usecase</th><th>Bandset</th><th>QC</th><th>Image ID</th><th>Type</th>
-                <th>Assignee</th><th>Notes</th><th>Location</th><th>MVP</th><th>Evidence</th><th>Milestone</th><th>IPR info</th>
+                <th>Assignee</th><th>Notes</th><th>Location</th><th>MVP</th><th>Evidence</th>
+                <th>Date captured</th><th>SE QC done</th><th>IPR info</th>
                 {canEdit && <th></th>}
               </tr>
             </thead>
@@ -3483,7 +3715,7 @@ function QualityChecksGlobal({ deals, canEdit, onOpen, toast, currentUserName })
                 <QcRow key={r.id} row={r} canEdit={canEdit} onDelete={remove}
                   needsAssignee={needsAssignee(r)} alreadyDelivered={alreadyDelivered(r)}
                   onEdit={(row) => { setEditRow(row); setShowForm(false); window.scrollTo({ top: 0, behavior: "smooth" }); }} showOrg />
-              )) : <tr><td colSpan={canEdit ? 13 : 12} style={{ textAlign:"center", padding:30, color:"var(--muted2)" }}>
+              )) : <tr><td colSpan={canEdit ? 15 : 14} style={{ textAlign:"center", padding:30, color:"var(--muted2)" }}>
                   No QC entries yet — create one, or assign an image from the IPR feed.
                 </td></tr>}
             </tbody>
@@ -3512,21 +3744,31 @@ function QcTab({ d, canEdit, toast, currentUserName, onRefresh }) {
     try {
       if (editRow) {
         const prevResult = editRow.qc_result;
-        await updateQcEntry(editRow.id, entry, { prevAssignee: editRow.assignee, assignedBy: currentUserName });
+        await updateQcEntry(editRow.id, entry);
         const merged = { ...editRow, ...entry };
-        // Notify this deal's CS when the QC has just been completed
-        notifyCsQcComplete({ prevResult, entry: merged, csName: d.owners ? d.owners.cs : null });
+        // Notify the SE and CS together on every save, saying what changed.
+        const changes = qcChangeSummary(editRow, entry);
+        const slack = changes.length
+          ? await notifyImageUpdate({
+              entry: merged, deal: d, by: currentUserName, changes,
+              action: qcJustCompleted(prevResult, merged) ? "completed" : "updated",
+            })
+          : null;
         // …and mirror the outcome onto the Execution capture log
         const logged = await logQcToCaptureLog({ prevResult, entry: merged, author: currentUserName });
-        toast(logged ? `QC entry updated · "${merged.qc_result === "Pass" ? "QC Passed" : "QC Failed"}" added to the capture log` : "QC entry updated");
+        const base = logged
+          ? `QC entry updated · "${merged.qc_result === "Pass" ? "QC Passed" : "QC Failed"}" added to the capture log`
+          : changes.length ? "QC entry updated" : "QC entry saved — nothing changed, so no Slack notification sent";
+        toast(base + slackToastTail(slack));
         // Reload the passport so Execution shows the new entry without a page reload
         if (logged && onRefresh) await onRefresh();
       }
       else {
-        await addQcEntry(entry, currentUserName);
+        await addQcEntry(entry);
+        const slack = await notifyImageUpdate({ entry, deal: d, action: "assigned", by: currentUserName });
         // A QC logged straight as Pass/Fail (no Awaiting step) still belongs on the timeline
         const logged = await logQcToCaptureLog({ prevResult: null, entry, author: currentUserName });
-        toast(logged ? `QC entry saved · "${entry.qc_result === "Pass" ? "QC Passed" : "QC Failed"}" added to the capture log` : "QC entry saved");
+        toast((logged ? `QC entry saved · "${entry.qc_result === "Pass" ? "QC Passed" : "QC Failed"}" added to the capture log` : "QC entry saved") + slackToastTail(slack));
         if (logged && onRefresh) await onRefresh();
       }
       setShowForm(false); setEditRow(null);
@@ -3553,7 +3795,7 @@ function QcTab({ d, canEdit, toast, currentUserName, onRefresh }) {
         rows.length ? (
           <div style={{ overflowX: "auto" }}>
             <table className="qc-table">
-              <thead><tr><th>Usecase</th><th>Bandset</th><th>QC</th><th>Image ID</th><th>Type</th><th>Assignee</th><th>Notes</th><th>Location</th><th>MVP</th><th>Evidence</th><th>Milestone</th><th>IPR info</th>{canEdit && <th></th>}</tr></thead>
+              <thead><tr><th>Usecase</th><th>Bandset</th><th>QC</th><th>Image ID</th><th>Type</th><th>Assignee</th><th>Notes</th><th>Location</th><th>MVP</th><th>Evidence</th><th>Date captured</th><th>SE QC done</th><th>IPR info</th>{canEdit && <th></th>}</tr></thead>
               <tbody>{rows.map(r => <QcRow key={r.id} row={r} canEdit={canEdit} onDelete={remove} onEdit={(row) => { setEditRow(row); setShowForm(false); }} />)}</tbody>
             </table>
           </div>
