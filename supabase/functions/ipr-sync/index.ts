@@ -28,6 +28,7 @@ const IPR_QC_READY_STATUSES = ["Sent to Aurora", "Datahub upload completed"];
 
 // SE roster — mirrors TEAM_MEMBERS.se in src/CustomerPassport.jsx. Kept in sync
 // manually; only used to resolve an assignee's email + Slack id.
+// One of four copies — joiner/leaver checklist: supabase/ROSTER.md.
 const SE_ROSTER: Record<string, { email: string; slack: string | null }> = {
   "Amy Zammit": { email: "amy@pixxel.space", slack: "U050FJYSEUU" },
   "Archita Dey": { email: "archita.dey@pixxel.co.in", slack: "U0BN3LM1E82" },

@@ -19,11 +19,13 @@ is no IPR dependency here.
   than being silently marked as sent.
 - **Owner → Slack id:** read from the `slack_roster` table, not from the app.
 
-> ⚠️ **Keep `slack_roster` in step with the team.** It's seeded by
-> `supabase/migrations/20260806_action_item_reminders.sql` from `TEAM_MEMBERS` in
-> `src/CustomerPassport.jsx`. When someone joins or leaves, update both. An owner
-> missing from the roster still gets a reminder — their name appears in bold
-> instead of a real @-mention, so it posts but doesn't notify them.
+> ⚠️ **Keep `slack_roster` in step with the team** — it's one of **four** copies
+> of the roster. See [`supabase/ROSTER.md`](../../ROSTER.md) for all four and the
+> joiner/leaver checklist. Note that editing the original seed migration does
+> nothing once it has run; a new person needs a new migration with an
+> `INSERT … ON CONFLICT`. An owner missing from the roster still gets a reminder
+> — their name appears in bold instead of a real @-mention, so it posts but
+> doesn't notify them.
 
 ## Test before scheduling
 

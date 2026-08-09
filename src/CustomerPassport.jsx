@@ -710,6 +710,10 @@ const PASSPORT_LOGO = "/passport_dark.png";        // sign-in screen logo (dark 
 // display name, email (matches HubSpot + Gmail), and Slack ID where known.
 // "owner" = Sales Owner (the HubSpot deal owner). SE / CS / Analytics
 // are assigned manually and only members of that team are pickable.
+//
+// SOURCE OF TRUTH, but not the only copy — the edge functions and the
+// action-reminders cron each carry their own, because neither can read this
+// bundle. Joiner/leaver checklist for all four: supabase/ROSTER.md.
 const TEAM_MEMBERS = {
   owner: [
     { name: "Alex Koh Hock Poh", email: "alex@pixxel.space", slack: "U08Q0722W82" },

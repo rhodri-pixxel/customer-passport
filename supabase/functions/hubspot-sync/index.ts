@@ -905,6 +905,7 @@ serve(async function(req) {
   }
 
   // FULL SYNC
+  // Roster copy 3 of 4 — joiner/leaver checklist: supabase/ROSTER.md.
   const ROSTER_NAME_BY_EMAIL = {
     "alex@pixxel.space":"Alex Koh Hock Poh","allyson@pixxel.space":"Allyson Jenkins",
     "anjul@pixxel.co.in":"Anjul Garg","ashay@pixxel.co.in":"Ashay Deo",
@@ -915,7 +916,8 @@ serve(async function(req) {
     "shantanu@pixxel.co.in":"Shantanu Thada",
     "shridutta.banerjee@pixxel.co.in":"Shridutta Banerjee","shridutta@pixxel.co.in":"Shridutta Banerjee",
     "usha@pixxel.co.in":"Usha Simhadri","usha@pixxel.space":"Usha Simhadri",
-    "amy@pixxel.space":"Amy Zammit","megan@pixxel.space":"Megan Gallagher",
+    "amy@pixxel.space":"Amy Zammit","archita.dey@pixxel.co.in":"Archita Dey",
+    "megan@pixxel.space":"Megan Gallagher",
     "rhodri@pixxel.space":"Rhodri Phillips","ryan@pixxel.space":"Ryan Hammock",
     "spencer@pixxel.space":"Spencer Wahrman","terence@pixxel.space":"Terence Yuchen Xie",
     "aditya@pixxel.co.in":"Aditya Chintalapati","ananya.banerjee@pixxel.co.in":"Ananya Banerjee",
@@ -931,7 +933,8 @@ serve(async function(req) {
     "Jimmy Greco":"U057D8LTT6K","Karan Mali":"U07FE2KPZBR","Markus Heynen":"U03MLS656U9",
     "Mauricio Meira":"U08NXMHA1NJ","Ryan McKinney":"U0ACVKZ837T","Shantanu Thada":"U05T154T9L5",
     "Shridutta Banerjee":"U027F7R2EQ3","Usha Simhadri":"U03EAV4FZSB",
-    "Amy Zammit":"U050FJYSEUU","Megan Gallagher":"U056T9UE23V","Rhodri Phillips":"U092KJ4AKPC",
+    "Amy Zammit":"U050FJYSEUU","Archita Dey":"U0BN3LM1E82",
+    "Megan Gallagher":"U056T9UE23V","Rhodri Phillips":"U092KJ4AKPC",
     "Ryan Hammock":"U057QQ2BA8J","Spencer Wahrman":"U07RWUTR22X","Terence Yuchen Xie":"U0B8T6ZSL7N",
     "Aditya Chintalapati":"U03MA603292","Ananya Banerjee":"U0A3M8TLWVD","Bandi Jay":"U09UQH43Z5E",
     "Megha Devaraju":"U07N71LAVU0","Meghana Shetty":"U0A10SR26JX","Shubhavi P":"U053Z522G20",

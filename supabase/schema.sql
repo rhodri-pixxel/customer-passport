@@ -5,6 +5,13 @@
 --  pg_catalog: tables, constraints, indexes, functions, triggers, RLS
 --  policies, storage bucket + policies, extensions, cron jobs).
 --
+-- Hand-maintained since that dump: every migration under supabase/migrations/
+-- up to and including 20260808 has been folded in (reconciled 2026-08-09).
+-- ADD A MIGRATION → UPDATE THIS FILE IN THE SAME COMMIT. Four migrations had
+-- drifted out of it (analytics summary fields, slack_roster,
+-- action_items.reminders_sent, captured_images), which quietly made the
+-- promise below untrue for anyone rebuilding from scratch.
+--
 -- Running this on a fresh Supabase project recreates the entire database.
 -- Order matters: extensions → tables → constraints → indexes → functions
 -- → triggers → RLS → policies → storage → cron.
@@ -93,7 +100,13 @@ CREATE TABLE public.handover_passports (
   handed_back_to_se_at timestamp with time zone,
   handed_back_to_se_by text,
   handed_back_to_se_note text,
-  offering text
+  offering text,
+  -- Analytics Summary — its own record, never shared with the CS Summary
+  -- (20260720_analytics_summary_fields.sql)
+  analytics_cadence text,
+  analytics_summary text,
+  analytics_next_steps text,
+  stamp_analytics jsonb DEFAULT '{}'::jsonb
 );
 
 CREATE TABLE public.action_items (
@@ -106,7 +119,10 @@ CREATE TABLE public.action_items (
   done_at timestamp with time zone,
   created_by text,
   created_at timestamp with time zone DEFAULT now() NOT NULL,
-  updated_at timestamp with time zone DEFAULT now() NOT NULL
+  updated_at timestamp with time zone DEFAULT now() NOT NULL,
+  -- Reminder offsets (days before due) already sent, so a re-run or a
+  -- double-fired cron can't ping twice (20260806_action_item_reminders.sql)
+  reminders_sent integer[] DEFAULT '{}'::integer[]
 );
 
 CREATE TABLE public.activity_feed (
@@ -311,6 +327,37 @@ CREATE TABLE public.delivered_images (
   delivery_kind text
 );
 
+-- IPR feed: read-only mirror of the IPR dashboard. NOT QC work — an SE promotes
+-- the few images that need review, which creates a quality_checks row and
+-- records the link in qc_id. See 20260807_captured_images_feed.sql.
+CREATE TABLE public.captured_images (
+  id uuid DEFAULT uuid_generate_v4() NOT NULL,
+  image_key text NOT NULL,          -- canonical "FF03:4320"; UNIQUE, makes the sync idempotent
+  image_id text NOT NULL,
+  passport_id uuid,
+  organization text,
+  satellite text,
+  bandset text,
+  location text,
+  processing_status text,
+  cloud_cover numeric,
+  ipr_info text,
+  qc_id uuid,
+  captured_at timestamp with time zone,
+  synced_at timestamp with time zone DEFAULT now() NOT NULL
+);
+
+-- name -> Slack id, readable from an edge function. The app resolves Slack ids
+-- from TEAM_MEMBERS in the browser, which a scheduled job can't see, so the
+-- roster is mirrored here. See 20260806_action_item_reminders.sql — and the
+-- roster checklist in supabase/functions/action-reminders/README.md, because
+-- this is one of FOUR copies of the team list.
+CREATE TABLE public.slack_roster (
+  name text NOT NULL,
+  email text,
+  slack text
+);
+
 -- ---------------------------------------------------------------------------
 -- Primary keys, uniques, checks
 -- ---------------------------------------------------------------------------
@@ -341,6 +388,9 @@ ALTER TABLE public.catalog_org_links ADD CONSTRAINT catalog_org_links_status_che
 ALTER TABLE public.catalog_org_links ADD CONSTRAINT catalog_org_links_status_passport_check CHECK ((status = 'linked' AND passport_id IS NOT NULL) OR (status = 'ignored' AND passport_id IS NULL));
 ALTER TABLE public.delivered_images ADD CONSTRAINT delivered_images_pkey PRIMARY KEY (id);
 ALTER TABLE public.delivered_images ADD CONSTRAINT delivered_images_org_image_key UNIQUE (org_id, image_id);
+ALTER TABLE public.captured_images ADD CONSTRAINT captured_images_pkey PRIMARY KEY (id);
+ALTER TABLE public.captured_images ADD CONSTRAINT captured_images_image_key_key UNIQUE (image_key);
+ALTER TABLE public.slack_roster ADD CONSTRAINT slack_roster_pkey PRIMARY KEY (name);
 
 -- ---------------------------------------------------------------------------
 -- Foreign keys
@@ -362,6 +412,10 @@ ALTER TABLE public.notifications ADD CONSTRAINT notifications_passport_id_fkey F
 ALTER TABLE public.quality_checks ADD CONSTRAINT quality_checks_passport_id_fkey FOREIGN KEY (passport_id) REFERENCES handover_passports(id) ON DELETE SET NULL;
 ALTER TABLE public.catalog_org_links ADD CONSTRAINT catalog_org_links_passport_id_fkey FOREIGN KEY (passport_id) REFERENCES handover_passports(id) ON DELETE CASCADE;
 ALTER TABLE public.delivered_images ADD CONSTRAINT delivered_images_passport_id_fkey FOREIGN KEY (passport_id) REFERENCES handover_passports(id) ON DELETE CASCADE;
+-- SET NULL, not CASCADE: losing the deal must not delete the feed row, and a
+-- promoted QC entry being deleted just unlinks the image from QC.
+ALTER TABLE public.captured_images ADD CONSTRAINT captured_images_passport_id_fkey FOREIGN KEY (passport_id) REFERENCES handover_passports(id) ON DELETE SET NULL;
+ALTER TABLE public.captured_images ADD CONSTRAINT captured_images_qc_id_fkey FOREIGN KEY (qc_id) REFERENCES quality_checks(id) ON DELETE SET NULL;
 
 -- ---------------------------------------------------------------------------
 -- Indexes
@@ -383,6 +437,9 @@ CREATE INDEX idx_quality_checks_created ON public.quality_checks USING btree (cr
 CREATE INDEX idx_quality_checks_passport ON public.quality_checks USING btree (passport_id);
 CREATE INDEX idx_catalog_links_passport ON public.catalog_org_links USING btree (passport_id);
 CREATE INDEX idx_delivered_images_passport ON public.delivered_images USING btree (passport_id, delivered_at DESC);
+CREATE INDEX idx_captured_images_synced ON public.captured_images USING btree (synced_at DESC);
+CREATE INDEX idx_captured_images_passport ON public.captured_images USING btree (passport_id);
+CREATE INDEX idx_action_items_due_open ON public.action_items USING btree (due_date) WHERE (done = false);
 
 -- ---------------------------------------------------------------------------
 -- Functions
@@ -475,6 +532,8 @@ ALTER TABLE public.notifications ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.quality_checks ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.catalog_org_links ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.delivered_images ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.captured_images ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.slack_roster ENABLE ROW LEVEL SECURITY;
 
 -- ---------------------------------------------------------------------------
 -- Policies
@@ -557,6 +616,12 @@ CREATE POLICY read_delivered_images ON public.delivered_images FOR SELECT TO pub
 CREATE POLICY insert_delivered_images ON public.delivered_images FOR INSERT TO public WITH CHECK (can_edit());
 CREATE POLICY update_delivered_images ON public.delivered_images FOR UPDATE TO public USING (can_edit());
 CREATE POLICY delete_delivered_images ON public.delivered_images FOR DELETE TO public USING (can_edit());
+CREATE POLICY read_captured_images ON public.captured_images FOR SELECT TO public USING ((auth.role() = 'authenticated'::text));
+CREATE POLICY insert_captured_images ON public.captured_images FOR INSERT TO public WITH CHECK (can_edit());
+CREATE POLICY update_captured_images ON public.captured_images FOR UPDATE TO public USING (can_edit());
+CREATE POLICY delete_captured_images ON public.captured_images FOR DELETE TO public USING (can_edit());
+-- Read-only to the app: the roster is maintained by migration, not by users.
+CREATE POLICY read_slack_roster ON public.slack_roster FOR SELECT TO public USING ((auth.role() = 'authenticated'::text));
 
 -- ---------------------------------------------------------------------------
 -- Storage
