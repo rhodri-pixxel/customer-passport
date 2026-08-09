@@ -1,4 +1,9 @@
-# Team roster — the four places it lives
+# Team roster — the four places it lives (plus edit access)
+
+> **Do this first for any joiner: add their email to the `edit_roster` table.**
+> It is separate from everything below, has no seed in this repo, and is the
+> difference between a working app and a broken one — see [Edit access](#edit-access-the-one-that-actually-breaks-things).
+
 
 The Pixxel roster (name → email → Slack ID) is duplicated in **four** places.
 They are not generated from each other, so a joiner or leaver has to be applied
@@ -16,6 +21,8 @@ exists in the bundle, and a cron job has no bundle. Hence the copies.
 
 ## Adding someone
 
+0. **`edit_roster`** — the SQL insert under [Edit access](#edit-access-the-one-that-actually-breaks-things).
+   Do this one first; skipping it is the only step that leaves a visibly broken app.
 1. **`TEAM_MEMBERS`** in `src/CustomerPassport.jsx`, under their team
    (`owner` = Sales, `se`, `cs`, `analytics`). Only members of a team are
    pickable for that role.
@@ -36,11 +43,45 @@ exists in the bundle, and a cron job has no bundle. Hence the copies.
 Then run the migration and deploy the two edge functions. Pushing to `main`
 deploys only the Vercel app — **edge functions are a separate deploy**.
 
+## Edit access — the one that actually breaks things
+
+`TEAM_MEMBERS` decides what the **UI** lets someone do. The **database** decides
+separately, via `can_edit()`, which reads the `edit_roster` table:
+
+```sql
+select exists (select 1 from public.edit_roster
+               where email = lower(auth.jwt() ->> 'email'));
+```
+
+`edit_roster` has no seed in this repo — it is maintained by hand. So the two
+gates can disagree, and the failure mode depends on which way:
+
+| In `TEAM_MEMBERS` | In `edit_roster` | What they see |
+| --- | --- | --- |
+| ✅ | ✅ | Working app |
+| ❌ | — | Read-only banner + "Request edit access" button. Honest and self-explaining. |
+| ✅ | ❌ | **The bad one.** Full edit UI, every save fails with a raw `Save failed: 401/403…` toast. Looks like the app is broken, not like a permissions problem. |
+
+Adding someone to `TEAM_MEMBERS` without adding them to `edit_roster` puts them
+in that third row. Run this in the SQL editor as part of onboarding:
+
+```sql
+INSERT INTO public.edit_roster (email) VALUES ('new.person@pixxel.space')
+ON CONFLICT (email) DO NOTHING;
+
+-- Check who currently has edit rights
+SELECT email FROM public.edit_roster ORDER BY email;
+```
+
+Emails are compared lowercased — store them lowercase.
+
 ## Removing someone
 
-Same four places. Leaving a departed person in `TEAM_MEMBERS` keeps them in
-every assignment dropdown; removing them from `slack_roster` while deals still
-name them means reminders post without an @-mention.
+Same four places, plus `DELETE FROM public.edit_roster WHERE email = '…'` —
+that's the one that actually revokes write access, and it should go first.
+Leaving a departed person in `TEAM_MEMBERS` keeps them in every assignment
+dropdown; removing them from `slack_roster` while deals still name them means
+reminders post without an @-mention.
 
 ## Finding a Slack ID
 
