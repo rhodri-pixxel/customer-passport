@@ -15,7 +15,7 @@ const APP_BASE_URL = "https://customer-passport.vercel.app";
 // the SE slot; anyone else in HubSpot's PSE field is routed to "Additional People".
 // Keep this in sync with the frontend `se` list.
 const SE_EMAILS = new Set([
-  "amy@pixxel.space", "megan@pixxel.space", "rhodri@pixxel.space",
+  "amy@pixxel.space", "archita.dey@pixxel.co.in", "megan@pixxel.space", "rhodri@pixxel.space",
   "ryan@pixxel.space", "spencer@pixxel.space", "terence@pixxel.space",
 ]);
 
