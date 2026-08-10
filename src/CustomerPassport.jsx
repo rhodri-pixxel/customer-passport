@@ -779,6 +779,15 @@ const slackFor = (n) => PERSON_BY_NAME[n] ? PERSON_BY_NAME[n].slack : null;
 // kept for existing references
 const SES = TEAM.se, CSS_OWN = TEAM.cs, ANS = TEAM.analytics;
 
+// QC is SE work, so every "who reviews this image" control offers the SE team
+// and nobody else. An older row assigned outside that team keeps its person as
+// an extra option — narrowing the list must never silently clear an assignee.
+function qcAssigneeOptions(current) {
+  const se = TEAM_MEMBERS.se;
+  if (!current || se.some(p => p.name === current)) return se;
+  return [...se, PERSON_BY_NAME[current] || { name: current, email: current }];
+}
+
 /* ------------------------------------------------------------------ */
 /*  Slack integration helpers                                         */
 /* ------------------------------------------------------------------ */
@@ -2428,7 +2437,7 @@ async function notifyImageBatchAssigned({ entries, dealsById, by }) {
     if (!groups.has(key)) groups.set(key, []);
     groups.get(key).push(e);
   }
-  let sent = 0, failed = 0;
+  let sent = 0, failed = 0, skipped = 0;
   for (const group of groups.values()) {
     const first = group[0];
     const ids = group.map(e => e.image_id).filter(Boolean);
@@ -2444,9 +2453,12 @@ async function notifyImageBatchAssigned({ entries, dealsById, by }) {
       changes: ids.slice(0, 20).map(id => `• ${id}`).concat(ids.length > 20 ? [`• …and ${ids.length - 20} more`] : []),
     });
     if (res.ok) sent++;
-    else if (!res.skipped) failed++;   // "nobody to notify" is not a failure
+    else if (res.skipped) skipped++;   // "nobody to notify" is not a failure...
+    else failed++;
   }
-  return { sent, failed };
+  // ...but it still has to be reported. A silent skip is why an import could
+  // look notified when nothing was sent.
+  return { sent, failed, skipped };
 }
 
 // Toast tail so the person saving always knows whether Slack actually went out.
@@ -2898,7 +2910,7 @@ function QcForm({ onSubmit, onCancel, defaultOrg, defaultPassportId, deals, init
           <div className="cp-select">
             <select value={form.assignee} onChange={e => set("assignee", e.target.value)}>
               <option value="">— unassigned —</option>
-              {Object.values(TEAM_MEMBERS).flat().map(p => <option key={p.email} value={p.name}>{p.name}</option>)}
+              {qcAssigneeOptions(initial && initial.assignee).map(p => <option key={p.email} value={p.name}>{p.name}</option>)}
             </select>
             <ChevronDown size={13} className="chev" />
           </div>
@@ -3033,11 +3045,15 @@ function QcRow({ row, canEdit, onDelete, onEdit, showOrg, needsAssignee, already
 }
 
 // Modal: manually pull images from the IPR portal by satellite/image ID or by a
-// name/AOI search, preview them, then create QC rows (Awaiting QC). Each imported
-// image is linked to a deal when its AOI text matches a company name; matched rows
-// inherit that deal's SE as assignee, unmatched rows get the chosen fallback (or none).
+// name/AOI search, preview them, then create QC rows (Awaiting QC).
+//
+// Two steps on purpose. The AOI-text deal match is a guess (see iprMatchDeal),
+// and the assignee derived from it is only as good as that guess, so step 2
+// puts both in front of the importer to confirm before anything is written.
+// Everything arrives pre-filled from the match — confirming is usually one click.
 function IprImportModal({ deals, onClose, onDone, toast, currentUserName }) {
   const TEAM_FLAT = Object.values(TEAM_MEMBERS).flat();
+  const [step, setStep] = useState("search");        // "search" | "assign"
   const [mode, setMode] = useState("id");            // "id" | "name"
   const [idInput, setIdInput] = useState("");
   const [nameInput, setNameInput] = useState("");
@@ -3047,8 +3063,16 @@ function IprImportModal({ deals, onClose, onDone, toast, currentUserName }) {
   const [items, setItems] = useState([]);
   const [existing, setExisting] = useState(new Set());
   const [selected, setSelected] = useState(new Set());
-  const [fallbackAssignee, setFallbackAssignee] = useState("");
+  // image id → { passport_id?, assignee? }. Only what the importer actually
+  // changed; anything absent keeps following the auto-match.
+  const [rowEdits, setRowEdits] = useState({});
   const [importing, setImporting] = useState(false);
+
+  const dealsById = useMemo(() => {
+    const m = {};
+    for (const d of (deals || [])) m[d.id] = d;
+    return m;
+  }, [deals]);
 
   const rowsView = useMemo(() => items.map(it => {
     const id = iprImageId(it);
@@ -3058,6 +3082,24 @@ function IprImportModal({ deals, onClose, onDone, toast, currentUserName }) {
     const isDup = existing.has(qcDedupKey(id));
     return { it, id, deal, isDup };
   }), [items, deals, existing]);
+
+  // The selected rows resolved to what will actually be written. An explicit
+  // edit wins; otherwise the deal comes from the match and the assignee from
+  // that deal's SE — so re-pointing the deal moves the assignee with it, until
+  // someone picks an assignee by hand.
+  const assignRows = useMemo(() => rowsView.filter(r => selected.has(r.id)).map(r => {
+    const edit = rowEdits[r.id] || {};
+    const passportId = edit.passport_id !== undefined ? edit.passport_id : (r.deal ? r.deal.id : "");
+    const deal = passportId ? (dealsById[passportId] || null) : null;
+    const assignee = edit.assignee !== undefined ? edit.assignee : (dealOwner(deal, "se") || "");
+    return { ...r, deal, passportId, assignee };
+  }), [rowsView, selected, rowEdits, dealsById]);
+
+  const setEdit = (id, patch) => setRowEdits(m => ({ ...m, [id]: { ...(m[id] || {}), ...patch } }));
+  // Same rule the QC form enforces: an image nobody owns is not a QC task, and
+  // it is also the case that produces no Slack notification.
+  const unassigned = assignRows.filter(r => !r.assignee).length;
+  const dealless = assignRows.filter(r => !r.deal).length;
 
   const runSearch = async () => {
     setLoading(true); setSearched(true);
@@ -3103,26 +3145,28 @@ function IprImportModal({ deals, onClose, onDone, toast, currentUserName }) {
   const toggle = (id) => setSelected(s => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
 
   const doImport = async () => {
-    const chosen = rowsView.filter(r => selected.has(r.id));
-    if (!chosen.length) { toast("Nothing selected"); return; }
+    if (!assignRows.length) { toast("Nothing selected"); return; }
+    if (unassigned) { toast(`Pick an SE for ${unassigned} image${unassigned === 1 ? "" : "s"} — QC entries can't be unassigned.`); return; }
     setImporting(true);
     let added = 0;
     const created = [];
-    const fbPerson = TEAM_FLAT.find(p => p.name === fallbackAssignee);
-    const dealsById = {};
-    for (const d of (deals || [])) dealsById[d.id] = d;
     try {
-      for (const r of chosen) {
+      for (const r of assignRows) {
+        // The confirmed deal drives organization/passport_id inside the mapper;
+        // the confirmed assignee is applied over whatever it derived.
         const payload = mapIprItemToQc(r.it, r.deal);
-        if (!r.deal && fbPerson) { payload.assignee = fbPerson.name; payload.assignee_email = fbPerson.email; }
+        const person = TEAM_FLAT.find(p => p.name === r.assignee);
+        payload.assignee = r.assignee || null;
+        payload.assignee_email = person ? person.email : null;
         await addQcEntry(payload);
         created.push(payload);
         added++;
       }
       // One Slack summary per assignee, not one per image.
-      const { sent, failed } = await notifyImageBatchAssigned({ entries: created, dealsById, by: currentUserName });
+      const { sent, failed, skipped } = await notifyImageBatchAssigned({ entries: created, dealsById, by: currentUserName });
       toast(`Imported ${added} image${added === 1 ? "" : "s"} into Quality Checks`
         + (sent ? ` · ${sent} Slack notification${sent === 1 ? "" : "s"} sent` : "")
+        + (skipped ? ` · ${skipped} with nobody to notify` : "")
         + (failed ? ` · ${failed} Slack notification${failed === 1 ? "" : "s"} FAILED` : ""));
       onDone && onDone();
       onClose();
@@ -3136,15 +3180,29 @@ function IprImportModal({ deals, onClose, onDone, toast, currentUserName }) {
 
   return (
     <div onClick={onClose} style={{ position:"fixed", inset:0, zIndex:200, background:"rgba(8,18,28,.45)", display:"flex", alignItems:"flex-start", justifyContent:"center", padding:"6vh 16px", overflowY:"auto" }}>
-      <div onClick={e => e.stopPropagation()} style={{ width:"100%", maxWidth:760, background:"var(--card)", borderRadius:16, border:"1px solid var(--line)", boxShadow:"0 30px 80px -20px rgba(11,18,32,.5)", overflow:"hidden" }}>
+      {/* overflow is clipped only on the search step — the assign step's deal
+          picker opens a popover that a clipping ancestor would cut off. */}
+      <div onClick={e => e.stopPropagation()} style={{ width:"100%", maxWidth:760, background:"var(--card)", borderRadius:16, border:"1px solid var(--line)", boxShadow:"0 30px 80px -20px rgba(11,18,32,.5)", overflow: step === "assign" ? "visible" : "hidden" }}>
         <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", padding:"16px 20px", borderBottom:"1px solid var(--line)" }}>
           <div style={{ display:"flex", alignItems:"center", gap:9 }}>
             <Satellite size={17} color="var(--accent-deep)" />
-            <h3 style={{ margin:0, fontSize:16 }}>Import images from IPR</h3>
+            <h3 style={{ margin:0, fontSize:16 }}>Import images from IPR{step === "assign" ? " · deal & assignee" : ""}</h3>
           </div>
           <button onClick={onClose} style={{ border:"none", background:"none", cursor:"pointer", color:"var(--muted2)" }}><X size={18} /></button>
         </div>
 
+        {step === "assign" ? (
+          <IprAssignStep
+            rows={assignRows} deals={deals} unassigned={unassigned} dealless={dealless}
+            onSetDeal={(id, passport_id) => setEdit(id, { passport_id })}
+            onSetAssignee={(id, assignee) => setEdit(id, { assignee })}
+            onAssignAll={(name) => setRowEdits(m => {
+              const next = { ...m };
+              for (const r of assignRows) next[r.id] = { ...(next[r.id] || {}), assignee: name };
+              return next;
+            })}
+          />
+        ) : (
         <div style={{ padding:"16px 20px" }}>
           <div className="seg" style={{ marginBottom:12 }}>
             <button className={mode==="id"?"on":""} onClick={() => { setMode("id"); setSearched(false); setItems([]); }}>By ID</button>
@@ -3183,30 +3241,24 @@ function IprImportModal({ deals, onClose, onDone, toast, currentUserName }) {
                 <>
                   <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", flexWrap:"wrap", gap:8, marginBottom:8 }}>
                     <div style={{ fontSize:12.5, color:"var(--muted)" }}>{rowsView.length} found · {selected.size} selected · {rowsView.length - selectableCount} already imported</div>
-                    <div style={{ display:"flex", alignItems:"center", gap:8 }}>
-                      <span style={{ fontSize:12, color:"var(--muted2)" }}>Assign unmatched to</span>
-                      <div className="cp-select" style={{ minWidth:170 }}>
-                        <select value={fallbackAssignee} onChange={e => setFallbackAssignee(e.target.value)}>
-                          <option value="">— none —</option>
-                          {TEAM_FLAT.map(p => <option key={p.email} value={p.name}>{p.name}</option>)}
-                        </select>
-                        <ChevronDown size={13} className="chev" />
-                      </div>
-                    </div>
+                    <div style={{ fontSize:12, color:"var(--muted2)" }}>Deal &amp; assignee are confirmed on the next step</div>
                   </div>
                   <div style={{ maxHeight:300, overflowY:"auto", border:"1px solid var(--line)", borderRadius:10 }}>
                     <table className="qc-table" style={{ margin:0 }}>
                       <thead><tr><th></th><th>Image ID</th><th>AOI / location</th><th>Status</th><th>Deal → assignee</th></tr></thead>
                       <tbody>
                         {rowsView.map(r => {
-                          const assignee = r.deal ? (r.deal.owners && r.deal.owners.se) : (fallbackAssignee || null);
+                          // dealOwner, not deal.owners.se — these are deal LIST
+                          // rows carrying a flat owner_se, so the old read was
+                          // always undefined and every match previewed as "—".
+                          const assignee = dealOwner(r.deal, "se");
                           return (
                             <tr key={r.id} style={{ opacity: r.isDup ? .5 : 1 }}>
                               <td><input type="checkbox" checked={selected.has(r.id)} disabled={r.isDup} onChange={() => toggle(r.id)} style={{ accentColor:"var(--accent)" }} /></td>
                               <td style={{ fontFamily:"var(--font-mono)", fontSize:12 }}>{r.id}{r.isDup && <span style={{ marginLeft:6, fontSize:10, color:"var(--muted2)" }}>(exists)</span>}</td>
                               <td style={{ fontSize:12, color:"var(--muted)", maxWidth:200, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{r.it.aoi_id || "—"}</td>
                               <td style={{ fontSize:11.5 }}>{r.it.processing_status || "—"}</td>
-                              <td style={{ fontSize:12 }}>{r.deal ? <span><strong>{r.deal.company}</strong> → {assignee || "—"}</span> : <span style={{ color:"var(--muted2)" }}>no match → {assignee || "unassigned"}</span>}</td>
+                              <td style={{ fontSize:12 }}>{r.deal ? <span><strong>{r.deal.company}</strong> → {assignee || "—"}</span> : <span style={{ color:"var(--muted2)" }}>no match</span>}</td>
                             </tr>
                           );
                         })}
@@ -3218,13 +3270,92 @@ function IprImportModal({ deals, onClose, onDone, toast, currentUserName }) {
             </div>
           )}
         </div>
+        )}
 
         <div style={{ display:"flex", gap:8, justifyContent:"flex-end", padding:"14px 20px", borderTop:"1px solid var(--line)" }}>
-          <button className="btn ghost" style={{ color:"var(--muted)", border:"1px solid var(--line)", background:"var(--card)" }} onClick={onClose}>Cancel</button>
-          <button className="btn solid" onClick={doImport} disabled={importing || selected.size === 0}>
-            {importing ? <><RefreshCw size={13} className="spin" /> Importing…</> : <><Plus size={13} /> Import {selected.size || ""} to QC</>}
-          </button>
+          {step === "assign" ? (
+            <>
+              <button className="btn ghost" style={{ marginRight:"auto", color:"var(--muted)", border:"1px solid var(--line)", background:"var(--card)" }} onClick={() => setStep("search")}>← Back</button>
+              <button className="btn ghost" style={{ color:"var(--muted)", border:"1px solid var(--line)", background:"var(--card)" }} onClick={onClose}>Cancel</button>
+              <button className="btn solid" onClick={doImport} disabled={importing || !assignRows.length || unassigned > 0}
+                title={unassigned ? `${unassigned} image${unassigned === 1 ? " has" : "s have"} no SE assigned` : ""}>
+                {importing ? <><RefreshCw size={13} className="spin" /> Importing…</> : <><Plus size={13} /> Import {assignRows.length || ""} to QC</>}
+              </button>
+            </>
+          ) : (
+            <>
+              <button className="btn ghost" style={{ color:"var(--muted)", border:"1px solid var(--line)", background:"var(--card)" }} onClick={onClose}>Cancel</button>
+              <button className="btn solid" onClick={() => setStep("assign")} disabled={selected.size === 0}>
+                Next · deal &amp; assignee <ChevronDown size={13} style={{ transform:"rotate(-90deg)" }} />
+              </button>
+            </>
+          )}
         </div>
+      </div>
+    </div>
+  );
+}
+
+// Step 2 of the IPR import: confirm the deal and the reviewing SE for every
+// selected image before any QC row is written. Pre-filled from the AOI-text
+// match, so the common case is read-and-confirm rather than fill-in.
+function IprAssignStep({ rows, deals, unassigned, dealless, onSetDeal, onSetAssignee, onAssignAll }) {
+  const [bulk, setBulk] = useState("");
+  return (
+    <div style={{ padding:"16px 20px" }}>
+      <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", flexWrap:"wrap", gap:10, marginBottom:12 }}>
+        <div style={{ fontSize:12.5, color:"var(--muted)" }}>
+          {rows.length} image{rows.length === 1 ? "" : "s"} · confirm the deal and who reviews each one
+        </div>
+        <div style={{ display:"flex", alignItems:"center", gap:8 }}>
+          <span style={{ fontSize:12, color:"var(--muted2)" }}>Assign all to</span>
+          <div className="cp-select" style={{ minWidth:170 }}>
+            <select value={bulk} onChange={e => { setBulk(e.target.value); if (e.target.value) onAssignAll(e.target.value); }}>
+              <option value="">— pick an SE —</option>
+              {qcAssigneeOptions().map(p => <option key={p.email} value={p.name}>{p.name}</option>)}
+            </select>
+            <ChevronDown size={13} className="chev" />
+          </div>
+        </div>
+      </div>
+
+      {(unassigned > 0 || dealless > 0) && (
+        <div style={{ display:"flex", alignItems:"flex-start", gap:8, marginBottom:12, padding:"9px 12px", borderRadius:9,
+          border:"1px solid var(--line)", background:"var(--accent-soft)", fontSize:12.5, color:"var(--muted)" }}>
+          <AlertTriangle size={14} style={{ color:"var(--warn)", flexShrink:0, marginTop:1 }} />
+          <span>
+            {unassigned > 0 && <><b style={{ color:"var(--ink)" }}>{unassigned} without an SE</b> — pick one for each before importing. </>}
+            {dealless > 0 && <>{unassigned > 0 ? "Also, " : ""}<b style={{ color:"var(--ink)" }}>{dealless} with no deal</b> — importable, but they won't appear on any passport until one is set.</>}
+          </span>
+        </div>
+      )}
+
+      <div style={{ display:"flex", flexDirection:"column", gap:10 }}>
+        {rows.map(r => (
+          <div key={r.id} style={{ border:"1px solid var(--line)", borderRadius:11, padding:"11px 13px", background:"var(--raised)" }}>
+            <div style={{ display:"flex", alignItems:"center", gap:9, flexWrap:"wrap", marginBottom:9 }}>
+              <span style={{ fontFamily:"var(--font-mono)", fontSize:12, color:"var(--ink)" }}>{r.id}</span>
+              <span style={{ fontSize:11.5, color:"var(--muted2)" }}>{r.it.aoi_id || "no AOI"}</span>
+              {r.it.processing_status && <span style={{ fontSize:11, color:"var(--muted2)" }}>· {r.it.processing_status}</span>}
+            </div>
+            <div className="clog-form-row" style={{ marginBottom:0 }}>
+              <div>
+                <div className="k" style={{ fontFamily:"var(--font-mono)", fontSize:"9.5px", letterSpacing:".1em", textTransform:"uppercase", color:"var(--muted2)", marginBottom:4 }}>Deal</div>
+                <DealSearchPicker deals={deals} value={r.passportId} onChange={(id) => onSetDeal(r.id, id)} />
+              </div>
+              <div>
+                <div className="k" style={{ fontFamily:"var(--font-mono)", fontSize:"9.5px", letterSpacing:".1em", textTransform:"uppercase", color:"var(--muted2)", marginBottom:4 }}>Assignee (SE)</div>
+                <div className="cp-select" style={{ borderColor: r.assignee ? "var(--line)" : "var(--warn)" }}>
+                  <select value={r.assignee} onChange={e => onSetAssignee(r.id, e.target.value)}>
+                    <option value="">— pick an SE —</option>
+                    {qcAssigneeOptions(r.assignee).map(p => <option key={p.email} value={p.name}>{p.name}</option>)}
+                  </select>
+                  <ChevronDown size={13} className="chev" />
+                </div>
+              </div>
+            </div>
+          </div>
+        ))}
       </div>
     </div>
   );
