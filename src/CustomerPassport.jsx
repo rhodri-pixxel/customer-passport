@@ -5294,7 +5294,7 @@ function ProfileTab({ d, canEdit, onSaveField, onUpdate }) {
             onRemove={(idx) => onUpdate({ _removeAoiFile: { idx } })}
           />
           <span style={{ fontSize:11.5, color:"var(--muted2)", display:"inline-flex", alignItems:"center", gap:5, marginTop:4 }}>
-            <MapPin size={12} /> The interactive AOI map lives on the Context tab
+            <MapPin size={12} /> The interactive AOI map is on the Pain Points &amp; Desired Outcomes tab
           </span>
         </div>
       </Block>
@@ -5400,10 +5400,16 @@ function ContextTab({ d, canEdit, onSaveField, onUpdate }) {
         <div className="kv"><EditableField k="What the customer is trying to solve" value={d.context.problem} field="problem_statement" canEdit={canEdit} onSave={onSaveField} /></div>
         <LegacyPainPoints d={d} canEdit={canEdit} onSaveField={onSaveField} />
       </Block>
-      <Block icon={CheckCircle2} title="Desired outcomes">
-        <div className="field-help">What the customer wants to be true instead — one outcome per line. These are what we're measured against.</div>
-        <EditableList items={d.context.objectives} field="objectives" canEdit={canEdit} onSave={onSaveField} emptyIcon={Target} emptyText="No desired outcomes captured yet." />
-      </Block>
+      <div className="cols">
+        <Block icon={CheckCircle2} title="Desired outcomes">
+          <div className="field-help">What the customer wants to be true instead — one outcome per line. These are what we're measured against.</div>
+          <EditableList items={d.context.objectives} field="objectives" canEdit={canEdit} onSave={onSaveField} emptyIcon={Target} emptyText="No desired outcomes captured yet." />
+        </Block>
+        <Block icon={MapPin} title="Area of interest" action={<SourceLink to="Customer Profile" />}>
+          <div className="field-help">Shown here for context. The AOI is owned by Customer Profile — upload and edit it there so there's only ever one version.</div>
+          <ContextAoi d={d} canEdit={false} onUpdate={onUpdate} />
+        </Block>
+      </div>
     </>
   );
 }
@@ -6271,7 +6277,7 @@ function CSSummaryTab({ d, canEdit, onSaveField, onUpdate }) {
             accept=".geojson,.json,.kml,.kmz,.zip,.shp,.gpkg"
             files={t.aoiFiles} canEdit={false} />
           <div style={{ fontSize: 11, color: "var(--muted2)", marginTop: 6 }}>
-            <MapPin size={11} style={{ verticalAlign: "-1px" }} /> The interactive AOI map is on the Context tab.
+            <MapPin size={11} style={{ verticalAlign: "-1px" }} /> The interactive AOI map is on the Pain Points &amp; Desired Outcomes tab.
           </div>
         </Block>
         <Block icon={Paperclip} title="Attachments">
