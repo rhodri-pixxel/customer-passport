@@ -5476,7 +5476,10 @@ function CaptureLog({ entries, canEdit, onAdd, onEdit, onDelete, onUploadShot })
               )}
             </div>
             <div className="clog-note">{e.note}</div>
-            {e.shotPath && <a href={`${SUPABASE_URL}/storage/v1/object/public/${STORAGE_BUCKET}/${e.shotPath}`} target="_blank" rel="noreferrer" style={{ display:"inline-flex", alignItems:"center", gap:5, fontSize:12, color:"var(--accent-deep)", marginTop:4 }}><Camera size={12} /> View failed image</a>}
+            {/* Evidence reaches this entry two ways: the Fail-only uploader in the
+                form below, and a completed QC review (either result) via
+                logQcToCaptureLog. Only call it a failed image when it is one. */}
+            {e.shotPath && <a href={`${SUPABASE_URL}/storage/v1/object/public/${STORAGE_BUCKET}/${e.shotPath}`} target="_blank" rel="noreferrer" style={{ display:"inline-flex", alignItems:"center", gap:5, fontSize:12, color:"var(--accent-deep)", marginTop:4 }}><Camera size={12} /> {e.status === "QC Failed" ? "View failed image" : "View image"}</a>}
             <div className="clog-meta">{e.author} · {e.ts}</div>
           </div>
         </div>
