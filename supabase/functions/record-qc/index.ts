@@ -39,6 +39,75 @@ const MAX_EVIDENCE = 4;
 // The table's CHECK constraint allows exactly these three.
 const ALLOWED_RESULT = ["Pass", "Fail", "Awaiting QC"];
 
+
+// Which customer does this image belong to? The QC pipeline knows the scene,
+// not the account, so resolve it from delivered_images - the catalog sync,
+// i.e. the record of what was actually delivered to whom.
+//
+// Id formats do not agree across systems: the catalog writes "FF03 0000004320",
+// the QC tab shows both that and "FF02 14937", and the pipeline knows
+// "FF02_20260711_00501045_0000014937_L2A". So match on the DIGITS, then
+// confirm the satellite when both sides carry one. An ambiguous match returns
+// null rather than a guess - filing QC against the wrong customer is worse
+// than filing none.
+function idDigits(s: string): string {
+  const nums = String(s || "").match(/\d+/g) || [];
+  if (!nums.length) return "";
+  // the frame id is the longest run of digits (dates are 8, frames 4-10)
+  const best = nums.reduce((a, b) => (b.length >= a.length ? b : a), "");
+  return best.replace(/^0+/, "") || "0";
+}
+function satOf(s: string): string {
+  const m = String(s || "").toUpperCase().match(/FF\d{2}/);
+  return m ? m[0] : "";
+}
+
+async function resolveOrg(sb: any, imageId: string, sceneName: string) {
+  const digits = idDigits(imageId) || idDigits(sceneName);
+  if (!digits) return { org: null, why: "no numeric id to match on" };
+  const sat = satOf(imageId) || satOf(sceneName);
+  const { data, error } = await sb.from("delivered_images")
+    .select("org_name, org_id, passport_id, image_id")
+    .ilike("image_id", "%" + digits + "%")
+    .limit(50);
+  if (error) return { org: null, why: "lookup failed: " + error.message };
+  const hits = (data || []).filter((r: any) => {
+    if (idDigits(r.image_id) !== digits) return false;
+    const rs = satOf(r.image_id);
+    return !sat || !rs || rs === sat;
+  });
+  if (!hits.length) {
+    // delivered_images only holds what has actually been DELIVERED, and most
+    // QC'd scenes are samples or tasking - measured, it covered 1 of 9 real
+    // ids. So fall back to the Quality Checks tab itself: if someone has
+    // already filed an entry for this image, the customer is settled.
+    const { data: qcRows } = await sb.from("quality_checks")
+      .select("organization, image_id, passport_id")
+      .ilike("image_id", "%" + digits + "%")
+      .limit(50);
+    const qcHits = (qcRows || []).filter((r: any) => {
+      if (idDigits(r.image_id) !== digits) return false;
+      const rs = satOf(r.image_id);
+      return !sat || !rs || rs === sat;
+    });
+    const qcOrgs = Array.from(new Set(qcHits.map((h: any) => h.organization).filter(Boolean)));
+    if (qcOrgs.length === 1) {
+      return { org: qcOrgs[0], passport_id: qcHits[0].passport_id || null,
+               why: "matched an existing Quality Checks entry" };
+    }
+    if (qcOrgs.length > 1) {
+      return { org: null, why: "ambiguous - existing QC entries name " + qcOrgs.join(" / ") };
+    }
+    return { org: null, why: "not in delivered_images or the Quality Checks tab" };
+  }
+  const orgs = Array.from(new Set(hits.map((h: any) => h.org_name).filter(Boolean)));
+  if (orgs.length > 1) {
+    return { org: null, why: "ambiguous - delivered to " + orgs.join(" / ") };
+  }
+  return { org: orgs[0] || null, passport_id: hits[0].passport_id || null,
+           why: "matched delivered_images" };
+}
+
 function json(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), { status, headers: JSON_HEADERS });
 }
@@ -88,10 +157,22 @@ serve(async function (req) {
   let body: any = {};
   try { body = await req.json(); } catch (_) { /* no body */ }
 
-  const organization = String(body.organization || body.company || "").trim();
+  let organization = String(body.organization || body.company || "").trim();
   const imageId = String(body.image_id || "").trim();
-  if (!organization) return json({ ok: false, error: "organization required" }, 400);
   if (!imageId) return json({ ok: false, error: "image_id required" }, 400);
+
+  // No customer given? Resolve it from what was actually delivered.
+  let orgSource = "supplied";
+  if (!organization) {
+    const res = await resolveOrg(sb, imageId, String(body.scene || ""));
+    if (!res.org) {
+      return json({ ok: false, error: "could not resolve customer: " + res.why,
+                    image_id: imageId, hint: "pass organization explicitly" }, 409);
+    }
+    organization = res.org;
+    orgSource = res.why;
+    if (res.passport_id && !body.passport_id) body.passport_id = res.passport_id;
+  }
 
   const qcResult = String(body.qc_result || "Awaiting QC");
   if (ALLOWED_RESULT.indexOf(qcResult) === -1) {
@@ -117,13 +198,42 @@ serve(async function (req) {
   }
 
   // ---- is there already a row for this image? ----------------------------
-  const { data: existingRows } = await sb.from("quality_checks")
-    .select("id, qc_result, created_by, qc_notes")
+  // Match the same way the resolver does - on DIGITS, not exact text. An
+  // exact match would treat "FF01 15348" and "FF01 0000015348" as different
+  // images and create a second row for the same scene (caught filing
+  // TheiaX FF01 15348). Prefer the OLDEST row so an entry a person started
+  // stays the one of record.
+  const wantDigits = idDigits(imageId);
+  const wantSat = satOf(imageId);
+  const { data: candidateRows } = await sb.from("quality_checks")
+    .select("id, qc_result, created_by, qc_notes, image_id, created_at")
     .eq("organization", organization)
-    .eq("image_id", imageId)
-    .order("created_at", { ascending: false })
-    .limit(1);
-  const existing = (existingRows && existingRows.length) ? existingRows[0] : null;
+    .ilike("image_id", "%" + wantDigits + "%")
+    .order("created_at", { ascending: true })
+    .limit(50);
+  const matches = (candidateRows || []).filter((r: any) => {
+    if (idDigits(r.image_id) !== wantDigits) return false;
+    const rs = satOf(r.image_id);
+    return !wantSat || !rs || rs === wantSat;
+  });
+  const existing = matches.length ? matches[0] : null;
+
+  // Self-heal duplicates, but ONLY ones this pipeline created. An exact-text
+  // match used to treat "FF01 15348" and "FF01 0000015348" as different
+  // images, so a second row could appear for one scene. Rows a person made
+  // are never touched.
+  let removed = 0;
+  if (matches.length > 1) {
+    const extras = matches.slice(1)
+      .filter((r: any) => r.created_by === PIPELINE)
+      .map((r: any) => r.id);
+    if (extras.length) {
+      const { error: delErr } = await sb.from("quality_checks")
+        .delete().in("id", extras);
+      if (!delErr) removed = extras.length;
+    }
+  }
+  const duplicates = matches.length > 1 ? matches.length : 0;
 
   const humanVerdict = !!existing
     && existing.created_by !== PIPELINE
@@ -150,7 +260,7 @@ serve(async function (req) {
 
   const row: Record<string, unknown> = {
     organization: organization,
-    image_id: imageId,
+    image_id: imageId,   // replaced below when a row already exists
     qc_notes: String(body.qc_notes || "").slice(0, 4000),
     created_by: PIPELINE,
   };
@@ -172,6 +282,7 @@ serve(async function (req) {
   let action = "";
   let id = "";
   if (existing) {
+    row.image_id = existing.image_id;   // keep the id format already on file
     // Never destroy notes a person wrote. If the existing row was authored by
     // a human, keep their text and append ours underneath - their note is the
     // context for why the entry exists at all.
@@ -196,7 +307,7 @@ serve(async function (req) {
         ok: true, id: existing.id, action: "skipped (human verdict kept)",
         organization: organization, image_id: imageId,
         qc_result: existing.qc_result, automated_verdict: qcResult,
-        passport_linked: !!passportId,
+        passport_linked: !!passportId, duplicate_rows_removed: removed,
         note: "a person set this verdict; pass force:true to override",
       });
     }
@@ -220,6 +331,8 @@ serve(async function (req) {
     image_id: imageId,
     qc_result: deferToHuman ? existing.qc_result : qcResult,
     passport_linked: !!passportId,
+    org_source: orgSource,
+    duplicate_rows: duplicates, duplicate_rows_removed: removed,
     evidence_path: evidencePath,
   });
 });
