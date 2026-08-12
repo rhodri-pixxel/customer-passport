@@ -172,12 +172,33 @@ serve(async function (req) {
   let action = "";
   let id = "";
   if (existing) {
-    if (deferToHuman) {
+    // Never destroy notes a person wrote. If the existing row was authored by
+    // a human, keep their text and append ours underneath - their note is the
+    // context for why the entry exists at all.
+    const humanNotes = existing.created_by !== PIPELINE
+      && String(existing.qc_notes || "").trim();
+    if (humanNotes && !deferToHuman && body.replace_notes !== true) {
       const stamp = new Date().toISOString().slice(0, 10);
-      row.qc_notes = (existing.qc_notes || "")
-        + "\n\n[" + stamp + " " + PIPELINE + "] automated verdict " + qcResult
-        + " (human verdict kept): " + row.qc_notes;
-      delete row.created_by;      // do not take authorship from the human
+      row.qc_notes = existing.qc_notes + "\n\n[" + stamp + " " + PIPELINE
+        + "] " + row.qc_notes;
+      // created_by DOES become the pipeline here, deliberately. If we set the
+      // verdict, we own the verdict - and the row must stay updatable on the
+      // next run. Leaving authorship with the human made the guard below
+      // mistake our own Pass for theirs and freeze the row after one write
+      // (caught testing FF02 14937). Their words are preserved above; what
+      // changes hands is only responsibility for the Pass/Fail.
+    }
+    if (deferToHuman) {
+      // Leave the row untouched. Appending "automated verdict X" on every
+      // run grows the notes without bound (four test calls, four lines), and
+      // the caller already learns the outcome from this response.
+      return json({
+        ok: true, id: existing.id, action: "skipped (human verdict kept)",
+        organization: organization, image_id: imageId,
+        qc_result: existing.qc_result, automated_verdict: qcResult,
+        passport_linked: !!passportId,
+        note: "a person set this verdict; pass force:true to override",
+      });
     }
     const { error } = await sb.from("quality_checks").update(row).eq("id", existing.id);
     if (error) return json({ ok: false, error: error.message }, 500);
