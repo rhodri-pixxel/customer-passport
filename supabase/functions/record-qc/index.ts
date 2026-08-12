@@ -186,14 +186,22 @@ serve(async function (req) {
   // ---- find the passport, so the entry lands on the right deal -----------
   let passportId: string | null = body.passport_id || null;
   if (!passportId) {
+    // never link QC onto a dead deal - an archived or Closed Lost passport
+    // would resurface in its activity feed
+    const live = (rows: any[] | null) => (rows || []).filter(
+      (p: any) => !p.archived && p.hubspot_stage !== "Closed Lost");
     const { data } = await sb.from("handover_passports")
-      .select("id, company").ilike("company", organization).limit(1);
-    if (data && data.length) passportId = data[0].id;
+      .select("id, company, archived, hubspot_stage")
+      .ilike("company", organization).limit(5);
+    const exact = live(data);
+    if (exact.length) passportId = exact[0].id;
     if (!passportId) {
       const { data: fuzzy } = await sb.from("handover_passports")
-        .select("id, company").ilike("company", "%" + organization + "%").limit(2);
+        .select("id, company, archived, hubspot_stage")
+        .ilike("company", "%" + organization + "%").limit(5);
+      const f = live(fuzzy);
       // accept a fuzzy match only when it is unambiguous
-      if (fuzzy && fuzzy.length === 1) passportId = fuzzy[0].id;
+      if (f.length === 1) passportId = f[0].id;
     }
   }
 
@@ -245,16 +253,20 @@ serve(async function (req) {
   const evidence = Array.isArray(body.evidence)
     ? body.evidence.slice(0, MAX_EVIDENCE) : [];
   if (evidence.length) {
-    try {
-      const key = passportId || organization.replace(/[^a-zA-Z0-9._-]/g, "_");
-      const first = evidence[0];
-      evidencePath = await uploadEvidence(
-        sb, key, String(first.name || "qc.png"),
-        b64ToBytes(String(first.b64 || "")),
-        String(first.content_type || "image/png"));
-    } catch (e) {
-      // evidence is a nice-to-have; never lose the verdict over an upload
-      console.error("evidence upload failed:", String(e));
+    const key = passportId || organization.replace(/[^a-zA-Z0-9._-]/g, "_");
+    // upload everything we accepted, not just [0] - the client sends both
+    // the QC sheet and the overview and expects both kept
+    for (const ev of evidence) {
+      try {
+        const p = await uploadEvidence(
+          sb, key, String(ev.name || "qc.png"),
+          b64ToBytes(String(ev.b64 || "")),
+          String(ev.content_type || "image/png"));
+        if (!evidencePath) evidencePath = p;
+      } catch (e) {
+        // evidence is a nice-to-have; never lose the verdict over an upload
+        console.error("evidence upload failed:", String(e));
+      }
     }
   }
 
