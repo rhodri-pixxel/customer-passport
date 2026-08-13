@@ -16,6 +16,14 @@
 // left alone unless `force` is set. A person looked at the pixels; a script
 // did not.
 //
+// CUSTOMER UNRESOLVED placeholders: when no customer can be resolved the
+// client files the row under the scene's AOI id, notes leading
+// "CUSTOMER UNRESOLVED", passport_id null. Such a row is a question, not an
+// answer: the resolver never counts it as evidence of who the customer is,
+// and an update that brings no customer keeps the marker. Without both
+// rules, a re-file matched the pipeline's own placeholder row and laundered
+// "unknown" into "resolved" (caught on FF02 16197, 2026-08-13).
+//
 // Auth: shared secret in `x-attach-secret` (env RECORD_QC_SECRET, falling back
 // to ATTACH_FEASIBILITY_SECRET so no new secret is needed to deploy), on top of
 // the platform JWT check — the same pattern as attach-feasibility.
@@ -38,6 +46,19 @@ const MAX_EVIDENCE = 4;
 
 // The table's CHECK constraint allows exactly these three.
 const ALLOWED_RESULT = ["Pass", "Fail", "Awaiting QC"];
+
+// The marker a row carries while its customer is unknown. The client writes
+// this exact string when it files under the AOI id - keep it in sync with
+// groundstation-assistant assistant/qc.py (_UNRESOLVED_PREFIX).
+const UNRESOLVED_PREFIX = "CUSTOMER UNRESOLVED - filed under the AOI id; " +
+  "re-assign when the deal is known. ";
+const UNRESOLVED_RE = /^\s*CUSTOMER UNRESOLVED/i;
+// Placeholder = the unresolved marker AND no passport link. A row a person
+// has since linked to a passport counts as settled even if the note text
+// was never cleaned up.
+function isPlaceholder(r: any): boolean {
+  return UNRESOLVED_RE.test(String(r.qc_notes || "")) && !r.passport_id;
+}
 
 
 // Which customer does this image belong to? The QC pipeline knows the scene,
@@ -82,7 +103,7 @@ async function resolveOrg(sb: any, imageId: string, sceneName: string) {
     // ids. So fall back to the Quality Checks tab itself: if someone has
     // already filed an entry for this image, the customer is settled.
     const { data: qcRows } = await sb.from("quality_checks")
-      .select("organization, image_id, passport_id")
+      .select("organization, image_id, passport_id, qc_notes")
       .ilike("image_id", "%" + digits + "%")
       .limit(50);
     const qcHits = (qcRows || []).filter((r: any) => {
@@ -90,13 +111,23 @@ async function resolveOrg(sb: any, imageId: string, sceneName: string) {
       const rs = satOf(r.image_id);
       return !sat || !rs || rs === sat;
     });
-    const qcOrgs = Array.from(new Set(qcHits.map((h: any) => h.organization).filter(Boolean)));
+    // A placeholder here is the pipeline matching ITSELF, not a resolution -
+    // filing once under the AOI id and re-filing later must not launder the
+    // row into "resolved" (caught on FF02 16197: the re-file matched the
+    // first run's own row and dropped its CUSTOMER UNRESOLVED marker).
+    const settled = qcHits.filter((r: any) => !isPlaceholder(r));
+    const qcOrgs = Array.from(new Set(settled.map((h: any) => h.organization).filter(Boolean)));
     if (qcOrgs.length === 1) {
-      return { org: qcOrgs[0], passport_id: qcHits[0].passport_id || null,
+      const src = settled.find((h: any) => h.organization === qcOrgs[0]);
+      return { org: qcOrgs[0], passport_id: (src && src.passport_id) || null,
                why: "matched an existing Quality Checks entry" };
     }
     if (qcOrgs.length > 1) {
       return { org: null, why: "ambiguous - existing QC entries name " + qcOrgs.join(" / ") };
+    }
+    if (qcHits.length) {
+      return { org: null, why: "only an unresolved AOI-fallback entry exists "
+                 + "(CUSTOMER UNRESOLVED) - the customer is still not known" };
     }
     return { org: null, why: "not in delivered_images or the Quality Checks tab" };
   }
@@ -214,7 +245,7 @@ serve(async function (req) {
   const wantDigits = idDigits(imageId);
   const wantSat = satOf(imageId);
   const { data: candidateRows } = await sb.from("quality_checks")
-    .select("id, qc_result, created_by, qc_notes, image_id, created_at")
+    .select("id, qc_result, created_by, qc_notes, image_id, created_at, passport_id")
     .eq("organization", organization)
     .ilike("image_id", "%" + wantDigits + "%")
     .order("created_at", { ascending: true })
@@ -324,6 +355,14 @@ serve(async function (req) {
         note: "a person set this verdict; pass force:true to override",
       });
     }
+    // The row on file is still the placeholder and this write brings no
+    // customer either (no passport found for the org) - the unresolved
+    // marker must survive the update. Fresh notes would otherwise read as
+    // a resolved filing while passport_id stays null.
+    if (isPlaceholder(existing) && !passportId
+        && !UNRESOLVED_RE.test(String(row.qc_notes || ""))) {
+      row.qc_notes = (UNRESOLVED_PREFIX + String(row.qc_notes || "")).slice(0, 4000);
+    }
     const { error } = await sb.from("quality_checks").update(row).eq("id", existing.id);
     if (error) return json({ ok: false, error: error.message }, 500);
     id = existing.id;
@@ -336,6 +375,11 @@ serve(async function (req) {
     action = "created";
   }
 
+  // What was just written is (still) a placeholder: notes lead with the
+  // unresolved marker and no passport is linked. Surfaced so callers know
+  // the row awaits a customer rather than reading the write as settled.
+  const needsReassign = !passportId && UNRESOLVED_RE.test(String(row.qc_notes || ""));
+
   return json({
     ok: true,
     id: id,
@@ -344,6 +388,7 @@ serve(async function (req) {
     image_id: imageId,
     qc_result: deferToHuman ? existing.qc_result : qcResult,
     passport_linked: !!passportId,
+    needs_reassignment: needsReassign,
     org_source: orgSource,
     duplicate_rows: duplicates, duplicate_rows_removed: removed,
     evidence_path: evidencePath,
