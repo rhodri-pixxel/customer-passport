@@ -284,6 +284,7 @@ serve(async function (req) {
   if (body.type) {
     row.type = ["Sample", "Paid"].indexOf(body.type) !== -1 ? body.type : "Sample";
   }
+  if (body.date_captured) row.date_captured = String(body.date_captured).slice(0, 10);
   if (body.assignee) row.assignee = String(body.assignee);
   if (body.assignee_email) row.assignee_email = String(body.assignee_email);
   if (typeof body.mvp_image === "boolean") row.mvp_image = body.mvp_image;
