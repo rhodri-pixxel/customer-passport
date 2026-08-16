@@ -343,7 +343,12 @@ CREATE TABLE public.captured_images (
   cloud_cover numeric,
   ipr_info text,
   qc_id uuid,
+  -- IPR start_time. Display only — a reprocessed scene can be far older than
+  -- the feed's window, and it still belongs in the feed.
   captured_at timestamp with time zone,
+  -- IPR status_timestamp: when the image reached its QC-ready status. This, not
+  -- captured_at, is what the rolling window and the sort order use.
+  sent_to_aurora_at timestamp with time zone,
   synced_at timestamp with time zone DEFAULT now() NOT NULL
 );
 
@@ -439,6 +444,7 @@ CREATE INDEX idx_catalog_links_passport ON public.catalog_org_links USING btree 
 CREATE INDEX idx_delivered_images_passport ON public.delivered_images USING btree (passport_id, delivered_at DESC);
 CREATE INDEX idx_captured_images_synced ON public.captured_images USING btree (synced_at DESC);
 CREATE INDEX idx_captured_images_passport ON public.captured_images USING btree (passport_id);
+CREATE INDEX idx_captured_images_sent_to_aurora ON public.captured_images USING btree (sent_to_aurora_at DESC);
 CREATE INDEX idx_action_items_due_open ON public.action_items USING btree (due_date) WHERE (done = false);
 
 -- ---------------------------------------------------------------------------

@@ -2172,26 +2172,31 @@ function iprImageId(item) {
   return [(item.satellite_id || "").trim(), (item.image_id || "").trim()].filter(Boolean).join(" ");
 }
 
-// The date the satellite acquired the image, as YYYY-MM-DD, or "" if IPR didn't
-// give us one. IPR has spelled this field several ways across versions
-// (capture_datetime, acquisition_date, imaging_date…), so rather than betting on
-// one name we take the first key that looks like a capture/acquisition date and
-// parses. Explicitly ignores processing/upload/sync timestamps — those are when
-// the pipeline touched the image, not when it was taken.
-const IPR_DATE_KEY_RX = /(captur|acquisi|acquir|imaging|sensing|scene|observ)/i;
-const IPR_DATE_SKIP_RX = /(process|upload|sync|deliver|created|modified|ingest)/i;
+// IPR's two timestamps that matter here. Verified against the live API on
+// 2026-08-16 — an earlier version of this guessed at field names containing
+// "capture"/"acquisition" and found none, because IPR names them neither:
+//
+//   start_time        when the satellite acquired the image. The startDate /
+//                     endDate query params filter on THIS field.
+//   status_timestamp  when the row reached its current processing_status —
+//                     so for a "Sent to Aurora" row, when it went to Aurora.
+//
+// Both are ISO strings. Returns "" when absent or unparseable.
+function iprTimestamp(item, key) {
+  const v = item && item[key];
+  if (!v || typeof v === "boolean") return "";
+  const d = new Date(v);
+  return (!isNaN(d.getTime()) && d.getFullYear() > 2000) ? d.toISOString() : "";
+}
+// Acquisition date, YYYY-MM-DD. Display only — see iprStatusTime.
 function iprCaptureDate(item) {
-  if (!item || typeof item !== "object") return "";
-  const keys = Object.keys(item).filter(k => IPR_DATE_KEY_RX.test(k) && !IPR_DATE_SKIP_RX.test(k));
-  // Prefer keys that also say date/time — e.g. capture_datetime over capture_mode.
-  keys.sort((a, b) => (/(date|time)/i.test(b) ? 1 : 0) - (/(date|time)/i.test(a) ? 1 : 0));
-  for (const k of keys) {
-    const v = item[k];
-    if (!v || typeof v === "boolean") continue;
-    const d = new Date(v);
-    if (!isNaN(d.getTime()) && d.getFullYear() > 2000) return d.toISOString().slice(0, 10);
-  }
-  return "";
+  return iprTimestamp(item, "start_time").slice(0, 10);
+}
+// When the image reached its QC-ready status. This drives the feed's window:
+// a scene captured months ago, reprocessed and only now passed to Aurora, is
+// new work today and must not be filtered out by the age of its capture.
+function iprStatusTime(item) {
+  return iprTimestamp(item, "status_timestamp");
 }
 
 // Best-effort link of an IPR item to a deal by company name appearing in its AOI/
@@ -2282,13 +2287,11 @@ async function existingQcImageIds() {
 // Mirror of the IPR dashboard: every image that has cleared the pipeline.
 // These are NOT QC work — most never need a human — so they go to
 // captured_images, never quality_checks. An SE promotes the few that do.
-// Newest CAPTURE first — what a reader of a feed actually wants. It used to be
-// ordered by synced_at, which is when we happened to first see the row, and made
-// the "last 30 days" claim in the header impossible to verify by looking.
-// The table is cumulative (the sync upserts and never deletes), so the limit is
-// well above one window's worth; the UI pages through it.
+// Most recently sent to Aurora first — the order the work actually arrived in.
+// Not by capture date: a reprocessed scene from March that landed yesterday is
+// today's work and belongs at the top, not buried six months down.
 async function fetchCapturedImages() {
-  return sbGet("captured_images", "?order=captured_at.desc.nullslast,synced_at.desc&limit=3000");
+  return sbGet("captured_images", "?order=sent_to_aurora_at.desc.nullslast,synced_at.desc&limit=3000");
 }
 
 // Map one IPR metadata item → a captured_images row. Deliberately carries no
@@ -2314,6 +2317,8 @@ function mapIprItemToCaptured(item, deal, syncedAt) {
     cloud_cover: cloud,
     // Carries through to a promoted QC entry's "Date captured" field.
     captured_at: iprCaptureDate(item) || null,
+    // The window and the sort run on this, not on captured_at.
+    sent_to_aurora_at: iprStatusTime(item) || null,
     ipr_info: [item.processing_status || "", cloud != null ? `${Math.round(cloud)}% cloud` : ""].filter(Boolean).join(" · "),
   };
 }
@@ -2334,8 +2339,23 @@ async function iprFetchAll(base, pageSize = 200) {
   return { items: out, truncated };
 }
 
-// How far back the feed reaches. The feed is a rolling window, not an archive.
+// How far back the feed reaches — measured on when an image reached Aurora, not
+// on when it was captured. The feed is a rolling window, not an archive: rows
+// that fall out of it are deleted on the next sync.
 const IPR_FEED_DAYS = 30;
+
+// How far back we look in CAPTURE time to find those images. These differ
+// because IPR's startDate filters on capture time (start_time), while the window
+// above is on status time — so an image captured in March, reprocessed and sent
+// to Aurora yesterday, is only visible to us if we ask back as far as March.
+//
+// The wide lookback is only affordable with IPR's own status filter doing the
+// narrowing: filtered, a year is a few hundred rows. Unfiltered it would be
+// ~57,000 images, so the fallback settles for a shorter reach and says so. That
+// is a real gap — a scene reprocessed from further back than this won't appear
+// until IPR's processingStatus filter is fixed.
+const IPR_CAPTURE_LOOKBACK_DAYS = 365;
+const IPR_FALLBACK_LOOKBACK_DAYS = 45;
 
 // Fetch everything matching any of `statuses`, preferring IPR's own filter.
 //
@@ -2349,8 +2369,10 @@ const IPR_FEED_DAYS = 30;
 // filtered result is a few dozen, hence the much larger page size — 12 requests
 // rather than 56. This costs nothing once IPR is fixed and un-does itself
 // automatically, with no redeploy.
+// `fallbackBase` lets the caller ask for a cheaper query on the fallback path,
+// since it has to pull and sift everything itself.
 const IPR_FALLBACK_PAGE_SIZE = 1000;
-async function iprFetchByStatuses(statuses, base = {}) {
+async function iprFetchByStatuses(statuses, base = {}, fallbackBase = null) {
   try {
     const items = [];
     let truncated = false;
@@ -2363,7 +2385,7 @@ async function iprFetchByStatuses(statuses, base = {}) {
   } catch (e) {
     if (!isIprServerError(e)) throw e;   // genuine outage / offline still surfaces
     const wanted = new Set(statuses.map(s => String(s).toLowerCase()));
-    const res = await iprFetchAll(base, IPR_FALLBACK_PAGE_SIZE);
+    const res = await iprFetchAll(fallbackBase || base, IPR_FALLBACK_PAGE_SIZE);
     return {
       items: res.items.filter(it => wanted.has(String(it.processing_status || "").toLowerCase())),
       truncated: res.truncated,
@@ -2372,20 +2394,70 @@ async function iprFetchByStatuses(statuses, base = {}) {
   }
 }
 
-// Pull every QC-ready image from the last IPR_FEED_DAYS days into the feed.
+// Delete feed rows that have aged out of the window. Scoped to captured_images
+// only — the feed is a disposable mirror of IPR, so nothing here is the sole
+// record of anything. Promoting a row to QC copies it into quality_checks, which
+// this never touches, so a QC entry outlives the feed row that produced it.
+//
+// Rows with no sent_to_aurora_at fall back to synced_at, otherwise a missing
+// timestamp would make a row immortal.
+async function pruneCapturedBefore(cutoffISO) {
+  const cutoff = encodeURIComponent(cutoffISO);
+  // Two plain filters rather than one nested or=(): both are trivially readable
+  // in a network log, which matters more than a round-trip for a DELETE that
+  // runs once a day.
+  const filters = [
+    `?select=id&sent_to_aurora_at=lt.${cutoff}`,
+    `?select=id&sent_to_aurora_at=is.null&synced_at=lt.${cutoff}`,
+  ];
+  let gone = 0;
+  for (const filter of filters) {
+    const r = await sbFetchWithRefresh(() => fetch(`${SUPABASE_URL}/rest/v1/captured_images${filter}`, {
+      method: "DELETE", headers: getHeaders(),
+    }));
+    if (!r.ok) {
+      if (r.status === 401) throw new Error("Your session has expired — please sign in again.");
+      throw new Error(`${r.status}: ${await r.text()}`);
+    }
+    const text = await r.text();
+    const deleted = text ? JSON.parse(text) : [];
+    gone += Array.isArray(deleted) ? deleted.length : 0;
+  }
+  return gone;
+}
+
+// Refresh the feed: pull QC-ready images, keep the ones that reached Aurora
+// inside the window, and delete the ones that have fallen out of it.
+//
 // Queried by STATUS ONLY — deliberately not per deal — so this mirrors the IPR
 // dashboard instead of a company-name-filtered slice of it. Deal attribution is
 // best-effort and purely cosmetic: a blank customer on a feed row costs nothing,
 // where a wrong guess used to cost someone their QC queue. Upserts on the
 // canonical image_key, so re-running is idempotent.
 async function syncCapturedFromIpr(deals) {
-  const since = new Date(Date.now() - IPR_FEED_DAYS * 86400000).toISOString().slice(0, 10);
+  const now = Date.now();
+  // The window: reached Aurora within IPR_FEED_DAYS.
+  const windowStart = new Date(now - IPR_FEED_DAYS * 86400000).toISOString();
+  // The reach: how far back in CAPTURE time we ask, to catch reprocessed scenes.
+  const captureSince = new Date(now - IPR_CAPTURE_LOOKBACK_DAYS * 86400000).toISOString().slice(0, 10);
+  const fallbackSince = new Date(now - IPR_FALLBACK_LOOKBACK_DAYS * 86400000).toISOString().slice(0, 10);
   // One timestamp for the whole run, so every row from this sync agrees and
   // max(synced_at) is exactly "when the feed last refreshed".
-  const syncedAt = new Date().toISOString();
+  const syncedAt = new Date(now).toISOString();
+
+  const res = await iprFetchByStatuses(
+    IPR_QC_READY_STATUSES,
+    { startDate: captureSince },
+    { startDate: fallbackSince },
+  );
+
   const byKey = new Map();
-  const res = await iprFetchByStatuses(IPR_QC_READY_STATUSES, { startDate: since });
+  let outsideWindow = 0;
   for (const item of res.items) {
+    // A QC-ready image that reached Aurora before the window opened is history,
+    // not feed. Rows with no status timestamp are kept rather than guessed at.
+    const reached = iprStatusTime(item);
+    if (reached && reached < windowStart) { outsideWindow++; continue; }
     const row = mapIprItemToCaptured(item, iprMatchDeal(item, deals), syncedAt);
     if (row.image_key) byKey.set(row.image_key, row);
   }
@@ -2393,7 +2465,22 @@ async function syncCapturedFromIpr(deals) {
   for (let i = 0; i < rows.length; i += 500) {
     await sbUpsert("captured_images", rows.slice(i, i + 500), "image_key");
   }
-  return { synced: rows.length, since, truncated: res.truncated, filteredLocally: res.filteredLocally };
+
+  // Prune only after a sync that actually returned something. A run that comes
+  // back empty is far more likely to be an IPR problem than a genuinely empty
+  // month, and emptying the feed on the strength of it would be destructive.
+  let pruned = 0;
+  if (rows.length) {
+    try { pruned = await pruneCapturedBefore(windowStart); }
+    catch (_) { /* the refresh itself succeeded; a failed tidy-up isn't worth failing it */ }
+  }
+
+  return {
+    synced: rows.length, pruned, outsideWindow,
+    since: windowStart.slice(0, 10),
+    truncated: res.truncated, filteredLocally: res.filteredLocally,
+    lookbackDays: res.filteredLocally ? IPR_FALLBACK_LOOKBACK_DAYS : IPR_CAPTURE_LOOKBACK_DAYS,
+  };
 }
 
 /* ── Image / QC entry Slack notifications ──────────────────────────
@@ -3812,11 +3899,12 @@ function QualityChecksGlobal({ deals, canEdit, onOpen, toast, currentUserName })
   const syncCaptured = async ({ auto = false } = {}) => {
     setSyncing(true);
     try {
-      const { synced, truncated, filteredLocally } = await syncCapturedFromIpr(pickDeals);
-      toast(`IPR feed updated — ${synced} image${synced === 1 ? "" : "s"} from the last ${IPR_FEED_DAYS} days`
-        + (truncated ? " (hit the page cap — may be incomplete)" : "")
-        // Say so rather than just being mysteriously slower than usual.
-        + (filteredLocally ? " · IPR's status filter is down, so the whole window was scanned here instead" : "")
+      const { synced, pruned, truncated, filteredLocally, lookbackDays } = await syncCapturedFromIpr(pickDeals);
+      toast(`IPR feed updated — ${synced} image${synced === 1 ? "" : "s"} sent to Aurora in the last ${IPR_FEED_DAYS} days`
+        + (pruned ? ` · ${pruned} older one${pruned === 1 ? "" : "s"} removed` : "")
+        + (truncated ? " · hit the page cap, may be incomplete" : "")
+        // Say so rather than just being mysteriously slower and shallower than usual.
+        + (filteredLocally ? ` · IPR's status filter is down, so only the last ${lookbackDays} days of captures were scanned — a scene reprocessed from further back won't show yet` : "")
         + ". Nothing added to QC entries.");
       setFeedErr("");
       await load();
@@ -3896,7 +3984,7 @@ function QualityChecksGlobal({ deals, canEdit, onOpen, toast, currentUserName })
             {tab === "delivered"
               ? `${delivered.length} cataloged deliver${delivered.length === 1 ? "y" : "ies"} · already in customer workspaces`
               : tab === "feed"
-                ? `${captured.length} image${captured.length === 1 ? "" : "s"} sent to Aurora · mirror of the IPR dashboard`
+                ? `${captured.length} image${captured.length === 1 ? "" : "s"} sent to Aurora in the last ${IPR_FEED_DAYS} days · mirror of the IPR dashboard`
                 : `${tabRows.length} entr${tabRows.length === 1 ? "y" : "ies"} · ${awaitingCount} awaiting · ${passCount} pass · ${failCount} fail`}
           </div>
         </div>
@@ -3916,7 +4004,7 @@ function QualityChecksGlobal({ deals, canEdit, onOpen, toast, currentUserName })
           )}
           {canEdit && !showForm && !editRow && (
             <>
-              <button className="btn ghost" style={{ color:"var(--accent-deep)", border:"1px solid var(--line)", background:"var(--card)" }} onClick={() => syncCaptured()} disabled={syncing} title={`Refresh the IPR feed — every QC-ready image from the last ${IPR_FEED_DAYS} days. Writes to the feed only, never to QC entries.`}>
+              <button className="btn ghost" style={{ color:"var(--accent-deep)", border:"1px solid var(--line)", background:"var(--card)" }} onClick={() => syncCaptured()} disabled={syncing} title={`Refresh the IPR feed — every QC-ready image sent to Aurora in the last ${IPR_FEED_DAYS} days, and delete the ones older than that. Writes to the feed only, never to QC entries.`}>
                 {syncing ? <><RefreshCw size={14} className="spin" /> Syncing…</> : <><RefreshCw size={14} /> Sync captured images</>}
               </button>
               <button className="btn ghost" style={{ color:"var(--accent-deep)", border:"1px solid var(--line)", background:"var(--card)" }} onClick={() => setShowImport(true)}><Satellite size={14} /> Import from IPR</button>
@@ -3945,10 +4033,11 @@ function QualityChecksGlobal({ deals, canEdit, onOpen, toast, currentUserName })
 
       {tab === "feed" && !loading && (
         <div style={{ fontSize:12, color:"var(--muted)", margin:"0 0 10px" }}>
-          Read-only mirror of the IPR dashboard. Each sync pulls everything that cleared the pipeline in the last{" "}
-          {IPR_FEED_DAYS} days and adds it to what's already here — the list keeps older images it has seen before,
-          newest capture first. Nothing here is QC work. Use <b>Assign to SE</b> on the few that need a human look;
-          that creates a QC entry and leaves this list untouched.
+          Read-only mirror of the IPR dashboard — everything <b>sent to Aurora in the last {IPR_FEED_DAYS} days</b>,
+          most recent first. Anything older drops off on the next sync. Measured on when the image reached Aurora, not
+          when it was taken, so a scene captured months ago, reprocessed and only now passed, still appears here —
+          its <i>Captured</i> date will just be much older. Nothing here is QC work: use <b>Assign to SE</b> on the few
+          that need a human look, which creates a QC entry and leaves this list untouched.
           <div style={{ marginTop:4 }}>
             {syncing
               ? <span style={{ color:"var(--accent-deep)" }}><RefreshCw size={11} className="spin" style={{ verticalAlign:"-1px" }} /> Refreshing…</span>
@@ -3983,7 +4072,7 @@ function QualityChecksGlobal({ deals, canEdit, onOpen, toast, currentUserName })
         <>
         <div style={{ overflowX: "auto", background:"var(--card)", border:"1px solid var(--line)", borderRadius: 14 }}>
           <table className="qc-table">
-            <thead><tr><th>Customer</th><th>Image ID</th><th>Bandset</th><th>Status</th><th>Cloud</th><th>Location</th><th>Captured</th><th>Synced</th>{canEdit && <th></th>}</tr></thead>
+            <thead><tr><th>Customer</th><th>Image ID</th><th>Bandset</th><th>Status</th><th>Cloud</th><th>Location</th><th>Sent to Aurora</th><th>Captured</th>{canEdit && <th></th>}</tr></thead>
             <tbody>
               {feedRows.length ? feedRows.map(c => {
                 const deal = dealById[c.passport_id];
@@ -3997,9 +4086,10 @@ function QualityChecksGlobal({ deals, canEdit, onOpen, toast, currentUserName })
                     <td style={{ fontSize:11.5, color:"var(--muted)" }}>{c.processing_status || "—"}</td>
                     <td style={{ fontSize:11.5 }}>{c.cloud_cover != null ? `${Math.round(c.cloud_cover)}%` : "—"}</td>
                     <td style={{ fontSize:11.5, color:"var(--muted)", maxWidth:160, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{c.location || "—"}</td>
-                    {/* The date the satellite took it — the feed is sorted on this */}
-                    <td style={{ fontSize:11.5, whiteSpace:"nowrap" }}>{fmtDay(c.captured_at)}</td>
-                    <td style={{ fontSize:11.5, whiteSpace:"nowrap", color:"var(--muted2)" }}>{fmtDay(c.synced_at)}</td>
+                    {/* What the window and the sort run on */}
+                    <td style={{ fontSize:11.5, whiteSpace:"nowrap" }}>{fmtDay(c.sent_to_aurora_at)}</td>
+                    {/* Can be far older on a reprocessed scene — that's expected */}
+                    <td style={{ fontSize:11.5, whiteSpace:"nowrap", color:"var(--muted2)" }}>{fmtDay(c.captured_at)}</td>
                     {canEdit && <td style={{ whiteSpace:"nowrap" }}>
                       {c.qc_id
                         ? <span className="tag" style={{ background:"var(--accent-soft)", color:"var(--accent-deep)", fontWeight:600 }}>In QC</span>
