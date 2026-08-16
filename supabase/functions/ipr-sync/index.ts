@@ -24,7 +24,10 @@ const CORS = {
 
 const IPR_API = "https://ipr-image-status.portals.pixxel.dev";
 // Processing states meaning an image is captured + ready for our team to QC.
-const IPR_QC_READY_STATUSES = ["Sent to Aurora", "Datahub upload completed"];
+// Mirrors IPR_QC_READY_STATUSES in src/CustomerPassport.jsx — keep in step.
+// "Datahub upload completed" dropped 2026-08-13: IPR has retired it (0 matches
+// in 11,181 images over 30 days).
+const IPR_QC_READY_STATUSES = ["Sent to Aurora"];
 
 // SE roster — mirrors TEAM_MEMBERS.se in src/CustomerPassport.jsx. Kept in sync
 // manually; only used to resolve an assignee's email + Slack id.

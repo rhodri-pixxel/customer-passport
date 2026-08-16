@@ -32,7 +32,8 @@ unless a human promotes it and names an assignee. To revive this function:
 - **Scope:** active customers only (`hubspot_stage_idx = 5` OR `handed_to_cs`), so
   a run stays inside the edge-function time limit.
 - **Match:** IPR images whose AOI/target text contains the deal's `company` name.
-- **Filter:** only `Sent to Aurora` / `Datahub upload completed` (see `IPR_QC_READY_STATUSES`).
+- **Filter:** only `Sent to Aurora` (see `IPR_QC_READY_STATUSES`). `Datahub
+  upload completed` was dropped on 2026-08-13 — IPR has retired that status.
 - **Time window:** none. It requests `page=1` with a fixed page size and passes no
   `startDate`/`endDate`, so it takes whatever that first page returns and never
   paginates — anything beyond the page size is silently dropped.

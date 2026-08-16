@@ -2096,13 +2096,12 @@ async function updateQcEntry(id, entry) {
 const IPR_API = "https://ipr-image-status.portals.pixxel.dev";
 // Processing states that mean an image is captured + ready for our team to QC.
 //
-// NOTE (2026-08-13): a sweep of all 11,181 images in the last 30 days found
-// "Sent to Aurora" 196 times and "Datahub upload completed" ZERO times — no
-// status containing "datahub" exists in the data at all, so IPR appears to have
-// retired it. Left in place because what counts as QC-ready is a business call,
-// not a data observation, and a status that matches nothing costs nothing.
-// Drop it once someone confirms it's gone for good.
-const IPR_QC_READY_STATUSES = ["Sent to Aurora", "Datahub upload completed"];
+// "Datahub upload completed" was dropped on 2026-08-13: a sweep of all 11,181
+// images in the previous 30 days matched it ZERO times — no status containing
+// "datahub" exists in IPR's data at all — against 196 for "Sent to Aurora".
+// IPR retired it. Kept as an array because more than one status has qualified
+// before and may again; iprFetchByStatuses takes any number.
+const IPR_QC_READY_STATUSES = ["Sent to Aurora"];
 
 // Low-level GET against the IPR metadata API. `params` = plain object of filters
 // (query, satImagePairs, processingStatus, startDate, …). Returns { items, total }.
@@ -3848,7 +3847,7 @@ function QualityChecksGlobal({ deals, canEdit, onOpen, toast, currentUserName })
             {tab === "delivered"
               ? `${delivered.length} cataloged deliver${delivered.length === 1 ? "y" : "ies"} · already in customer workspaces`
               : tab === "feed"
-                ? `${captured.length} image${captured.length === 1 ? "" : "s"} through Aurora / Datahub · mirror of the IPR dashboard`
+                ? `${captured.length} image${captured.length === 1 ? "" : "s"} sent to Aurora · mirror of the IPR dashboard`
                 : `${tabRows.length} entr${tabRows.length === 1 ? "y" : "ies"} · ${awaitingCount} awaiting · ${passCount} pass · ${failCount} fail`}
           </div>
         </div>
