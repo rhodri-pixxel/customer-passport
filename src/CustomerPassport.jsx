@@ -2095,6 +2095,13 @@ async function updateQcEntry(id, entry) {
 // by hand. See supabase/functions/ipr-sync for the scheduled server-side twin.
 const IPR_API = "https://ipr-image-status.portals.pixxel.dev";
 // Processing states that mean an image is captured + ready for our team to QC.
+//
+// NOTE (2026-08-13): a sweep of all 11,181 images in the last 30 days found
+// "Sent to Aurora" 196 times and "Datahub upload completed" ZERO times — no
+// status containing "datahub" exists in the data at all, so IPR appears to have
+// retired it. Left in place because what counts as QC-ready is a business call,
+// not a data observation, and a status that matches nothing costs nothing.
+// Drop it once someone confirms it's gone for good.
 const IPR_QC_READY_STATUSES = ["Sent to Aurora", "Datahub upload completed"];
 
 // Low-level GET against the IPR metadata API. `params` = plain object of filters
@@ -2107,11 +2114,41 @@ async function iprFetch(params = {}) {
     if (k === "pageSize" || k === "page") return;
     if (v !== undefined && v !== null && v !== "") qs.set(k, String(v));
   });
-  const r = await fetch(`${IPR_API}/api/metadata/detailed?${qs.toString()}`);
-  if (!r.ok) throw new Error(`IPR ${r.status}: ${(await r.text()).slice(0, 300)}`);
+  // Two failure modes that look identical in a toast but mean opposite things:
+  // fetch() only rejects when the request never got an answer (offline, DNS,
+  // TLS, CORS) — that's the "are you on the Pixxel network?" case. An HTTP error
+  // means we reached IPR perfectly well and its server failed. Tag them so the
+  // UI can stop telling people to check their network when it isn't their network.
+  let r;
+  try {
+    r = await fetch(`${IPR_API}/api/metadata/detailed?${qs.toString()}`);
+  } catch (e) {
+    const err = new Error((e && e.message) || String(e));
+    err.iprUnreachable = true;
+    throw err;
+  }
+  if (!r.ok) {
+    const err = new Error(`IPR ${r.status}: ${(await r.text()).slice(0, 300)}`);
+    err.iprStatus = r.status;
+    throw err;
+  }
   const data = await r.json();
   const items = Array.isArray(data) ? data : (data.items || []);
   return { items, total: Number(data && data.total != null ? data.total : items.length) };
+}
+
+// A 5xx from IPR — reached it, it broke. Distinct from being off the network.
+function isIprServerError(e) {
+  return !!(e && e.iprStatus && e.iprStatus >= 500);
+}
+
+// Human-readable cause for the feed header. The old text said "couldn't reach
+// IPR … are you on the Pixxel network?" for every failure, which sent people
+// hunting a VPN problem during an IPR-side outage.
+function iprErrorMessage(e) {
+  if (e && e.iprUnreachable) return `couldn't reach IPR (${e.message}) — are you on the Pixxel network?`;
+  if (e && e.iprStatus) return `IPR answered with ${e.iprStatus}. We reached it fine, so this is an IPR-side fault, not your network.`;
+  return (e && e.message) || String(e);
 }
 
 // Parse free-form "FF03 4320", "FF03:4320", "FF01-456", comma/newline-separated
@@ -2290,6 +2327,41 @@ async function iprFetchAll(base, pageSize = 200) {
 // How far back the feed reaches. The feed is a rolling window, not an archive.
 const IPR_FEED_DAYS = 30;
 
+// Fetch everything matching any of `statuses`, preferring IPR's own filter.
+//
+// Since ~12 Aug 2026 the endpoint returns a 500 for EVERY non-empty
+// processingStatus — verified against nonsense values too, so it's their filter
+// handler, not our status strings or our encoding. Every other parameter
+// (startDate, query, satImagePairs, paging) still works.
+//
+// So: ask for the filter, and if it 5xxs, pull the window unfiltered and match
+// the statuses here instead. The unfiltered window is ~11k images where the
+// filtered result is a few dozen, hence the much larger page size — 12 requests
+// rather than 56. This costs nothing once IPR is fixed and un-does itself
+// automatically, with no redeploy.
+const IPR_FALLBACK_PAGE_SIZE = 1000;
+async function iprFetchByStatuses(statuses, base = {}) {
+  try {
+    const items = [];
+    let truncated = false;
+    for (const status of statuses) {
+      const res = await iprFetchAll({ ...base, processingStatus: status });
+      if (res.truncated) truncated = true;
+      items.push(...res.items);
+    }
+    return { items, truncated, filteredLocally: false };
+  } catch (e) {
+    if (!isIprServerError(e)) throw e;   // genuine outage / offline still surfaces
+    const wanted = new Set(statuses.map(s => String(s).toLowerCase()));
+    const res = await iprFetchAll(base, IPR_FALLBACK_PAGE_SIZE);
+    return {
+      items: res.items.filter(it => wanted.has(String(it.processing_status || "").toLowerCase())),
+      truncated: res.truncated,
+      filteredLocally: true,
+    };
+  }
+}
+
 // Pull every QC-ready image from the last IPR_FEED_DAYS days into the feed.
 // Queried by STATUS ONLY — deliberately not per deal — so this mirrors the IPR
 // dashboard instead of a company-name-filtered slice of it. Deal attribution is
@@ -2299,20 +2371,16 @@ const IPR_FEED_DAYS = 30;
 async function syncCapturedFromIpr(deals) {
   const since = new Date(Date.now() - IPR_FEED_DAYS * 86400000).toISOString().slice(0, 10);
   const byKey = new Map();
-  let truncated = false;
-  for (const status of IPR_QC_READY_STATUSES) {
-    const res = await iprFetchAll({ processingStatus: status, startDate: since });
-    if (res.truncated) truncated = true;
-    for (const item of res.items) {
-      const row = mapIprItemToCaptured(item, iprMatchDeal(item, deals));
-      if (row.image_key) byKey.set(row.image_key, row);
-    }
+  const res = await iprFetchByStatuses(IPR_QC_READY_STATUSES, { startDate: since });
+  for (const item of res.items) {
+    const row = mapIprItemToCaptured(item, iprMatchDeal(item, deals));
+    if (row.image_key) byKey.set(row.image_key, row);
   }
   const rows = [...byKey.values()];
   for (let i = 0; i < rows.length; i += 500) {
     await sbUpsert("captured_images", rows.slice(i, i + 500), "image_key");
   }
-  return { synced: rows.length, since, truncated };
+  return { synced: rows.length, since, truncated: res.truncated, filteredLocally: res.filteredLocally };
 }
 
 /* ── Image / QC entry Slack notifications ──────────────────────────
@@ -3119,12 +3187,10 @@ function IprImportModal({ deals, onClose, onDone, toast, currentUserName }) {
         if (!nameInput.trim()) { toast("Enter a name / AOI to search"); setLoading(false); return; }
         const base = { query: nameInput.trim(), pageSize: 200 };
         if (readyOnly) {
-          const acc = [];
-          for (const status of IPR_QC_READY_STATUSES) {
-            const { items: got } = await iprFetch({ ...base, processingStatus: status });
-            acc.push(...got);
-          }
-          res = { items: acc };
+          // Same broken processingStatus filter as the feed sync — this goes
+          // through the shared helper so it survives the outage too.
+          const got = await iprFetchByStatuses(IPR_QC_READY_STATUSES, base);
+          res = { items: got.items };
         } else {
           res = await iprFetch(base);
         }
@@ -3137,7 +3203,7 @@ function IprImportModal({ deals, onClose, onDone, toast, currentUserName }) {
       // Pre-select everything not already imported
       setSelected(new Set(uniq.map(iprImageId).filter(id => !existSet.has(qcDedupKey(id)))));
     } catch (e) {
-      toast("IPR search failed: " + e.message);
+      toast("IPR search failed: " + iprErrorMessage(e));
       setItems([]); setSelected(new Set());
     } finally { setLoading(false); }
   };
@@ -3703,15 +3769,19 @@ function QualityChecksGlobal({ deals, canEdit, onOpen, toast, currentUserName })
   const syncCaptured = async ({ auto = false } = {}) => {
     setSyncing(true);
     try {
-      const { synced, truncated } = await syncCapturedFromIpr(pickDeals);
-      toast(`IPR feed updated — ${synced} image${synced === 1 ? "" : "s"} from the last ${IPR_FEED_DAYS} days${truncated ? " (hit the page cap — may be incomplete)" : ""}. Nothing added to QC entries.`);
+      const { synced, truncated, filteredLocally } = await syncCapturedFromIpr(pickDeals);
+      toast(`IPR feed updated — ${synced} image${synced === 1 ? "" : "s"} from the last ${IPR_FEED_DAYS} days`
+        + (truncated ? " (hit the page cap — may be incomplete)" : "")
+        // Say so rather than just being mysteriously slower than usual.
+        + (filteredLocally ? " · IPR's status filter is down, so the whole window was scanned here instead" : "")
+        + ". Nothing added to QC entries.");
       setFeedErr("");
       await load();
     } catch (e) {
       // A background refresh that can't reach IPR (off the Pixxel network) is
       // expected, not an incident — show it in the feed header, don't interrupt.
-      if (auto) setFeedErr(e.message || String(e));
-      else toast("Sync failed: " + e.message);
+      if (auto) setFeedErr(iprErrorMessage(e));
+      else toast("Sync failed: " + iprErrorMessage(e));
     }
     finally { setSyncing(false); }
   };
@@ -3836,7 +3906,9 @@ function QualityChecksGlobal({ deals, canEdit, onOpen, toast, currentUserName })
               : feedNewest
                 ? <>Last refreshed <b style={{ color:"var(--ink)" }}>{new Date(feedNewest).toLocaleString("en-GB", { day:"2-digit", month:"short", hour:"2-digit", minute:"2-digit" })}</b> · refreshes itself once a day when someone opens this page on the Pixxel network.</>
                 : <>Never refreshed — press <b>Sync captured images</b>.</>}
-            {feedErr && <span style={{ color:"var(--bad)" }}> · couldn't reach IPR ({feedErr}). Are you on the Pixxel network?</span>}
+            {/* iprErrorMessage already says whether it's the network or IPR —
+                don't re-wrap it in a network question. */}
+            {feedErr && <span style={{ color:"var(--bad)" }}> · {feedErr}</span>}
           </div>
         </div>
       )}
