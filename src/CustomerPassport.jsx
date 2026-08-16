@@ -2282,15 +2282,26 @@ async function existingQcImageIds() {
 // Mirror of the IPR dashboard: every image that has cleared the pipeline.
 // These are NOT QC work — most never need a human — so they go to
 // captured_images, never quality_checks. An SE promotes the few that do.
+// Newest CAPTURE first — what a reader of a feed actually wants. It used to be
+// ordered by synced_at, which is when we happened to first see the row, and made
+// the "last 30 days" claim in the header impossible to verify by looking.
+// The table is cumulative (the sync upserts and never deletes), so the limit is
+// well above one window's worth; the UI pages through it.
 async function fetchCapturedImages() {
-  return sbGet("captured_images", "?order=synced_at.desc&limit=1000");
+  return sbGet("captured_images", "?order=captured_at.desc.nullslast,synced_at.desc&limit=3000");
 }
 
 // Map one IPR metadata item → a captured_images row. Deliberately carries no
 // assignee and no verdict: ownership only exists once someone promotes it.
-function mapIprItemToCaptured(item, deal) {
+function mapIprItemToCaptured(item, deal, syncedAt) {
   const cloud = item.cloud_cover_percentage != null ? Number(item.cloud_cover_percentage) : null;
   return {
+    // synced_at must be in the payload. PostgREST's merge-duplicates upsert only
+    // writes the columns it's given, so leaving it out meant the DEFAULT now()
+    // applied on first insert and never again — "Last refreshed" showed the date
+    // the newest row was FIRST seen, not the last successful sync, and the 24h
+    // staleness check re-fired on every page load once that date went stale.
+    synced_at: syncedAt || new Date().toISOString(),
     image_key: normalizeImageId(iprImageId(item)),
     image_id: iprImageId(item),
     passport_id: deal ? deal.id : null,
@@ -2369,10 +2380,13 @@ async function iprFetchByStatuses(statuses, base = {}) {
 // canonical image_key, so re-running is idempotent.
 async function syncCapturedFromIpr(deals) {
   const since = new Date(Date.now() - IPR_FEED_DAYS * 86400000).toISOString().slice(0, 10);
+  // One timestamp for the whole run, so every row from this sync agrees and
+  // max(synced_at) is exactly "when the feed last refreshed".
+  const syncedAt = new Date().toISOString();
   const byKey = new Map();
   const res = await iprFetchByStatuses(IPR_QC_READY_STATUSES, { startDate: since });
   for (const item of res.items) {
-    const row = mapIprItemToCaptured(item, iprMatchDeal(item, deals));
+    const row = mapIprItemToCaptured(item, iprMatchDeal(item, deals), syncedAt);
     if (row.image_key) byKey.set(row.image_key, row);
   }
   const rows = [...byKey.values()];
@@ -2759,6 +2773,35 @@ async function syncCatalogRows(rows, links) {
   // buries the entries someone actually chose to review. QC work is created by
   // hand (Log QC entry) or by explicit selection in the IPR import.
   return { imagesSynced: toSync.length, orgsNamed: renamed.length };
+}
+
+// Page through a long table. The IPR feed is a rolling 30-day mirror that only
+// grows, so rendering it whole was both a wall of rows and a slow paint.
+const FEED_PAGE_SIZE = 100;
+function TablePager({ page, setPage, total, pageSize, noun = "row" }) {
+  const pages = Math.max(1, Math.ceil(total / pageSize));
+  if (total <= pageSize) return null;
+  const from = (page - 1) * pageSize + 1;
+  const to = Math.min(page * pageSize, total);
+  const btn = (enabled) => ({
+    padding: "5px 11px", borderRadius: 7, fontSize: 12, cursor: enabled ? "pointer" : "default",
+    border: "1px solid var(--line)", background: "var(--card)",
+    color: enabled ? "var(--accent-deep)" : "var(--muted2)",
+  });
+  return (
+    <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", gap:10, padding:"10px 4px 2px", flexWrap:"wrap" }}>
+      <div style={{ fontSize:12, color:"var(--muted)" }}>
+        Showing <b style={{ color:"var(--ink)" }}>{from}–{to}</b> of {total} {noun}{total === 1 ? "" : "s"}
+      </div>
+      <div style={{ display:"flex", alignItems:"center", gap:6 }}>
+        <button style={btn(page > 1)} disabled={page <= 1} onClick={() => setPage(1)}>« First</button>
+        <button style={btn(page > 1)} disabled={page <= 1} onClick={() => setPage(p => Math.max(1, p - 1))}>‹ Prev</button>
+        <span style={{ fontSize:12, color:"var(--muted)", padding:"0 4px" }}>Page {page} of {pages}</span>
+        <button style={btn(page < pages)} disabled={page >= pages} onClick={() => setPage(p => Math.min(pages, p + 1))}>Next ›</button>
+        <button style={btn(page < pages)} disabled={page >= pages} onClick={() => setPage(pages)}>Last »</button>
+      </div>
+    </div>
+  );
 }
 
 // Searchable deal picker — type to filter instead of scrolling a long dropdown.
@@ -3693,6 +3736,7 @@ function QualityChecksGlobal({ deals, canEdit, onOpen, toast, currentUserName })
   const [delivered, setDelivered] = useState([]);
   const [captured, setCaptured] = useState([]);
   const [promoteFrom, setPromoteFrom] = useState(null); // feed row being sent to QC
+  const [feedPage, setFeedPage] = useState(1);          // IPR feed pagination
   const [capturedErr, setCapturedErr] = useState("");   // e.g. table not migrated yet
   const [feedErr, setFeedErr] = useState("");           // background refresh couldn't reach IPR
   const [showImport, setShowImport] = useState(false); // IPR import modal
@@ -3837,6 +3881,11 @@ function QualityChecksGlobal({ deals, canEdit, onOpen, toast, currentUserName })
   for (const d of pickDeals) dealById[d.id] = d;
   const feedNewest = captured.reduce((m, c) => (c.synced_at && c.synced_at > m ? c.synced_at : m), "");
   const fmtDay = (iso) => iso ? new Date(iso).toLocaleDateString("en-GB", { day:"2-digit", month:"short", year:"numeric" }) : "—";
+  // Feed pagination. Clamped rather than reset so a refresh doesn't yank someone
+  // back to page 1, but a shrinking feed can't strand them past the end.
+  const feedPages = Math.max(1, Math.ceil(captured.length / FEED_PAGE_SIZE));
+  const feedPageSafe = Math.min(feedPage, feedPages);
+  const feedRows = captured.slice((feedPageSafe - 1) * FEED_PAGE_SIZE, feedPageSafe * FEED_PAGE_SIZE);
 
   return (
     <div className="cp-page-inner">
@@ -3896,9 +3945,10 @@ function QualityChecksGlobal({ deals, canEdit, onOpen, toast, currentUserName })
 
       {tab === "feed" && !loading && (
         <div style={{ fontSize:12, color:"var(--muted)", margin:"0 0 10px" }}>
-          Read-only mirror of the IPR dashboard — everything that cleared the pipeline in the last {IPR_FEED_DAYS} days.
-          Nothing here is QC work. Use <b>Assign to SE</b> on the few that need a human look; that creates a QC entry
-          and leaves this list untouched.
+          Read-only mirror of the IPR dashboard. Each sync pulls everything that cleared the pipeline in the last{" "}
+          {IPR_FEED_DAYS} days and adds it to what's already here — the list keeps older images it has seen before,
+          newest capture first. Nothing here is QC work. Use <b>Assign to SE</b> on the few that need a human look;
+          that creates a QC entry and leaves this list untouched.
           <div style={{ marginTop:4 }}>
             {syncing
               ? <span style={{ color:"var(--accent-deep)" }}><RefreshCw size={11} className="spin" style={{ verticalAlign:"-1px" }} /> Refreshing…</span>
@@ -3930,11 +3980,12 @@ function QualityChecksGlobal({ deals, canEdit, onOpen, toast, currentUserName })
       )}
 
       {loading ? <div className="empty"><RefreshCw size={15} className="spin" /> Loading…</div> : tab === "feed" ? (
+        <>
         <div style={{ overflowX: "auto", background:"var(--card)", border:"1px solid var(--line)", borderRadius: 14 }}>
           <table className="qc-table">
-            <thead><tr><th>Customer</th><th>Image ID</th><th>Bandset</th><th>Status</th><th>Cloud</th><th>Location</th><th>Synced</th>{canEdit && <th></th>}</tr></thead>
+            <thead><tr><th>Customer</th><th>Image ID</th><th>Bandset</th><th>Status</th><th>Cloud</th><th>Location</th><th>Captured</th><th>Synced</th>{canEdit && <th></th>}</tr></thead>
             <tbody>
-              {captured.length ? captured.map(c => {
+              {feedRows.length ? feedRows.map(c => {
                 const deal = dealById[c.passport_id];
                 return (
                   <tr key={c.id}>
@@ -3946,7 +3997,9 @@ function QualityChecksGlobal({ deals, canEdit, onOpen, toast, currentUserName })
                     <td style={{ fontSize:11.5, color:"var(--muted)" }}>{c.processing_status || "—"}</td>
                     <td style={{ fontSize:11.5 }}>{c.cloud_cover != null ? `${Math.round(c.cloud_cover)}%` : "—"}</td>
                     <td style={{ fontSize:11.5, color:"var(--muted)", maxWidth:160, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{c.location || "—"}</td>
-                    <td style={{ fontSize:11.5, whiteSpace:"nowrap" }}>{fmtDay(c.synced_at)}</td>
+                    {/* The date the satellite took it — the feed is sorted on this */}
+                    <td style={{ fontSize:11.5, whiteSpace:"nowrap" }}>{fmtDay(c.captured_at)}</td>
+                    <td style={{ fontSize:11.5, whiteSpace:"nowrap", color:"var(--muted2)" }}>{fmtDay(c.synced_at)}</td>
                     {canEdit && <td style={{ whiteSpace:"nowrap" }}>
                       {c.qc_id
                         ? <span className="tag" style={{ background:"var(--accent-soft)", color:"var(--accent-deep)", fontWeight:600 }}>In QC</span>
@@ -3955,7 +4008,7 @@ function QualityChecksGlobal({ deals, canEdit, onOpen, toast, currentUserName })
                     </td>}
                   </tr>
                 );
-              }) : <tr><td colSpan={canEdit ? 8 : 7} style={{ textAlign:"center", padding:30, color: capturedErr ? "var(--bad)" : "var(--muted2)" }}>
+              }) : <tr><td colSpan={canEdit ? 9 : 8} style={{ textAlign:"center", padding:30, color: capturedErr ? "var(--bad)" : "var(--muted2)" }}>
                 {capturedErr
                   ? <>Couldn't load the feed — has the <b>captured_images</b> migration been run on this database?<div style={{ fontFamily:"var(--font-mono)", fontSize:11, marginTop:6 }}>{capturedErr}</div></>
                   : "Feed is empty — run Sync captured images to pull from the IPR dashboard."}
@@ -3963,6 +4016,9 @@ function QualityChecksGlobal({ deals, canEdit, onOpen, toast, currentUserName })
             </tbody>
           </table>
         </div>
+        <TablePager page={feedPageSafe} setPage={setFeedPage} total={captured.length}
+          pageSize={FEED_PAGE_SIZE} noun="image" />
+        </>
       ) : tab === "delivered" ? (
         <div style={{ overflowX: "auto", background:"var(--card)", border:"1px solid var(--line)", borderRadius: 14 }}>
           <table className="qc-table">
