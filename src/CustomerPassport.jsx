@@ -5,7 +5,7 @@ import {
   LayoutGrid, Eye, Pencil, ExternalLink, Building2, Mail, Satellite, Layers,
   Activity, TrendingUp, X, Lock, Gauge, AtSign, Plus, Radar, ChevronDown,
   MessageSquare, Hash, Zap, RefreshCw, CheckCheck, Camera, ListChecks, CalendarClock, Upload, Trash2, UserPlus, Link2, Star, ArrowRightCircle,
-  Sparkles, Moon, Sun
+  Sparkles, Moon, Sun, Copy
 } from "lucide-react";
 import shp from "shpjs";
 import proj4 from "proj4";
@@ -2361,6 +2361,67 @@ async function existingQcImageIds() {
   return new Set(rows.map(r => qcDedupKey(r.image_id)).filter(Boolean));
 }
 
+/* ── Duplicate QC entries ──────────────────────────────────────────
+   quality_checks has no uniqueness on image_id — only its primary key — and of
+   the paths that write to it, only the IPR import ever checked for an existing
+   row. So the same scene could land twice:
+
+     · a human logging an entry for an image already promoted from the feed
+     · the same frame written two ways ("FF01 17517" vs "FF01 0000017517"),
+       which a plain text comparison treats as different images
+     · record-qc upserting on (organization, image_id), so the same scene filed
+       under a differently-spelled customer becomes a second row
+     · ipr-sync (now dormant) deduping on the raw lowercased id, unnormalised
+
+   These helpers find them by the canonical satellite:frame key, so spelling
+   differences collapse. Nothing is deleted automatically: which of a pair to
+   keep depends on which one carries the real verdict and notes.            */
+
+// Groups of rows sharing a canonical image key, keyed by that key. Only groups
+// with more than one row are returned.
+function qcDuplicateGroups(rows) {
+  const byKey = new Map();
+  for (const r of rows || []) {
+    const key = qcDedupKey(r.image_id);
+    if (!key) continue;                 // no id at all — can't be a duplicate of anything
+    if (!byKey.has(key)) byKey.set(key, []);
+    byKey.get(key).push(r);
+  }
+  const dupes = new Map();
+  for (const [key, group] of byKey) if (group.length > 1) dupes.set(key, group);
+  return dupes;
+}
+
+// Which row of a duplicate group is worth keeping: a real verdict beats
+// "Awaiting QC", then more filled-in detail, then the oldest (whoever started it).
+function qcKeeperOf(group) {
+  const score = (r) => (
+    (r.qc_result === "Pass" || r.qc_result === "Fail" ? 8 : 0) +
+    (r.qc_notes ? 4 : 0) + (r.assignee ? 2 : 0) + (r.photo_evidence_path ? 1 : 0)
+  );
+  return [...group].sort((a, b) =>
+    score(b) - score(a) || String(a.created_at || "").localeCompare(String(b.created_at || ""))
+  )[0];
+}
+
+// Index of what's already in quality_checks, canonical key -> rows, for the
+// pre-save duplicate check. Carries enough of each row to describe the clash to
+// whoever is about to create another one.
+async function existingQcIndex() {
+  const rows = await sbGet(
+    "quality_checks",
+    "?select=id,image_id,organization,assignee,qc_result,created_at&limit=5000"
+  );
+  const byKey = new Map();
+  for (const r of rows) {
+    const key = qcDedupKey(r.image_id);
+    if (!key) continue;
+    if (!byKey.has(key)) byKey.set(key, []);
+    byKey.get(key).push(r);
+  }
+  return byKey;
+}
+
 // ── IPR feed ──────────────────────────────────────────────────────
 // Mirror of the IPR dashboard: every image that has cleared the pipeline.
 // These are NOT QC work — most never need a human — so they go to
@@ -3295,7 +3356,7 @@ const todayISO = () => new Date().toISOString().slice(0, 10);
 // only accepts the former.
 const asDateInput = (v) => (v ? String(v).slice(0, 10) : "");
 
-function QcForm({ onSubmit, onCancel, defaultOrg, defaultPassportId, deals, initial, fromCapture }) {
+function QcForm({ onSubmit, onCancel, defaultOrg, defaultPassportId, deals, initial, fromCapture, findDuplicate }) {
   // `initial` = an existing QC row → the form opens pre-filled in edit mode.
   // `fromCapture` = an IPR feed row being promoted → pre-fills the image details
   // so the only real decision left is who reviews it.
@@ -3345,11 +3406,36 @@ function QcForm({ onSubmit, onCancel, defaultOrg, defaultPassportId, deals, init
     fail_other: r === "Fail" ? f.fail_other : "",
   }));
   const toggleFailReason = (r) => setForm(f => ({ ...f, fail_reasons: toggleInList(f.fail_reasons, r) }));
+
+  // Duplicate guard. `findDuplicate` is supplied by the page and looks the image
+  // up across ALL QC entries by canonical satellite:frame, so "FF01 17517" and
+  // "FF01 0000017517" are recognised as the same scene and a clash on another
+  // deal is still caught.
+  //
+  // It warns rather than hard-blocks: the same frame can legitimately be QC'd for
+  // two customers off an archive sale, and only the person saving knows whether
+  // that is what they are doing. One deliberate second click gets through, which
+  // stops the accidental duplicates without standing in the way of a real one.
+  const [dupWarning, setDupWarning] = useState(null);
+  const dupKey = qcDedupKey(form.image_id);
+  useEffect(() => { setDupWarning(null); }, [dupKey]);   // retyping the id clears the override
+
   // New entries must name a reviewer — QC work exists because someone was given
   // it. Edits are exempt so older unassigned rows stay editable.
   const submit = () => {
     if (!form.organization.trim()) { setErr("Organization is required."); return; }
     if (!initial && !form.assignee) { setErr("Pick an SE to assign this to — QC entries can't be unassigned."); return; }
+    // Only worth checking when the id is new or has changed — re-saving an entry
+    // must never flag itself.
+    const idChanged = !initial || qcDedupKey(initial.image_id) !== dupKey;
+    if (dupKey && idChanged && findDuplicate && !dupWarning) {
+      const clash = findDuplicate(form.image_id, initial ? initial.id : null);
+      if (clash && clash.length) {
+        setErr("");
+        setDupWarning(clash);
+        return;
+      }
+    }
     setErr("");
     const assigneePerson = Object.values(TEAM_MEMBERS).flat().find(p => p.name === form.assignee);
     const payload = {
@@ -3526,21 +3612,50 @@ function QcForm({ onSubmit, onCancel, defaultOrg, defaultPassportId, deals, init
           />
         )}
       </div>
+      {dupWarning && (
+        <div style={{ display:"flex", gap:9, alignItems:"flex-start", margin:"0 0 10px", padding:"10px 12px",
+          borderRadius:9, border:"1px solid var(--energy)", background:"rgba(236,180,35,.10)", fontSize:12.5 }}>
+          <AlertTriangle size={15} style={{ color:"var(--energy)", flexShrink:0, marginTop:1 }} />
+          <div>
+            <b style={{ color:"var(--ink)" }}>
+              {form.image_id} is already logged{dupWarning.length > 1 ? ` in ${dupWarning.length} entries` : ""}.
+            </b>
+            <div style={{ color:"var(--muted)", marginTop:3 }}>
+              {dupWarning.slice(0, 4).map(d => (
+                <div key={d.id}>
+                  · {d.organization || "no customer"} — {d.qc_result}
+                  {d.assignee ? `, ${d.assignee}` : ", unassigned"}
+                  {qcDedupKey(d.image_id) === dupKey && d.image_id !== form.image_id
+                    ? ` (written as ${d.image_id})` : ""}
+                </div>
+              ))}
+              {dupWarning.length > 4 && <div>· …and {dupWarning.length - 4} more</div>}
+            </div>
+            <div style={{ color:"var(--muted2)", marginTop:5, fontSize:11.5 }}>
+              Cancel and edit the existing entry instead, unless this really is a separate
+              review of the same scene for another customer — press save again to go ahead.
+            </div>
+          </div>
+        </div>
+      )}
       <div style={{ display:"flex", gap:8, justifyContent:"flex-end", alignItems:"center", flexWrap:"wrap" }}>
-        {cap && !err && (
+        {cap && !err && !dupWarning && (
           <span style={{ marginRight:"auto", fontSize:11.5, color:"var(--muted2)" }}>
             From the IPR feed · {cap.image_id} — pick who reviews it.
           </span>
         )}
         {err && <span style={{ marginRight:"auto", fontSize:12, color:"var(--bad)" }}>{err}</span>}
         <button className="btn ghost" style={{ color:"var(--muted)", border:"1px solid var(--line)", background:"var(--card)" }} onClick={onCancel}>Cancel</button>
-        <button className="btn solid" onClick={submit}><Camera size={13} /> {initial ? "Save changes" : "Save QC entry"}</button>
+        <button className="btn solid" onClick={submit}
+          style={dupWarning ? { background:"var(--energy)", borderColor:"var(--energy)" } : undefined}>
+          <Camera size={13} /> {dupWarning ? "Save duplicate anyway" : initial ? "Save changes" : "Save QC entry"}
+        </button>
       </div>
     </div>
   );
 }
 
-function QcRow({ row, canEdit, onDelete, onEdit, showOrg, needsAssignee, alreadyDelivered }) {
+function QcRow({ row, canEdit, onDelete, onEdit, showOrg, needsAssignee, alreadyDelivered, duplicateOf }) {
   return (
     <tr>
       {showOrg && (
@@ -3566,7 +3681,19 @@ function QcRow({ row, canEdit, onDelete, onEdit, showOrg, needsAssignee, already
           <div style={{ fontSize:11, color:"var(--mining)", marginTop:3, maxWidth:150 }}>{row.fail_reasons}</div>
         )}
       </td>
-      <td style={{ fontFamily:"var(--font-mono)", fontSize:12 }}>{row.image_id || "—"}</td>
+      <td style={{ fontFamily:"var(--font-mono)", fontSize:12, whiteSpace:"nowrap" }}>
+        {row.image_id || "—"}
+        {duplicateOf && (
+          <>
+            <Copy size={12}
+              title={`This scene is logged ${duplicateOf.total} times${duplicateOf.spellings.length > 1 ? ` (written as ${duplicateOf.spellings.join(", ")})` : ""}. ${duplicateOf.isKeeper ? "This is the fullest of them — delete the others." : "A fuller entry exists; this one is probably the one to delete."}`}
+              style={{ color: duplicateOf.isKeeper ? "var(--muted2)" : "var(--bad)", marginLeft:6, verticalAlign:"-2px" }} />
+            {!duplicateOf.isKeeper && (
+              <span style={{ fontSize:10, color:"var(--bad)", marginLeft:4, fontFamily:"var(--font-sans, inherit)" }}>dup</span>
+            )}
+          </>
+        )}
+      </td>
       <td><span className="tag" style={{ background: row.type === "Paid" ? "var(--accent-soft)" : "var(--line-soft)", color: row.type === "Paid" ? "var(--accent-deep)" : "var(--muted)" }}>{row.type}</span></td>
       <td>{row.assignee || "—"}</td>
       <td style={{ maxWidth: 240, fontSize: 12.5, color: "var(--muted)" }}>{row.qc_notes ? (row.qc_notes.length > 60 ? row.qc_notes.slice(0,60)+"…" : row.qc_notes) : "—"}</td>
@@ -4344,6 +4471,15 @@ function QualityChecksGlobal({ deals, canEdit, onOpen, toast, currentUserName })
   };
   useEffect(() => { load(); }, []);
 
+  // The page already holds every QC entry, so the duplicate lookup needs no
+  // round-trip. Returns the OTHER rows sharing this scene, excluding the row
+  // being edited.
+  const findDuplicate = (imageId, selfId) => {
+    const key = qcDedupKey(imageId);
+    if (!key) return [];
+    return rows.filter(r => r.id !== selfId && qcDedupKey(r.image_id) === key);
+  };
+
   const submit = async (entry) => {
     try {
       // Look the deal up in the FULL list — `deals` is the Deals page's filtered
@@ -4451,7 +4587,31 @@ function QualityChecksGlobal({ deals, canEdit, onOpen, toast, currentUserName })
   };
   const unassignedCount = rows.filter(needsAssignee).length;
   const deliveredDupCount = rows.filter(alreadyDelivered).length;
-  const filtered = filter === "all" ? tabRows : tabRows.filter(r => r.qc_result === filter);
+
+  // Same scene logged more than once. Matched on canonical satellite:frame, so
+  // "FF01 17517" and "FF01 0000017517" count as one image.
+  const dupGroups = qcDuplicateGroups(rows);
+  const dupInfo = new Map();          // row id -> marker detail
+  for (const [key, group] of dupGroups) {
+    const keeper = qcKeeperOf(group);
+    const spellings = [...new Set(group.map(r => r.image_id).filter(Boolean))];
+    for (const r of group) {
+      dupInfo.set(r.id, { total: group.length, spellings, isKeeper: r.id === keeper.id, key });
+    }
+  }
+  const dupImageCount = dupGroups.size;                 // distinct scenes affected
+  const dupRedundantCount = dupInfo.size - dupGroups.size; // rows that could go
+  // Canonical keys of every scene that already has a QC entry — used by the feed
+  // to avoid offering "Assign to SE" for something already in the queue.
+  const qcKeysExisting = new Set(rows.map(r => qcDedupKey(r.image_id)).filter(Boolean));
+
+  const filtered = filter === "duplicates"
+    ? tabRows.filter(r => dupInfo.has(r.id))
+      // Group the duplicates together so a pair sits side by side, newest first
+      // within each scene — you can't compare two rows that are 40 apart.
+      .sort((a, b) => (dupInfo.get(a.id).key).localeCompare(dupInfo.get(b.id).key)
+        || String(b.created_at || "").localeCompare(String(a.created_at || "")))
+    : filter === "all" ? tabRows : tabRows.filter(r => r.qc_result === filter);
   const passCount = tabRows.filter(r => r.qc_result === "Pass").length;
   const failCount = tabRows.filter(r => r.qc_result === "Fail").length;
   const awaitingCount = tabRows.filter(r => r.qc_result === "Awaiting QC").length;
@@ -4492,6 +4652,13 @@ function QualityChecksGlobal({ deals, canEdit, onOpen, toast, currentUserName })
               <button className={filter==="Awaiting QC"?"on":""} onClick={() => setFilter("Awaiting QC")}>Awaiting</button>
               <button className={filter==="Pass"?"on":""} onClick={() => setFilter("Pass")}>Pass</button>
               <button className={filter==="Fail"?"on":""} onClick={() => setFilter("Fail")}>Fail</button>
+              {dupImageCount > 0 && (
+                <button className={filter==="duplicates"?"on":""} onClick={() => setFilter("duplicates")}
+                  title="Scenes logged more than once, grouped so each pair sits together"
+                  style={{ color: filter==="duplicates" ? undefined : "var(--bad)" }}>
+                  Duplicates ({dupImageCount})
+                </button>
+              )}
             </div>
           )}
           {canEdit && !showForm && !editRow && (
@@ -4525,7 +4692,7 @@ function QualityChecksGlobal({ deals, canEdit, onOpen, toast, currentUserName })
 
       {(showForm || editRow) && (
         <QcForm key={editRow ? editRow.id : (promoteFrom ? `promote-${promoteFrom.id}` : "new")}
-          deals={pickDeals} initial={editRow} fromCapture={promoteFrom}
+          deals={pickDeals} initial={editRow} fromCapture={promoteFrom} findDuplicate={findDuplicate}
           onSubmit={submit} onCancel={() => { setShowForm(false); setEditRow(null); setPromoteFrom(null); }} />
       )}
 
@@ -4563,6 +4730,17 @@ function QualityChecksGlobal({ deals, canEdit, onOpen, toast, currentUserName })
               <b style={{ color:"var(--ink)" }}>{deliveredDupCount}</b> already delivered to the customer — QC not needed, safe to delete
             </span>
           )}
+          {dupImageCount > 0 && (
+            <span style={{ color:"var(--muted)" }}>
+              <Copy size={12} style={{ color:"var(--bad)", verticalAlign:"-2px" }} />{" "}
+              <b style={{ color:"var(--ink)" }}>{dupImageCount}</b> image{dupImageCount === 1 ? "" : "s"} logged more than once
+              {" "}({dupRedundantCount} redundant {dupRedundantCount === 1 ? "entry" : "entries"}) —{" "}
+              <button onClick={() => setFilter("duplicates")}
+                style={{ border:"none", background:"none", padding:0, cursor:"pointer", color:"var(--accent-deep)", fontSize:12 }}>
+                review them
+              </button>
+            </span>
+          )}
         </div>
       )}
 
@@ -4588,9 +4766,14 @@ function QualityChecksGlobal({ deals, canEdit, onOpen, toast, currentUserName })
                     <td style={{ fontSize:11.5, whiteSpace:"nowrap" }}>{fmtDay(c.sent_to_aurora_at)}</td>
                     {/* Can be far older on a reprocessed scene — that's expected */}
                     <td style={{ fontSize:11.5, whiteSpace:"nowrap", color:"var(--muted2)" }}>{fmtDay(c.captured_at)}</td>
+                    {/* qc_id alone isn't enough: an entry created by hand or by
+                        record-qc leaves the feed row unlinked, and promoting it
+                        then makes a second entry for the same scene. Check the
+                        canonical key against real QC entries too. */}
                     {canEdit && <td style={{ whiteSpace:"nowrap" }}>
-                      {c.qc_id
-                        ? <span className="tag" style={{ background:"var(--accent-soft)", color:"var(--accent-deep)", fontWeight:600 }}>In QC</span>
+                      {(c.qc_id || qcKeysExisting.has(qcDedupKey(c.image_id)))
+                        ? <span className="tag" title={c.qc_id ? "Promoted from this feed row" : "A QC entry already exists for this scene"}
+                            style={{ background:"var(--accent-soft)", color:"var(--accent-deep)", fontWeight:600 }}>In QC</span>
                         : <button className="btn ghost" style={{ padding:"4px 10px", fontSize:11.5, color:"var(--accent-deep)", border:"1px solid var(--line)", background:"var(--card)" }}
                             onClick={() => promoteToQc(c)}>Assign to SE</button>}
                     </td>}
@@ -4650,6 +4833,7 @@ function QualityChecksGlobal({ deals, canEdit, onOpen, toast, currentUserName })
               {filtered.length ? filtered.map(r => (
                 <QcRow key={r.id} row={r} canEdit={canEdit} onDelete={remove}
                   needsAssignee={needsAssignee(r)} alreadyDelivered={alreadyDelivered(r)}
+                  duplicateOf={dupInfo.get(r.id)}
                   onEdit={(row) => { setEditRow(row); setShowForm(false); window.scrollTo({ top: 0, behavior: "smooth" }); }} showOrg />
               )) : <tr><td colSpan={canEdit ? 15 : 14} style={{ textAlign:"center", padding:30, color:"var(--muted2)" }}>
                   No QC entries yet — create one, or assign an image from the IPR feed.
@@ -4675,6 +4859,24 @@ function QcTab({ d, canEdit, toast, currentUserName, onRefresh }) {
     finally { setLoading(false); }
   };
   useEffect(() => { load(); }, [d.id]);
+
+  // This tab only holds THIS deal's entries, but a duplicate of the same scene is
+  // most likely on another deal — or on no deal at all. So the check needs the
+  // whole table. Fetched only when the form actually opens, since most visits to
+  // an Execution tab never log a QC entry.
+  const [dupIndex, setDupIndex] = useState(null);
+  useEffect(() => {
+    if (!(showForm || editRow) || dupIndex) return;
+    let live = true;
+    existingQcIndex().then(ix => { if (live) setDupIndex(ix); }).catch(() => { /* check degrades to off */ });
+    return () => { live = false; };
+  }, [showForm, editRow, dupIndex]);
+  const findDuplicate = (imageId, selfId) => {
+    if (!dupIndex) return [];        // index not loaded (or failed) — don't block the save
+    const key = qcDedupKey(imageId);
+    if (!key) return [];
+    return (dupIndex.get(key) || []).filter(r => r.id !== selfId);
+  };
 
   const submit = async (entry) => {
     try {
@@ -4724,7 +4926,7 @@ function QcTab({ d, canEdit, toast, currentUserName, onRefresh }) {
       )}
       {(showForm || editRow) && (
         <QcForm key={editRow ? editRow.id : "new"} deals={[]} initial={editRow}
-          defaultOrg={d.company} defaultPassportId={d.id}
+          defaultOrg={d.company} defaultPassportId={d.id} findDuplicate={findDuplicate}
           onSubmit={submit} onCancel={() => { setShowForm(false); setEditRow(null); }} />
       )}
       {loading ? <div className="empty"><RefreshCw size={15} className="spin" /> Loading…</div> : (
