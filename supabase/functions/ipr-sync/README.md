@@ -7,6 +7,12 @@
 > 1. **Unreachable.** The IPR portal (`ipr-image-status.portals.pixxel.dev`) is not
 >    reachable from Supabase's edge network (outbound fetch times out — verify with
 >    `{"ping":true}`). A cron here would 504 every run.
+>    *Re-verified 2026-08-17: `{"reachable":false,"error":"The signal has been
+>    aborted","ms":10006}` — still timing out at the 10s guard. Note this is a
+>    network-reach problem, not a code problem: redeploying changes nothing, and
+>    it is unrelated to the separate IPR `processingStatus` 500 that WAS fixed on
+>    2026-08-17. Fixing it needs IPR reachable from outside Pixxel's network, or
+>    this job moved onto a host inside it.*
 > 2. **Out of date.** This function still writes `Awaiting QC` rows into
 >    `quality_checks` assigned to each deal's SE. That behaviour was deliberately
 >    removed from the app: it flooded SE queues with images nobody chose to review,

@@ -2246,8 +2246,8 @@ function iprArtefactFlags(item) {
   return out;
 }
 
-// Look IPR records up by our image ids. Uses satImagePairs, which is unaffected
-// by the broken processingStatus filter, and takes a comfortable batch (verified
+// Look IPR records up by our image ids. Uses satImagePairs, which kept working
+// throughout the processingStatus outage, and takes a comfortable batch (verified
 // to 250 pairs in one call; 100 keeps the URL sane). Returns a Map keyed by the
 // canonical satellite:frame so it joins to quality_checks.image_id regardless of
 // zero-padding differences. Best-effort: a batch that fails is skipped, because
@@ -2427,26 +2427,30 @@ const IPR_FEED_DAYS = 30;
 // above is on status time — so an image captured in March, reprocessed and sent
 // to Aurora yesterday, is only visible to us if we ask back as far as March.
 //
-// The wide lookback is only affordable with IPR's own status filter doing the
-// narrowing: filtered, a year is a few hundred rows. Unfiltered it would be
-// ~57,000 images, so the fallback settles for a shorter reach and says so. That
-// is a real gap — a scene reprocessed from further back than this won't appear
-// until IPR's processingStatus filter is fixed.
-const IPR_CAPTURE_LOOKBACK_DAYS = 365;
+// Two years, because it is free: filtered by status, IPR's entire "Sent to
+// Aurora" history is ~2,583 rows and 365 days already covers 2,563 of them, so
+// 365 and 730 both cost the same three requests (measured 2026-08-17). The
+// headroom matters — the longest capture-to-Aurora lag actually observed in a
+// live window was 257 days (FF03 3000, captured 27 Nov 2025, Aurora 11 Aug
+// 2026), which a 365-day reach would only just have caught.
+//
+// The fallback below can't use the status filter, so it has to pull and sift
+// everything and settles for a much shorter reach — a genuine gap it reports in
+// the toast rather than hiding.
+const IPR_CAPTURE_LOOKBACK_DAYS = 730;
 const IPR_FALLBACK_LOOKBACK_DAYS = 45;
 
 // Fetch everything matching any of `statuses`, preferring IPR's own filter.
 //
-// Since ~12 Aug 2026 the endpoint returns a 500 for EVERY non-empty
-// processingStatus — verified against nonsense values too, so it's their filter
-// handler, not our status strings or our encoding. Every other parameter
-// (startDate, query, satImagePairs, paging) still works.
+// Between roughly 12 and 17 Aug 2026 that filter returned a 500 for EVERY
+// non-empty processingStatus — nonsense values included, so it was their handler
+// rather than our status strings. It has since been fixed (re-verified
+// 2026-08-17: filtered queries 200, and an unknown status correctly returns 0
+// rows rather than everything), so the filtered path below is the one that runs.
 //
-// So: ask for the filter, and if it 5xxs, pull the window unfiltered and match
-// the statuses here instead. The unfiltered window is ~11k images where the
-// filtered result is a few dozen, hence the much larger page size — 12 requests
-// rather than 56. This costs nothing once IPR is fixed and un-does itself
-// automatically, with no redeploy.
+// The fallback stays. It costs nothing while the filter works, it un-does itself
+// with no redeploy, and it is the difference between a degraded feed and a dead
+// one the next time that endpoint breaks — which it now has form for.
 // `fallbackBase` lets the caller ask for a cheaper query on the fallback path,
 // since it has to pull and sift everything itself.
 const IPR_FALLBACK_PAGE_SIZE = 1000;
