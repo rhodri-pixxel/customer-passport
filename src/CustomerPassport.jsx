@@ -4652,10 +4652,13 @@ function QualityChecksGlobal({ deals, canEdit, onOpen, toast, currentUserName })
               <button className={filter==="Awaiting QC"?"on":""} onClick={() => setFilter("Awaiting QC")}>Awaiting</button>
               <button className={filter==="Pass"?"on":""} onClick={() => setFilter("Pass")}>Pass</button>
               <button className={filter==="Fail"?"on":""} onClick={() => setFilter("Fail")}>Fail</button>
-              {dupImageCount > 0 && (
+              {/* Also render while it's the ACTIVE filter, even at zero: a
+                  control that removes itself the moment you finish using it
+                  leaves you in a view you can't see or leave. */}
+              {(dupImageCount > 0 || filter === "duplicates") && (
                 <button className={filter==="duplicates"?"on":""} onClick={() => setFilter("duplicates")}
                   title="Scenes logged more than once, grouped so each pair sits together"
-                  style={{ color: filter==="duplicates" ? undefined : "var(--bad)" }}>
+                  style={{ color: filter==="duplicates" || dupImageCount === 0 ? undefined : "var(--bad)" }}>
                   Duplicates ({dupImageCount})
                 </button>
               )}
@@ -4836,7 +4839,27 @@ function QualityChecksGlobal({ deals, canEdit, onOpen, toast, currentUserName })
                   duplicateOf={dupInfo.get(r.id)}
                   onEdit={(row) => { setEditRow(row); setShowForm(false); window.scrollTo({ top: 0, behavior: "smooth" }); }} showOrg />
               )) : <tr><td colSpan={canEdit ? 15 : 14} style={{ textAlign:"center", padding:30, color:"var(--muted2)" }}>
-                  No QC entries yet — create one, or assign an image from the IPR feed.
+                  {/* An empty FILTERED view is not an empty table. Saying "no QC
+                      entries yet" when 200 exist behind an active filter reads as
+                      data loss, and always offer the way back — the Duplicates
+                      button unmounts once the count hits zero, which stranded
+                      people in a view with no visible control. */}
+                  {tabRows.length === 0
+                    ? "No QC entries yet — create one, or assign an image from the IPR feed."
+                    : (
+                      <>
+                        {filter === "duplicates"
+                          ? <><CheckCircle2 size={16} style={{ color:"var(--ok)", verticalAlign:"-3px" }} /> {" "}
+                              <b style={{ color:"var(--ink)" }}>No duplicates left.</b> Every scene is logged once.</>
+                          : <>No entries with <b style={{ color:"var(--ink)" }}>{filter}</b> in this view.</>}
+                        <div style={{ marginTop:12 }}>
+                          <button className="btn ghost" onClick={() => setFilter("all")}
+                            style={{ color:"var(--accent-deep)", border:"1px solid var(--line)", background:"var(--card)" }}>
+                            <ChevronLeft size={13} /> Back to all {tabRows.length} QC entries
+                          </button>
+                        </div>
+                      </>
+                    )}
                 </td></tr>}
             </tbody>
           </table>
