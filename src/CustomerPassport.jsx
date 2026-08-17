@@ -2199,6 +2199,84 @@ function iprStatusTime(item) {
   return iprTimestamp(item, "status_timestamp");
 }
 
+// IPR's own per-artefact quality readings, as label/value pairs, keeping only
+// the ones that aren't clean. Used by the QC discrepancy report to show what
+// IPR's numbers said about an image its pipeline passed and an SE then failed.
+//
+// Field names and value vocabulary confirmed against the live API 2026-08-17.
+// "none" / null / false / "" all mean nothing to report; anything else ("mild",
+// "cloudy", a number) is a reading worth printing.
+const IPR_ARTEFACT_FIELDS = [
+  ["bbr", "BBR"],
+  ["georeferencing", "Georeferencing"],
+  ["color", "Colour"],
+  ["act_stripes", "Striping (across-track)"],
+  ["alt_stripes", "Striping (along-track)"],
+  ["mosaicing", "Mosaicing"],
+  ["isofit", "ISOFIT / atmospheric"],
+  ["cloud_cover", "Cloud cover"],
+  ["has_bad_tiles", "Bad tiles"],
+  ["relative_light", "Relative light"],
+  ["completion_reason", "Completion"],
+];
+// Values that mean "nothing to report". Kept explicit rather than inferred: a
+// missed entry here shows a clean image as flagged, which is worse than a stray
+// flag, because it hides the cases where IPR measured nothing wrong at all.
+// "clear" is cloud_cover's clean value; "complete" is completion_reason's.
+const IPR_CLEAN_VALUES = new Set([
+  "none", "false", "clear", "complete", "not-available", "ok", "good", "normal", "nil", "-",
+]);
+function iprArtefactFlags(item) {
+  if (!item) return [];
+  const out = [];
+  for (const [key, label] of IPR_ARTEFACT_FIELDS) {
+    const v = item[key];
+    if (v === null || v === undefined || v === false || v === "" ) continue;
+    const s = String(v).toLowerCase().trim();
+    if (IPR_CLEAN_VALUES.has(s)) continue;
+    // relative_light is a ratio around 1; only flag a meaningful departure.
+    if (key === "relative_light") {
+      const n = Number(v);
+      if (!isFinite(n) || Math.abs(n - 1) < 0.1) continue;
+      out.push({ key, label, value: n.toFixed(2) });
+      continue;
+    }
+    out.push({ key, label, value: String(v) });
+  }
+  return out;
+}
+
+// Look IPR records up by our image ids. Uses satImagePairs, which is unaffected
+// by the broken processingStatus filter, and takes a comfortable batch (verified
+// to 250 pairs in one call; 100 keeps the URL sane). Returns a Map keyed by the
+// canonical satellite:frame so it joins to quality_checks.image_id regardless of
+// zero-padding differences. Best-effort: a batch that fails is skipped, because
+// the report is still worth producing without IPR's numbers on it.
+const IPR_PAIR_BATCH = 100;
+async function fetchIprByImageIds(imageIds) {
+  const byKey = new Map();
+  const pairs = [];
+  for (const raw of imageIds) {
+    const key = normalizeImageId(raw);
+    if (!key) continue;
+    const [sat, frame] = key.split(":");
+    pairs.push(`${sat}:${String(frame).padStart(10, "0")}`);
+  }
+  const unique = [...new Set(pairs)];
+  let failed = 0;
+  for (let i = 0; i < unique.length; i += IPR_PAIR_BATCH) {
+    const slice = unique.slice(i, i + IPR_PAIR_BATCH);
+    try {
+      const { items } = await iprFetch({ satImagePairs: slice.join(","), pageSize: 1000 });
+      for (const it of items) {
+        const k = normalizeImageId(iprImageId(it));
+        if (k) byKey.set(k, it);
+      }
+    } catch (_) { failed++; }
+  }
+  return { byKey, batches: Math.ceil(unique.length / IPR_PAIR_BATCH), failed };
+}
+
 // Best-effort link of an IPR item to a deal by company name appearing in its AOI/
 // target text. Unreliable by design (AOI ids are generic) — accepted trade-off
 // until captures carry a shared customer id. Returns the matched deal or null.
@@ -2481,6 +2559,270 @@ async function syncCapturedFromIpr(deals) {
     truncated: res.truncated, filteredLocally: res.filteredLocally,
     lookbackDays: res.filteredLocally ? IPR_FALLBACK_LOOKBACK_DAYS : IPR_CAPTURE_LOOKBACK_DAYS,
   };
+}
+
+/* ── SE vs IPR QC discrepancy report ───────────────────────────────
+   Everything the Customer Passport holds from IPR has already passed IPR's own
+   QC — it only mirrors "Sent to Aurora". So an SE verdict on one of these images
+   IS the comparison, with no second opinion to fetch:
+
+     SE Pass  → the SE agrees with IPR          ("agreed pass")
+     SE Fail  → IPR passed something the SE won't ("false positive")
+
+   That's why the classification never calls IPR. IPR is consulted only to
+   enrich the failures with its own artefact readings — useful for arguing the
+   case, but the report stands up without it.                               */
+
+// Which date a QC entry counts against. se_qc_completed_on is the review date
+// and is what a reviewer means by "the images I did in July"; created_at is the
+// fallback for rows logged before that column existed.
+function qcReviewDate(row) {
+  return asDateInput(row.se_qc_completed_on) || asDateInput(row.created_at) || "";
+}
+
+// Every reviewer who has a verdict in the given rows, plus their counts, so the
+// picker only ever offers people who actually have something to report on.
+function qcReviewers(rows) {
+  const byName = new Map();
+  for (const r of rows) {
+    const name = r.assignee || "— unassigned —";
+    if (!byName.has(name)) byName.set(name, { name, reviewed: 0, passes: 0, fails: 0 });
+    const t = byName.get(name);
+    if (r.qc_result === "Pass") { t.reviewed++; t.passes++; }
+    else if (r.qc_result === "Fail") { t.reviewed++; t.fails++; }
+  }
+  return [...byName.values()].sort((a, b) => b.reviewed - a.reviewed || a.name.localeCompare(b.name));
+}
+
+const pct = (n, d) => (d ? `${((n / d) * 100).toFixed(1)}%` : "—");
+
+// Build the whole report from QC rows already narrowed to the chosen range and
+// reviewers. `iprByKey` may be empty — every use of it is guarded.
+function buildQcReport({ rows, reviewers, from, to, iprByKey, generatedBy, iprFailedBatches }) {
+  const passes = rows.filter(r => r.qc_result === "Pass");
+  const fails = rows.filter(r => r.qc_result === "Fail");
+  const awaiting = rows.filter(r => r.qc_result !== "Pass" && r.qc_result !== "Fail");
+  const reviewed = passes.length + fails.length;
+
+  // Why the SE failed them. One image can carry several reasons, so the
+  // percentages are "share of failures mentioning this", not a partition.
+  const reasonCounts = new Map();
+  let noReason = 0;
+  for (const r of fails) {
+    const { reasons, otherText } = parseFailReasons(r.fail_reasons);
+    if (!reasons.length) { noReason++; continue; }
+    for (const reason of reasons) {
+      const label = reason === "Other" && otherText ? `Other: ${otherText}` : reason;
+      reasonCounts.set(label, (reasonCounts.get(label) || 0) + 1);
+    }
+  }
+  const reasonRows = [...reasonCounts.entries()]
+    .map(([label, count]) => ({ label, count, share: pct(count, fails.length) }))
+    .sort((a, b) => b.count - a.count || a.label.localeCompare(b.label));
+
+  // What IPR's own numbers said about the images we rejected — the substance of
+  // the discrepancy argument. Counted across all false positives.
+  const iprFlagCounts = new Map();
+  let failsWithIpr = 0, failsWithNoIprFlag = 0;
+  const decorate = (r) => {
+    const item = iprByKey.get(normalizeImageId(r.image_id)) || null;
+    return { row: r, ipr: item, flags: iprArtefactFlags(item) };
+  };
+  const failDetail = fails.map(decorate).sort((a, b) =>
+    (qcReviewDate(b.row) || "").localeCompare(qcReviewDate(a.row) || ""));
+  for (const d of failDetail) {
+    if (!d.ipr) continue;
+    failsWithIpr++;
+    if (!d.flags.length) failsWithNoIprFlag++;
+    for (const f of d.flags) {
+      const key = `${f.label}: ${f.value}`;
+      iprFlagCounts.set(key, (iprFlagCounts.get(key) || 0) + 1);
+    }
+  }
+  const iprFlagRows = [...iprFlagCounts.entries()]
+    .map(([label, count]) => ({ label, count, share: pct(count, failsWithIpr) }))
+    .sort((a, b) => b.count - a.count || a.label.localeCompare(b.label));
+
+  const passDetail = passes.map(decorate).sort((a, b) =>
+    (qcReviewDate(b.row) || "").localeCompare(qcReviewDate(a.row) || ""));
+
+  // Per-reviewer split, so a multi-reviewer report is still readable.
+  const perReviewer = qcReviewers(rows).filter(t => t.reviewed > 0).map(t => ({
+    ...t, falsePositiveRate: pct(t.fails, t.reviewed),
+  }));
+
+  return {
+    from, to, reviewers, generatedBy,
+    generatedAt: new Date().toISOString(),
+    totals: {
+      reviewed, agreedPasses: passes.length, falsePositives: fails.length,
+      awaiting: awaiting.length,
+      falsePositiveRate: pct(fails.length, reviewed),
+      agreementRate: pct(passes.length, reviewed),
+    },
+    reasonRows, noReason,
+    iprFlagRows, failsWithIpr, failsWithNoIprFlag, iprFailedBatches,
+    failDetail, passDetail,
+    perReviewer: perReviewer.length > 1 ? perReviewer : [],
+  };
+}
+
+// Render the report as a standalone printable document.
+//
+// No PDF library on purpose. The browser's own "Save as PDF" produces a better,
+// selectable, smaller file than a canvas-based renderer, handles page breaks and
+// repeating table headers for free, and adds nothing to a bundle that is already
+// over a megabyte. The trade is that the reader picks "Save as PDF" in the print
+// dialog rather than getting a download straight away.
+function renderQcReportHtml(rep) {
+  const esc = (s) => String(s === null || s === undefined ? "" : s)
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+  const day = (iso) => iso ? new Date(iso).toLocaleDateString("en-GB", { day:"2-digit", month:"short", year:"numeric" }) : "—";
+  const who = rep.reviewers.length ? rep.reviewers.join(", ") : "All reviewers";
+  const t = rep.totals;
+
+  const metric = (label, value, sub) => `
+    <div class="metric">
+      <div class="metric-v">${esc(value)}</div>
+      <div class="metric-l">${esc(label)}</div>
+      ${sub ? `<div class="metric-s">${esc(sub)}</div>` : ""}
+    </div>`;
+
+  const table = (cols, rows, empty) => rows.length ? `
+    <table>
+      <thead><tr>${cols.map(c => `<th${c.num ? ' class="num"' : ""}>${esc(c.label)}</th>`).join("")}</tr></thead>
+      <tbody>${rows.map(r => `<tr>${cols.map(c =>
+        `<td${c.num ? ' class="num"' : ""}${c.mono ? ' class="mono"' : ""}>${c.html ? r[c.key] : esc(r[c.key])}</td>`).join("")}</tr>`).join("")}</tbody>
+    </table>` : `<p class="empty">${esc(empty)}</p>`;
+
+  const failRows = rep.failDetail.map(d => ({
+    date: day(qcReviewDate(d.row)),
+    image: d.row.image_id || "—",
+    org: d.row.organization || "—",
+    reviewer: d.row.assignee || "—",
+    reasons: d.row.fail_reasons || "<i>not recorded</i>",
+    ipr: d.ipr
+      ? (d.flags.length ? d.flags.map(f => `${esc(f.label)}: <b>${esc(f.value)}</b>`).join("<br>") : "<i>all clean</i>")
+      : "<i>not found in IPR</i>",
+    notes: d.row.qc_notes ? esc(d.row.qc_notes).slice(0, 300) : "—",
+  }));
+
+  const passRows = rep.passDetail.map(d => ({
+    date: day(qcReviewDate(d.row)),
+    image: d.row.image_id || "—",
+    org: d.row.organization || "—",
+    reviewer: d.row.assignee || "—",
+    captured: day(d.row.date_captured),
+  }));
+
+  return `<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<title>SE vs IPR QC report — ${esc(rep.from)} to ${esc(rep.to)}</title>
+<style>
+  @page { size: A4; margin: 14mm 12mm; }
+  * { box-sizing: border-box; }
+  body { font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+         color: #10192b; margin: 0; font-size: 10.5pt; line-height: 1.45; }
+  h1 { font-size: 17pt; margin: 0 0 2mm; letter-spacing: -.2pt; }
+  h2 { font-size: 12pt; margin: 8mm 0 2.5mm; padding-bottom: 1.2mm;
+       border-bottom: 1.5px solid #10192b; }
+  .meta { color: #5b6b80; font-size: 9pt; margin: 0 0 1mm; }
+  .premise { background: #f2f6fb; border-left: 3px solid #2d7ff9; padding: 3mm 4mm;
+             margin: 4mm 0 0; font-size: 9pt; color: #33465e; }
+  .premise b { color: #10192b; }
+  .metrics { display: flex; gap: 3mm; margin: 4mm 0 0; flex-wrap: wrap; }
+  .metric { flex: 1 1 0; min-width: 32mm; border: 1px solid #d8e0ea; border-radius: 2mm;
+            padding: 3mm 3.5mm; background: #fbfcfe; }
+  .metric-v { font-size: 19pt; font-weight: 650; letter-spacing: -.5pt; }
+  .metric-l { font-size: 8.5pt; text-transform: uppercase; letter-spacing: .5pt; color: #5b6b80; margin-top: .8mm; }
+  .metric-s { font-size: 8pt; color: #7c8a9c; margin-top: .6mm; }
+  .metric.bad .metric-v { color: #c2410c; }
+  .metric.good .metric-v { color: #047a3d; }
+  table { width: 100%; border-collapse: collapse; font-size: 8.8pt; }
+  thead { display: table-header-group; }
+  tr { page-break-inside: avoid; }
+  th { text-align: left; background: #eef2f7; border: 1px solid #d8e0ea;
+       padding: 1.6mm 2mm; font-size: 8pt; text-transform: uppercase; letter-spacing: .4pt; color: #445468; }
+  td { border: 1px solid #e2e8f0; padding: 1.6mm 2mm; vertical-align: top; }
+  td.num, th.num { text-align: right; white-space: nowrap; }
+  .mono { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: 8.2pt; white-space: nowrap; }
+  .empty { color: #7c8a9c; font-style: italic; font-size: 9pt; margin: 2mm 0; }
+  .foot { margin-top: 8mm; padding-top: 2.5mm; border-top: 1px solid #d8e0ea;
+          color: #7c8a9c; font-size: 8pt; }
+  .caveat { color: #8a5a00; background: #fff8e6; border-left: 3px solid #ecb423;
+            padding: 2.5mm 3.5mm; font-size: 8.5pt; margin: 3mm 0 0; }
+  @media print { .noprint { display: none !important; } }
+  .noprint { position: fixed; top: 8px; right: 8px; display: flex; gap: 6px; }
+  .noprint button { font: inherit; font-size: 12px; padding: 7px 14px; border-radius: 6px;
+                    border: 1px solid #2d7ff9; background: #2d7ff9; color: #fff; cursor: pointer; }
+</style></head>
+<body>
+<div class="noprint"><button onclick="window.print()">Save as PDF / Print</button></div>
+
+<h1>SE vs IPR quality-check report</h1>
+<div class="meta"><b>Reviewer${rep.reviewers.length === 1 ? "" : "s"}:</b> ${esc(who)}</div>
+<div class="meta"><b>Review period:</b> ${esc(rep.from)} to ${esc(rep.to)} (by SE QC completion date)</div>
+<div class="meta"><b>Prepared by:</b> ${esc(rep.generatedBy || "—")} · ${day(rep.generatedAt)}</div>
+
+<div class="premise">
+  Every image the Customer Passport receives from IPR has <b>already passed IPR's own QC</b> — the feed
+  mirrors <b>Sent to Aurora</b> only. So an SE verdict on one of these images is itself the comparison:
+  a <b>pass</b> agrees with IPR, and a <b>fail</b> is an image IPR released that SE review rejected —
+  counted here as a <b>false positive</b>.
+</div>
+
+<div class="metrics">
+  ${metric("Images reviewed", t.reviewed, `${rep.from} – ${rep.to}`)}
+  ${metric("Agreed passes", `${t.agreedPasses}`, `${t.agreementRate} of reviewed`).replace('class="metric"', 'class="metric good"')}
+  ${metric("False positives", `${t.falsePositives}`, `${t.falsePositiveRate} of reviewed`).replace('class="metric"', 'class="metric bad"')}
+  ${metric("Awaiting QC", t.awaiting, "not counted in rates")}
+</div>
+
+${rep.perReviewer.length ? `
+<h2>By reviewer</h2>
+${table(
+  [{ key:"name", label:"Reviewer" }, { key:"reviewed", label:"Reviewed", num:true },
+   { key:"passes", label:"Agreed passes", num:true }, { key:"fails", label:"False positives", num:true },
+   { key:"falsePositiveRate", label:"False-positive rate", num:true }],
+  rep.perReviewer, "")}` : ""}
+
+<h2>Why SE review failed them</h2>
+<div class="meta">One image can carry more than one reason, so these shares are the proportion of the
+${rep.totals.falsePositives} false positive${rep.totals.falsePositives === 1 ? "" : "s"} mentioning each reason — they do not sum to 100%.</div>
+${table(
+  [{ key:"label", label:"Failure reason" }, { key:"count", label:"Images", num:true }, { key:"share", label:"Share of failures", num:true }],
+  rep.reasonRows, "No failure reasons recorded for this period.")}
+${rep.noReason ? `<div class="caveat">${rep.noReason} failed image${rep.noReason === 1 ? " has" : "s have"} no structured failure reason recorded — most likely logged before the reason picker existed. The detail table below still shows their notes.</div>` : ""}
+
+<h2>What IPR's own metrics said about those images</h2>
+<div class="meta">IPR's per-artefact readings for the ${rep.failsWithIpr} false positive${rep.failsWithIpr === 1 ? "" : "s"} still present in IPR. Readings of
+<i>none</i> / clean are omitted. This is what IPR measured on images its pipeline released.</div>
+${table(
+  [{ key:"label", label:"IPR reading" }, { key:"count", label:"Images", num:true }, { key:"share", label:"Share", num:true }],
+  rep.iprFlagRows, "No IPR readings available — IPR was unreachable, or none of these images are still in it.")}
+${rep.failsWithNoIprFlag ? `<div class="caveat">${rep.failsWithNoIprFlag} of the false positives came back from IPR entirely clean on every artefact it measures — those are the clearest cases where SE review caught something IPR's metrics do not capture.</div>` : ""}
+${rep.iprFailedBatches ? `<div class="caveat">${rep.iprFailedBatches} IPR lookup batch${rep.iprFailedBatches === 1 ? "" : "es"} failed, so some readings may be missing. IPR's status filter has been returning errors; retry later for a complete picture.</div>` : ""}
+
+<h2>False positives in detail (${rep.failDetail.length})</h2>
+${table(
+  [{ key:"date", label:"Reviewed" }, { key:"image", label:"Image ID", mono:true },
+   { key:"org", label:"Customer" }, { key:"reviewer", label:"Reviewer" },
+   { key:"reasons", label:"SE failure reasons", html:true }, { key:"ipr", label:"IPR readings", html:true },
+   { key:"notes", label:"SE notes", html:true }],
+  failRows, "No false positives in this period.")}
+
+<h2>Agreed passes (${rep.passDetail.length})</h2>
+${table(
+  [{ key:"date", label:"Reviewed" }, { key:"image", label:"Image ID", mono:true },
+   { key:"org", label:"Customer" }, { key:"reviewer", label:"Reviewer" }, { key:"captured", label:"Captured" }],
+  passRows, "No agreed passes in this period.")}
+
+<div class="foot">
+  Pixxel Customer Passport · generated ${esc(new Date(rep.generatedAt).toLocaleString("en-GB"))} ·
+  source: Quality Checks entries joined to the IPR metadata API by satellite + frame.
+  Rates exclude entries still <i>Awaiting QC</i>.
+</div>
+</body></html>`;
 }
 
 /* ── Image / QC entry Slack notifications ──────────────────────────
@@ -3811,6 +4153,151 @@ function CatalogSyncModal({ deals, onClose, onDone, toast, currentUserName }) {
   );
 }
 
+// "Generate report" — SE vs IPR discrepancy over a date range, for one reviewer,
+// several, or everyone. Shows the headline numbers live so you can see whether
+// the range is worth printing before you print it.
+function QcReportModal({ rows, currentUserName, onClose, toast }) {
+  const today = todayISO();
+  const monthAgo = new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10);
+  const [from, setFrom] = useState(monthAgo);
+  const [to, setTo] = useState(today);
+  // Default to just me — the common case is an SE reporting on their own work.
+  const allReviewers = useMemo(() => qcReviewers(rows), [rows]);
+  const [picked, setPicked] = useState(() =>
+    allReviewers.some(r => r.name === currentUserName) ? [currentUserName] : []);
+  const [busy, setBusy] = useState(false);
+
+  const toggle = (name) => setPicked(p => toggleInList(p, name));
+  const inRange = useMemo(() => rows.filter(r => {
+    const d = qcReviewDate(r);
+    if (!d || d < from || d > to) return false;
+    return !picked.length || picked.includes(r.assignee || "— unassigned —");
+  }), [rows, from, to, picked]);
+
+  const previewPasses = inRange.filter(r => r.qc_result === "Pass").length;
+  const previewFails = inRange.filter(r => r.qc_result === "Fail").length;
+  const previewReviewed = previewPasses + previewFails;
+
+  const generate = async () => {
+    if (!previewReviewed) { toast("Nothing to report — no completed QC in that range"); return; }
+    setBusy(true);
+    try {
+      // Best-effort enrichment: IPR's own readings on the images we failed. The
+      // report is built either way, so an IPR outage costs detail, not the report.
+      const ids = inRange.filter(r => r.qc_result === "Fail").map(r => r.image_id).filter(Boolean);
+      let byKey = new Map(), failed = 0;
+      if (ids.length) {
+        const got = await fetchIprByImageIds(ids);
+        byKey = got.byKey; failed = got.failed;
+      }
+      const rep = buildQcReport({
+        rows: inRange, from, to, iprByKey: byKey, iprFailedBatches: failed,
+        reviewers: picked.length ? picked : [],
+        generatedBy: currentUserName,
+      });
+      const html = renderQcReportHtml(rep);
+      const w = window.open("", "_blank");
+      if (!w) {
+        toast("Your browser blocked the report window — allow pop-ups for this site and try again");
+        return;
+      }
+      w.document.write(html);
+      w.document.close();
+      toast(`Report ready — ${previewReviewed} reviewed · use Save as PDF in the print dialog`);
+      onClose();
+    } catch (e) {
+      toast("Couldn't build the report: " + iprErrorMessage(e));
+    } finally { setBusy(false); }
+  };
+
+  const chip = (on) => ({
+    display:"inline-flex", alignItems:"center", gap:6, fontSize:12.5, padding:"5px 10px",
+    borderRadius:8, cursor:"pointer",
+    border:"1px solid " + (on ? "var(--accent)" : "var(--line)"),
+    background: on ? "var(--accent-soft)" : "transparent",
+  });
+
+  return (
+    <div onClick={onClose} style={{ position:"fixed", inset:0, zIndex:200, background:"rgba(8,18,28,.45)", display:"flex", alignItems:"flex-start", justifyContent:"center", padding:"6vh 16px", overflowY:"auto" }}>
+      <div onClick={e => e.stopPropagation()} style={{ width:"100%", maxWidth:640, background:"var(--card)", borderRadius:16, border:"1px solid var(--line)", boxShadow:"0 30px 80px -20px rgba(11,18,32,.5)", overflow:"hidden" }}>
+        <div style={{ padding:"16px 20px", borderBottom:"1px solid var(--line)" }}>
+          <h3 style={{ margin:0, fontSize:15.5 }}>Generate QC report</h3>
+          <div style={{ fontSize:12, color:"var(--muted)", marginTop:3 }}>
+            SE verdicts against IPR. Every image here already passed IPR's QC, so an SE fail is a
+            false positive and an SE pass is an agreed pass.
+          </div>
+        </div>
+
+        <div style={{ padding:"16px 20px" }}>
+          <div className="clog-form-row">
+            <div>
+              <div className="k" style={{ fontFamily:"var(--font-mono)", fontSize:"9.5px", letterSpacing:".1em", textTransform:"uppercase", color:"var(--muted2)", marginBottom:4 }}>From</div>
+              <input type="date" value={from} max={to} onChange={e => setFrom(e.target.value)}
+                style={{ width:"100%", border:"1px solid var(--line)", borderRadius:8, padding:"7px 10px", fontFamily:"inherit", fontSize:13, outline:"none" }} />
+            </div>
+            <div>
+              <div className="k" style={{ fontFamily:"var(--font-mono)", fontSize:"9.5px", letterSpacing:".1em", textTransform:"uppercase", color:"var(--muted2)", marginBottom:4 }}>To</div>
+              <input type="date" value={to} min={from} max={today} onChange={e => setTo(e.target.value)}
+                style={{ width:"100%", border:"1px solid var(--line)", borderRadius:8, padding:"7px 10px", fontFamily:"inherit", fontSize:13, outline:"none" }} />
+            </div>
+          </div>
+          <div style={{ fontSize:11, color:"var(--muted2)", margin:"0 0 12px" }}>
+            Dated on <b>SE QC completed on</b>, falling back to when the entry was created for older rows.
+          </div>
+
+          <div className="k" style={{ fontFamily:"var(--font-mono)", fontSize:"9.5px", letterSpacing:".1em", textTransform:"uppercase", color:"var(--muted2)", marginBottom:6 }}>
+            Reviewers {picked.length ? `(${picked.length} selected)` : "(all)"}
+          </div>
+          <div style={{ display:"flex", flexWrap:"wrap", gap:8, marginBottom:6 }}>
+            {allReviewers.map(r => (
+              <label key={r.name} style={chip(picked.includes(r.name))}>
+                <input type="checkbox" checked={picked.includes(r.name)} onChange={() => toggle(r.name)} style={{ accentColor:"var(--accent)" }} />
+                {r.name}
+                <span style={{ color:"var(--muted2)", fontSize:11 }}>{r.reviewed}</span>
+              </label>
+            ))}
+            {!allReviewers.length && <span style={{ fontSize:12, color:"var(--muted2)" }}>No completed QC entries yet.</span>}
+          </div>
+          <div style={{ display:"flex", gap:10, marginBottom:14 }}>
+            <button onClick={() => setPicked([])} style={{ border:"none", background:"none", padding:0, cursor:"pointer", color:"var(--accent-deep)", fontSize:11.5 }}>Everyone</button>
+            {allReviewers.some(r => r.name === currentUserName) && (
+              <button onClick={() => setPicked([currentUserName])} style={{ border:"none", background:"none", padding:0, cursor:"pointer", color:"var(--accent-deep)", fontSize:11.5 }}>Just me</button>
+            )}
+          </div>
+
+          {/* Live preview, so nobody prints an empty report */}
+          <div style={{ display:"flex", gap:10, padding:"11px 13px", borderRadius:10, border:"1px solid var(--line)", background:"var(--line-soft)", flexWrap:"wrap" }}>
+            {[["Reviewed", previewReviewed, "var(--ink)"],
+              ["Agreed passes", previewPasses, "var(--forest)"],
+              ["False positives", previewFails, "var(--mining)"]].map(([label, n, color]) => (
+              <div key={label} style={{ flex:"1 1 0", minWidth:90 }}>
+                <div style={{ fontSize:19, fontWeight:650, color }}>{n}</div>
+                <div style={{ fontSize:10.5, textTransform:"uppercase", letterSpacing:".08em", color:"var(--muted2)" }}>{label}</div>
+              </div>
+            ))}
+            <div style={{ flex:"1 1 0", minWidth:90 }}>
+              <div style={{ fontSize:19, fontWeight:650, color:"var(--mining)" }}>
+                {previewReviewed ? `${((previewFails / previewReviewed) * 100).toFixed(1)}%` : "—"}
+              </div>
+              <div style={{ fontSize:10.5, textTransform:"uppercase", letterSpacing:".08em", color:"var(--muted2)" }}>FP rate</div>
+            </div>
+          </div>
+        </div>
+
+        <div style={{ display:"flex", gap:8, justifyContent:"flex-end", alignItems:"center", padding:"14px 20px", borderTop:"1px solid var(--line)" }}>
+          <span style={{ marginRight:"auto", fontSize:11.5, color:"var(--muted2)" }}>
+            Opens in a new tab — choose <b>Save as PDF</b> in the print dialog.
+          </span>
+          <button className="btn ghost" style={{ color:"var(--muted)", border:"1px solid var(--line)", background:"var(--card)" }} onClick={onClose}>Cancel</button>
+          <button className="btn solid" onClick={generate} disabled={busy || !previewReviewed}>
+            {busy ? <><RefreshCw size={13} className="spin" /> Building…</> : <><FileText size={13} /> Generate report</>}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function QualityChecksGlobal({ deals, canEdit, onOpen, toast, currentUserName }) {
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -3828,6 +4315,7 @@ function QualityChecksGlobal({ deals, canEdit, onOpen, toast, currentUserName })
   const [feedErr, setFeedErr] = useState("");           // background refresh couldn't reach IPR
   const [showImport, setShowImport] = useState(false); // IPR import modal
   const [showCatalog, setShowCatalog] = useState(false); // catalog delivery sync modal
+  const [showReport, setShowReport] = useState(false);   // SE vs IPR report builder
   const [syncing, setSyncing] = useState(false);       // auto-populate in progress
   // The Deals page's `deals` prop is filtered by its search box and filters.
   // This page must never use it to look a customer up — see fetchDealsForPicker.
@@ -4009,6 +4497,7 @@ function QualityChecksGlobal({ deals, canEdit, onOpen, toast, currentUserName })
               </button>
               <button className="btn ghost" style={{ color:"var(--accent-deep)", border:"1px solid var(--line)", background:"var(--card)" }} onClick={() => setShowImport(true)}><Satellite size={14} /> Import from IPR</button>
               <button className="btn ghost" style={{ color:"var(--accent-deep)", border:"1px solid var(--line)", background:"var(--card)" }} onClick={() => setShowCatalog(true)} title="Images cataloged to customer workspaces (tasking / archive / manual API deliveries)"><Layers size={14} /> Catalog deliveries</button>
+              <button className="btn ghost" style={{ color:"var(--accent-deep)", border:"1px solid var(--line)", background:"var(--card)" }} onClick={() => setShowReport(true)} title="Generate a PDF report of SE verdicts against IPR — false positives and agreed passes, by date range and reviewer"><FileText size={14} /> Generate report</button>
               <button className="btn solid" onClick={() => setShowForm(true)}><Plus size={14} /> New QC entry</button>
             </>
           )}
@@ -4023,6 +4512,11 @@ function QualityChecksGlobal({ deals, canEdit, onOpen, toast, currentUserName })
       {showCatalog && (
         <CatalogSyncModal deals={pickDeals} toast={toast} currentUserName={currentUserName}
           onClose={() => setShowCatalog(false)} onDone={load} />
+      )}
+
+      {showReport && (
+        <QcReportModal rows={rows} currentUserName={currentUserName} toast={toast}
+          onClose={() => setShowReport(false)} />
       )}
 
       {(showForm || editRow) && (
