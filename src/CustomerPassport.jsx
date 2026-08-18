@@ -3122,7 +3122,18 @@ async function logQcToCaptureLog({ prevResult, entry, author }) {
   const note = [head, entry.qc_notes || ""].filter(Boolean).join(" — ");
   try {
     await addCaptureLogEntry(entry.passport_id, {
-      entry_date: new Date().toISOString().slice(0, 10),
+      // Date the timeline entry by when the image was CAPTURED, not by when
+      // someone got round to reviewing it. This is a per-image progress log, so
+      // stamping it "today" filed a July scene at the top of an August timeline
+      // and put QC out of order with the Tasked/Captured events above it.
+      //
+      // Falls back to the QC completion date, then today, so an entry with no
+      // capture date still lands somewhere sensible. Nothing is lost by moving
+      // it: when the QC was actually done is still on the entry's own created_at
+      // stamp, which the timeline prints under the note.
+      entry_date: asDateInput(entry.date_captured || entry.feedback_milestone)
+        || asDateInput(entry.se_qc_completed_on)
+        || todayISO(),
       status: entry.qc_result === "Pass" ? "QC Passed" : "QC Failed",
       // Same string format both sides, so the reasons the reviewer ticked on
       // the QC entry land on the timeline entry without re-typing.
@@ -6520,11 +6531,17 @@ function CaptureLog({ entries, canEdit, onAdd, onEdit, onDelete, onUploadShot })
   };
   // Images that passed QC but were never logged as Shared. Sharing is a
   // deliberate human step (for paid orders it's CS's call), so this only
-  // nudges — it never writes a Shared event. Entries arrive newest-first;
-  // a Shared event on the same day as a pass counts as covering it.
-  const lastShared = entries.find(e => e.status === "Shared");
+  // nudges — it never writes a Shared event.
+  //
+  // Compared on when each event was LOGGED, not on the dates shown. A QC entry
+  // is dated by when the image was captured and a Shared event by the day it
+  // was shared — different kinds of date, and ordering one against the other
+  // makes a July scene passed today look already-shared by an August share it
+  // predates, silently hiding the nudge.
+  const lastSharedAt = entries.reduce(
+    (m, e) => (e.status === "Shared" && e.loggedAt && e.loggedAt > m ? e.loggedAt : m), "");
   const unshared = entries.filter(e =>
-    e.status === "QC Passed" && (!lastShared || e.date > lastShared.date)
+    e.status === "QC Passed" && (!lastSharedAt || String(e.loggedAt || "") > lastSharedAt)
   ).length;
   return (
     <div className="clog-wrap">
@@ -8853,6 +8870,9 @@ function PassportDetail({ data, onBack, canEdit, canPostNote, onRefresh, onAssig
       captureLog: captureLog.map(e => ({
         id: e.id, date: e.entry_date, status: e.status, failReason: e.fail_reason || "",
         note: e.note, author: e.author, shotPath: e.screenshot_path || "",
+        // Raw insert time. `date` is now a mix of capture dates and action
+        // dates, so anything comparing events in sequence must use this.
+        loggedAt: e.created_at || "",
         ts: new Date(e.created_at).toLocaleString("en-GB", { month:"short", day:"2-digit", hour:"2-digit", minute:"2-digit" }),
       })),
       sampleAoi: p.sample_aoi_geojson || null,
