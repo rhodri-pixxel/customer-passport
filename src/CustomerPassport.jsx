@@ -6590,7 +6590,7 @@ function CaptureLog({ entries, canEdit, onAdd, onEdit, onDelete, onUploadShot })
         <div className="clog-form">
           <div className="clog-form-row">
             <div>
-              <div className="k" style={{ fontFamily:"var(--font-mono)", fontSize:"9.5px", letterSpacing:".1em", textTransform:"uppercase", color:"var(--muted2)", marginBottom:4 }}>Date</div>
+              <div className="k" style={{ fontFamily:"var(--font-mono)", fontSize:"9.5px", letterSpacing:".1em", textTransform:"uppercase", color:"var(--muted2)", marginBottom:4 }}>Date of capture</div>
               <input type="date" style={{ width:"100%", border:"1px solid var(--line)", borderRadius:8, padding:"7px 10px", fontFamily:"inherit", fontSize:13, outline:"none" }}
                 value={form.date} onChange={e => setForm(f => ({ ...f, date:e.target.value }))} />
             </div>
