@@ -751,6 +751,7 @@ const TEAM_MEMBERS = {
   ],
   analytics: [
     { name: "Jeremy Kravitz", email: "jeremy@pixxel.space", slack: "U064U233N2V" },
+    { name: "Marcia Chen", email: "marcia.chen@pixxel.co.in", slack: "U0BEBK1AZJ6" },
     { name: "Subash Yeggina", email: "subash@pixxel.co.in", slack: "U01TK168BKR" },
   ],
 };

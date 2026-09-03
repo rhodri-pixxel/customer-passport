@@ -923,7 +923,8 @@ serve(async function(req) {
     "aditya@pixxel.co.in":"Aditya Chintalapati","ananya.banerjee@pixxel.co.in":"Ananya Banerjee",
     "jaya.bandi@pixxel.co.in":"Bandi Jay","megha@pixxel.co.in":"Megha Devaraju",
     "meghana.shetty@pixxel.co.in":"Meghana Shetty","shubhavi@pixxel.co.in":"Shubhavi P",
-    "jeremy@pixxel.space":"Jeremy Kravitz","subash@pixxel.co.in":"Subash Yeggina",
+    "jeremy@pixxel.space":"Jeremy Kravitz","marcia.chen@pixxel.co.in":"Marcia Chen",
+    "subash@pixxel.co.in":"Subash Yeggina",
   };
 
   // Slack roster: clean name -> Slack user ID for @-mentions
@@ -938,7 +939,7 @@ serve(async function(req) {
     "Ryan Hammock":"U057QQ2BA8J","Spencer Wahrman":"U07RWUTR22X","Terence Yuchen Xie":"U0B8T6ZSL7N",
     "Aditya Chintalapati":"U03MA603292","Ananya Banerjee":"U0A3M8TLWVD","Bandi Jay":"U09UQH43Z5E",
     "Megha Devaraju":"U07N71LAVU0","Meghana Shetty":"U0A10SR26JX","Shubhavi P":"U053Z522G20",
-    "Jeremy Kravitz":"U064U233N2V","Subash Yeggina":"U01TK168BKR",
+    "Jeremy Kravitz":"U064U233N2V","Marcia Chen":"U0BEBK1AZJ6","Subash Yeggina":"U01TK168BKR",
   };
 
   const SLACK_BOT_TOKEN = Deno.env.get("SLACK_BOT_TOKEN");
