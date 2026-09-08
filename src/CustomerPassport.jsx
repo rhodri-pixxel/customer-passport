@@ -2362,6 +2362,37 @@ async function existingQcImageIds() {
   return new Set(rows.map(r => qcDedupKey(r.image_id)).filter(Boolean));
 }
 
+/* ── Imagery search ────────────────────────────────────────
+   Free text over whichever Imagery list is showing. Every term has to match
+   (AND), so "ff01 agrisense" narrows instead of widening — with a few hundred
+   rows, a query that returns more results the more you type is useless.
+
+   The canonical satellite:frame is searched alongside the raw id, so
+   "FF01:17517" finds a row stored as "FF01 0000017517". The padding and the
+   separator differ by whichever system wrote the row, and nobody types them
+   the same way twice.                                                       */
+function searchTokens(q) {
+  return String(q || "").toLowerCase().trim().split(/\s+/).filter(Boolean);
+}
+function imageryMatches(parts, tokens) {
+  if (!tokens.length) return true;
+  const hay = parts.filter(Boolean).join(" ").toLowerCase();
+  return tokens.every(t => hay.includes(t));
+}
+// Everything a person might reasonably type to find a row, per list.
+const qcSearchParts = (r) => [
+  r.organization, r.image_id, normalizeImageId(r.image_id), r.usecase, r.bandset,
+  r.assignee, r.location, r.qc_result, r.type, r.qc_notes, r.fail_reasons, r.ipr_info,
+];
+const feedSearchParts = (c, deal) => [
+  c.organization, deal && deal.company, c.image_id, normalizeImageId(c.image_id),
+  c.satellite, c.bandset, c.location, c.processing_status,
+];
+const deliveredSearchParts = (r, deal) => [
+  deal && deal.company, r.org_name, r.image_id, normalizeImageId(r.image_id),
+  r.order_type, r.delivery_kind,
+];
+
 /* ── Duplicate QC entries ──────────────────────────────────────────
    quality_checks has no uniqueness on image_id — only its primary key — and of
    the paths that write to it, only the IPR import ever checked for an existing
@@ -4454,6 +4485,7 @@ function QualityChecksGlobal({ deals, canEdit, onOpen, toast, currentUserName })
   const [captured, setCaptured] = useState([]);
   const [promoteFrom, setPromoteFrom] = useState(null); // feed row being sent to QC
   const [feedPage, setFeedPage] = useState(1);          // IPR feed pagination
+  const [q, setQ] = useState("");                       // search, applies to the open tab
   const [capturedErr, setCapturedErr] = useState("");   // e.g. table not migrated yet
   const [feedErr, setFeedErr] = useState("");           // background refresh couldn't reach IPR
   const [showImport, setShowImport] = useState(false); // IPR import modal
@@ -4617,13 +4649,16 @@ function QualityChecksGlobal({ deals, canEdit, onOpen, toast, currentUserName })
   // to avoid offering "Assign to SE" for something already in the queue.
   const qcKeysExisting = new Set(rows.map(r => qcDedupKey(r.image_id)).filter(Boolean));
 
-  const filtered = filter === "duplicates"
+  const tokens = searchTokens(q);
+  const preSearch = filter === "duplicates"
     ? tabRows.filter(r => dupInfo.has(r.id))
       // Group the duplicates together so a pair sits side by side, newest first
       // within each scene — you can't compare two rows that are 40 apart.
       .sort((a, b) => (dupInfo.get(a.id).key).localeCompare(dupInfo.get(b.id).key)
         || String(b.created_at || "").localeCompare(String(a.created_at || "")))
     : filter === "all" ? tabRows : tabRows.filter(r => r.qc_result === filter);
+  // Search narrows whatever the filter already chose, rather than replacing it.
+  const filtered = preSearch.filter(r => imageryMatches(qcSearchParts(r), tokens));
   const passCount = tabRows.filter(r => r.qc_result === "Pass").length;
   const failCount = tabRows.filter(r => r.qc_result === "Fail").length;
   const awaitingCount = tabRows.filter(r => r.qc_result === "Awaiting QC").length;
@@ -4635,9 +4670,14 @@ function QualityChecksGlobal({ deals, canEdit, onOpen, toast, currentUserName })
   const fmtDay = (iso) => iso ? new Date(iso).toLocaleDateString("en-GB", { day:"2-digit", month:"short", year:"numeric" }) : "—";
   // Feed pagination. Clamped rather than reset so a refresh doesn't yank someone
   // back to page 1, but a shrinking feed can't strand them past the end.
-  const feedPages = Math.max(1, Math.ceil(captured.length / FEED_PAGE_SIZE));
+  const capturedFiltered = captured.filter(c =>
+    imageryMatches(feedSearchParts(c, dealById[c.passport_id]), tokens));
+  const feedPages = Math.max(1, Math.ceil(capturedFiltered.length / FEED_PAGE_SIZE));
   const feedPageSafe = Math.min(feedPage, feedPages);
-  const feedRows = captured.slice((feedPageSafe - 1) * FEED_PAGE_SIZE, feedPageSafe * FEED_PAGE_SIZE);
+  const feedRows = capturedFiltered.slice((feedPageSafe - 1) * FEED_PAGE_SIZE, feedPageSafe * FEED_PAGE_SIZE);
+  // Delivered has no pagination; it just narrows.
+  const deliveredFiltered = delivered.filter(r =>
+    imageryMatches(deliveredSearchParts(r, dealById[r.passport_id]), tokens));
 
   return (
     <div className="cp-page-inner">
@@ -4688,6 +4728,32 @@ function QualityChecksGlobal({ deals, canEdit, onOpen, toast, currentUserName })
             </>
           )}
         </div>
+      </div>
+
+      {/* Search. Sits above the table rather than in the header, which is
+          already carrying the sub-tabs, the filters and five buttons. The query
+          deliberately survives a tab switch: "which list is FF01 17517 in?" is a
+          real question, and clearing it on every switch would make it unanswerable. */}
+      <div style={{ display:"flex", alignItems:"center", gap:10, margin:"0 0 12px", flexWrap:"wrap" }}>
+        <div className="list-search" style={{ flex:"1 1 320px", maxWidth:520 }}>
+          <Search size={14} />
+          <input
+            value={q}
+            onChange={e => { setQ(e.target.value); setFeedPage(1); }}
+            placeholder={tab === "feed" ? "Search the IPR feed — image ID, customer, location, status…"
+              : tab === "delivered" ? "Search deliveries — image ID, customer, workspace, order…"
+              : "Search QC entries — image ID, customer, assignee, use case, notes…"} />
+          {q && <button onClick={() => { setQ(""); setFeedPage(1); }} title="Clear search"><X size={12} /></button>}
+        </div>
+        {q && (
+          <span style={{ fontSize:12, color:"var(--muted)" }}>
+            {tab === "feed"
+              ? <><b style={{ color:"var(--ink)" }}>{capturedFiltered.length}</b> of {captured.length} feed images</>
+              : tab === "delivered"
+                ? <><b style={{ color:"var(--ink)" }}>{deliveredFiltered.length}</b> of {delivered.length} deliveries</>
+                : <><b style={{ color:"var(--ink)" }}>{filtered.length}</b> of {preSearch.length} entries{filter !== "all" ? ` in "${filter}"` : ""}</>}
+          </span>
+        )}
       </div>
 
       {showImport && (
@@ -4797,12 +4863,20 @@ function QualityChecksGlobal({ deals, canEdit, onOpen, toast, currentUserName })
               }) : <tr><td colSpan={canEdit ? 9 : 8} style={{ textAlign:"center", padding:30, color: capturedErr ? "var(--bad)" : "var(--muted2)" }}>
                 {capturedErr
                   ? <>Couldn't load the feed — has the <b>captured_images</b> migration been run on this database?<div style={{ fontFamily:"var(--font-mono)", fontSize:11, marginTop:6 }}>{capturedErr}</div></>
-                  : "Feed is empty — run Sync captured images to pull from the IPR dashboard."}
+                  : q
+                    ? <>Nothing in the feed matches <b style={{ color:"var(--ink)" }}>“{q}”</b>.
+                        <div style={{ marginTop:12 }}>
+                          <button className="btn ghost" onClick={() => { setQ(""); setFeedPage(1); }}
+                            style={{ color:"var(--accent-deep)", border:"1px solid var(--line)", background:"var(--card)" }}>
+                            <X size={13} /> Clear search — show all {captured.length}
+                          </button>
+                        </div></>
+                    : "Feed is empty — run Sync captured images to pull from the IPR dashboard."}
               </td></tr>}
             </tbody>
           </table>
         </div>
-        <TablePager page={feedPageSafe} setPage={setFeedPage} total={captured.length}
+        <TablePager page={feedPageSafe} setPage={setFeedPage} total={capturedFiltered.length}
           pageSize={FEED_PAGE_SIZE} noun="image" />
         </>
       ) : tab === "delivered" ? (
@@ -4810,7 +4884,7 @@ function QualityChecksGlobal({ deals, canEdit, onOpen, toast, currentUserName })
           <table className="qc-table">
             <thead><tr><th>Customer</th><th>Workspace</th><th>Image ID</th><th>Order</th><th>Type</th><th>Delivered</th></tr></thead>
             <tbody>
-              {delivered.length ? delivered.map(r => {
+              {deliveredFiltered.length ? deliveredFiltered.map(r => {
                 const deal = dealById[r.passport_id];
                 const kind = deliveryKind({ deliveryKind: r.delivery_kind, orderType: r.order_type });
                 return (
@@ -4828,7 +4902,15 @@ function QualityChecksGlobal({ deals, canEdit, onOpen, toast, currentUserName })
                   </tr>
                 );
               }) : <tr><td colSpan={6} style={{ textAlign:"center", padding:30, color:"var(--muted2)" }}>
-                Nothing synced yet — link a deal's Aurora org on its Execution tab, then run Catalog deliveries.
+                {q
+                  ? <>No deliveries match <b style={{ color:"var(--ink)" }}>“{q}”</b>.
+                      <div style={{ marginTop:12 }}>
+                        <button className="btn ghost" onClick={() => setQ("")}
+                          style={{ color:"var(--accent-deep)", border:"1px solid var(--line)", background:"var(--card)" }}>
+                          <X size={13} /> Clear search — show all {delivered.length}
+                        </button>
+                      </div></>
+                  : "Nothing synced yet — link a deal's Aurora org on its Execution tab, then run Catalog deliveries."}
               </td></tr>}
             </tbody>
           </table>
@@ -4858,7 +4940,26 @@ function QualityChecksGlobal({ deals, canEdit, onOpen, toast, currentUserName })
                       people in a view with no visible control. */}
                   {tabRows.length === 0
                     ? "No QC entries yet — create one, or assign an image from the IPR feed."
-                    : (
+                    : q ? (
+                      // Nothing matched the search. Say what was searched and in
+                      // what, so an active filter can't silently be the reason.
+                      <>
+                        Nothing matches <b style={{ color:"var(--ink)" }}>“{q}”</b>
+                        {filter !== "all" ? <> in <b style={{ color:"var(--ink)" }}>{filter}</b></> : null}.
+                        <div style={{ marginTop:12, display:"flex", gap:8, justifyContent:"center", flexWrap:"wrap" }}>
+                          <button className="btn ghost" onClick={() => { setQ(""); setFeedPage(1); }}
+                            style={{ color:"var(--accent-deep)", border:"1px solid var(--line)", background:"var(--card)" }}>
+                            <X size={13} /> Clear search
+                          </button>
+                          {filter !== "all" && (
+                            <button className="btn ghost" onClick={() => setFilter("all")}
+                              style={{ color:"var(--accent-deep)", border:"1px solid var(--line)", background:"var(--card)" }}>
+                              <ChevronLeft size={13} /> Search all {tabRows.length} entries instead
+                            </button>
+                          )}
+                        </div>
+                      </>
+                    ) : (
                       <>
                         {filter === "duplicates"
                           ? <><CheckCircle2 size={16} style={{ color:"var(--ok)", verticalAlign:"-3px" }} /> {" "}
