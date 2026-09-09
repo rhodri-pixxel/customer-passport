@@ -6900,13 +6900,25 @@ function PocAdder({ pocs, canEdit, onAdd, onDelete }) {
 // which the delivered_images sync already records. Offering it here would only
 // invite a second, hand-typed copy of a delivery the passport already shows.
 const SHARED_PRODUCT_LEVELS = ["L1B", "L1C", "Other"];
-function SharedProductsBlock({ items, canEdit, currentUserName, onAdd, onDelete }) {
+function SharedProductsBlock({ items, canEdit, currentUserName, onAdd, onEdit, onDelete }) {
   const [open, setOpen] = useState(false);
+  const [editId, setEditId] = useState(null);   // row being edited, or null for a new one
   const empty = () => ({ level: "L1B", imageId: "", sharedAt: todayISO(), link: "", note: "" });
   const [form, setForm] = useState(empty());
   const [err, setErr] = useState("");
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
   const list = items || [];
+
+  const startEdit = (r) => {
+    setForm({
+      level: r.level || "L1B", imageId: r.imageId || "",
+      sharedAt: asDateInput(r.sharedAt) || "", link: r.link || "", note: r.note || "",
+    });
+    setEditId(r.id);
+    setErr("");
+    setOpen(true);
+  };
+  const closeForm = () => { setOpen(false); setEditId(null); setErr(""); setForm(empty()); };
 
   const submit = () => {
     // An entry with no image and no note records nothing anyone can act on.
@@ -6915,16 +6927,17 @@ function SharedProductsBlock({ items, canEdit, currentUserName, onAdd, onDelete 
       return;
     }
     setErr("");
-    onAdd({
+    const row = {
       product_level: form.level,
       image_id: form.imageId.trim() || null,
       shared_at: form.sharedAt || null,
       link: form.link.trim() || null,
       note: form.note.trim() || null,
-      created_by: currentUserName || "You",
-    });
-    setForm(empty());
-    setOpen(false);
+    };
+    // created_by records who first logged the share, so an edit leaves it alone.
+    if (editId) onEdit(editId, row);
+    else onAdd({ ...row, created_by: currentUserName || "You" });
+    closeForm();
   };
 
   const levelColor = (l) => l === "L1B" ? "var(--se)" : l === "L1C" ? "var(--accent-deep)" : "var(--muted)";
@@ -6941,7 +6954,7 @@ function SharedProductsBlock({ items, canEdit, currentUserName, onAdd, onDelete 
             <thead><tr><th>Product</th><th>Image ID</th><th>Shared</th><th>Note</th>{canEdit && <th></th>}</tr></thead>
             <tbody>
               {list.map(r => (
-                <tr key={r.id}>
+                <tr key={r.id} style={editId === r.id ? { background:"var(--accent-soft)" } : undefined}>
                   <td><span className="tag" style={{ background:"var(--line-soft)", color:levelColor(r.level), fontWeight:600 }}>{r.level}</span></td>
                   <td style={{ fontFamily:"var(--font-mono)", fontSize:11.5, whiteSpace:"nowrap" }}>
                     {r.link
@@ -6952,8 +6965,10 @@ function SharedProductsBlock({ items, canEdit, currentUserName, onAdd, onDelete 
                   <td style={{ fontSize:12, color:"var(--muted)", maxWidth:380 }}>{r.note || "—"}</td>
                   {canEdit && (
                     <td style={{ whiteSpace:"nowrap" }}>
+                      <button onClick={() => startEdit(r)} title="Edit this entry"
+                        style={{ border:"none", background:"none", color:"var(--accent-deep)", cursor:"pointer", padding:"0 4px" }}><Pencil size={13} /></button>
                       <button onClick={() => onDelete(r.id)} title="Remove"
-                        style={{ border:"none", background:"none", color:"var(--muted2)", cursor:"pointer", fontSize:13 }}>✕</button>
+                        style={{ border:"none", background:"none", color:"var(--muted2)", cursor:"pointer", fontSize:13, padding:"0 4px" }}>✕</button>
                     </td>
                   )}
                 </tr>
@@ -7003,8 +7018,10 @@ function SharedProductsBlock({ items, canEdit, currentUserName, onAdd, onDelete 
           <div style={{ display:"flex", gap:8, justifyContent:"flex-end", alignItems:"center", flexWrap:"wrap" }}>
             {err && <span style={{ marginRight:"auto", fontSize:12, color:"var(--bad)" }}>{err}</span>}
             <button className="btn ghost" style={{ color:"var(--muted)", border:"1px solid var(--line)", background:"var(--card)" }}
-              onClick={() => { setOpen(false); setErr(""); setForm(empty()); }}>Cancel</button>
-            <button className="btn solid" onClick={submit}><Send size={13} /> Record share</button>
+              onClick={closeForm}>Cancel</button>
+            <button className="btn solid" onClick={submit}>
+              <Send size={13} /> {editId ? "Save changes" : "Record share"}
+            </button>
           </div>
         </div>
       ) : (
@@ -7412,6 +7429,7 @@ function ExecutionTab({ d, canEdit, onUpdate, onSaveField, currentUserName }) {
         </div>
         <SharedProductsBlock items={sharedProducts} canEdit={canEdit} currentUserName={currentUserName}
           onAdd={(row) => onUpdate({ _addSharedProduct: row })}
+          onEdit={(id, row) => onUpdate({ _updateSharedProduct: { id, ...row } })}
           onDelete={(id) => onUpdate({ _deleteRecord: { table:"shared_products", id } })} />
       </Block>
 
@@ -8717,6 +8735,9 @@ async function addContactRecord(passportId, contact) {
 async function addSharedProduct(passportId, row) {
   await sbPost("shared_products", { passport_id: passportId, ...row });
 }
+async function updateSharedProduct(id, row) {
+  await sbPatch("shared_products", id, row);
+}
 async function addRisk(passportId, risk) {
   await sbPost("deal_risks", { passport_id: passportId, ...risk });
 }
@@ -9277,6 +9298,12 @@ function PassportDetail({ data, onBack, canEdit, canPostNote, onRefresh, onAssig
     if (updated._addPoc) { await addPoc(p.id, updated._addPoc); await onRefresh(); return; }
     if (updated._addContact) { await addContactRecord(p.id, updated._addContact); await onRefresh(); return; }
     if (updated._addSharedProduct) { await addSharedProduct(p.id, updated._addSharedProduct); await onRefresh(); return; }
+    if (updated._updateSharedProduct) {
+      const { id, ...row } = updated._updateSharedProduct;
+      await updateSharedProduct(id, row);
+      await onRefresh();
+      return;
+    }
     if (updated._addRisk) { await addRisk(p.id, updated._addRisk); await onRefresh(); return; }
     if (updated._addSample) { await addSampleData(p.id, updated._addSample); await onRefresh(); return; }
     if (updated._addMeetingNote) { await addMeetingNote(p.id, updated._addMeetingNote); await onRefresh(); return; }
