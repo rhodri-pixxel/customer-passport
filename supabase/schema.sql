@@ -6,7 +6,9 @@
 --  policies, storage bucket + policies, extensions, cron jobs).
 --
 -- Hand-maintained since that dump: every migration under supabase/migrations/
--- up to and including 20260808 has been folded in (reconciled 2026-08-09).
+-- up to and including 20260909 has been folded in (reconciled 2026-09-09).
+-- 20260818 and 20260903 are data-only (a backfill and a roster row), so they
+-- change nothing here.
 -- ADD A MIGRATION → UPDATE THIS FILE IN THE SAME COMMIT. Four migrations had
 -- drifted out of it (analytics summary fields, slack_roster,
 -- action_items.reminders_sent, captured_images), which quietly made the
@@ -352,6 +354,22 @@ CREATE TABLE public.captured_images (
   synced_at timestamp with time zone DEFAULT now() NOT NULL
 );
 
+-- Hand-recorded L1B/L1C shares. delivered_images only covers Aurora-cataloged
+-- L2A deliveries, so anything sent by link or bucket was invisible.
+-- See 20260909_shared_products.sql.
+CREATE TABLE public.shared_products (
+  id uuid DEFAULT uuid_generate_v4() NOT NULL,
+  passport_id uuid NOT NULL,
+  product_level text DEFAULT 'L1B'::text NOT NULL,
+  image_id text,
+  shared_at date DEFAULT CURRENT_DATE,
+  shared_with text,
+  link text,
+  note text,
+  created_by text,
+  created_at timestamp with time zone DEFAULT now() NOT NULL
+);
+
 -- name -> Slack id, readable from an edge function. The app resolves Slack ids
 -- from TEAM_MEMBERS in the browser, which a scheduled job can't see, so the
 -- roster is mirrored here. See 20260806_action_item_reminders.sql — and the
@@ -396,6 +414,8 @@ ALTER TABLE public.delivered_images ADD CONSTRAINT delivered_images_org_image_ke
 ALTER TABLE public.captured_images ADD CONSTRAINT captured_images_pkey PRIMARY KEY (id);
 ALTER TABLE public.captured_images ADD CONSTRAINT captured_images_image_key_key UNIQUE (image_key);
 ALTER TABLE public.slack_roster ADD CONSTRAINT slack_roster_pkey PRIMARY KEY (name);
+ALTER TABLE public.shared_products ADD CONSTRAINT shared_products_pkey PRIMARY KEY (id);
+ALTER TABLE public.shared_products ADD CONSTRAINT shared_products_level_check CHECK ((product_level = ANY (ARRAY['L1B'::text, 'L1C'::text, 'L2A'::text, 'Other'::text])));
 
 -- ---------------------------------------------------------------------------
 -- Foreign keys
@@ -421,6 +441,7 @@ ALTER TABLE public.delivered_images ADD CONSTRAINT delivered_images_passport_id_
 -- promoted QC entry being deleted just unlinks the image from QC.
 ALTER TABLE public.captured_images ADD CONSTRAINT captured_images_passport_id_fkey FOREIGN KEY (passport_id) REFERENCES handover_passports(id) ON DELETE SET NULL;
 ALTER TABLE public.captured_images ADD CONSTRAINT captured_images_qc_id_fkey FOREIGN KEY (qc_id) REFERENCES quality_checks(id) ON DELETE SET NULL;
+ALTER TABLE public.shared_products ADD CONSTRAINT shared_products_passport_id_fkey FOREIGN KEY (passport_id) REFERENCES handover_passports(id) ON DELETE CASCADE;
 
 -- ---------------------------------------------------------------------------
 -- Indexes
@@ -445,6 +466,7 @@ CREATE INDEX idx_delivered_images_passport ON public.delivered_images USING btre
 CREATE INDEX idx_captured_images_synced ON public.captured_images USING btree (synced_at DESC);
 CREATE INDEX idx_captured_images_passport ON public.captured_images USING btree (passport_id);
 CREATE INDEX idx_captured_images_sent_to_aurora ON public.captured_images USING btree (sent_to_aurora_at DESC);
+CREATE INDEX idx_shared_products_passport ON public.shared_products USING btree (passport_id, shared_at DESC);
 CREATE INDEX idx_action_items_due_open ON public.action_items USING btree (due_date) WHERE (done = false);
 
 -- ---------------------------------------------------------------------------
@@ -540,6 +562,7 @@ ALTER TABLE public.catalog_org_links ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.delivered_images ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.captured_images ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.slack_roster ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.shared_products ENABLE ROW LEVEL SECURITY;
 
 -- ---------------------------------------------------------------------------
 -- Policies
@@ -628,6 +651,10 @@ CREATE POLICY update_captured_images ON public.captured_images FOR UPDATE TO pub
 CREATE POLICY delete_captured_images ON public.captured_images FOR DELETE TO public USING (can_edit());
 -- Read-only to the app: the roster is maintained by migration, not by users.
 CREATE POLICY read_slack_roster ON public.slack_roster FOR SELECT TO public USING ((auth.role() = 'authenticated'::text));
+CREATE POLICY read_shared_products ON public.shared_products FOR SELECT TO public USING ((auth.role() = 'authenticated'::text));
+CREATE POLICY insert_shared_products ON public.shared_products FOR INSERT TO public WITH CHECK (can_edit());
+CREATE POLICY update_shared_products ON public.shared_products FOR UPDATE TO public USING (can_edit());
+CREATE POLICY delete_shared_products ON public.shared_products FOR DELETE TO public USING (can_edit());
 
 -- ---------------------------------------------------------------------------
 -- Storage

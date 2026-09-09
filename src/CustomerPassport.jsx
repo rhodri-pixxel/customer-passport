@@ -5852,7 +5852,7 @@ function Passport({ deal, onBack, canEdit, canPostNote, onUpdate, onAssign, onNo
           })()}
           {tab === "profile" && <ProfileTab d={deal} canEdit={canEdit} onSaveField={(f,v) => onUpdate({ _fieldUpdate: { field: f, value: v } })} onUpdate={onUpdate} />}
           {tab === "context" && <ContextTab d={deal} canEdit={canEdit} onSaveField={(f,v) => onUpdate({ _fieldUpdate: { field: f, value: v } })} onUpdate={onUpdate} />}
-          {tab === "execution" && <ExecutionTab d={deal} canEdit={canEdit} onUpdate={onUpdate} onSaveField={(f,v) => onUpdate({ _fieldUpdate: { field: f, value: v } })} />}
+          {tab === "execution" && <ExecutionTab d={deal} canEdit={canEdit} onUpdate={onUpdate} currentUserName={currentUserName} onSaveField={(f,v) => onUpdate({ _fieldUpdate: { field: f, value: v } })} />}
           {tab === "csummary" && <CSSummaryTab d={deal} canEdit={canEdit} onUpdate={onUpdate} onSaveField={(f,v) => onUpdate({ _fieldUpdate: { field: f, value: v } })} />}
           {tab === "analytics" && <AnalyticsSummaryTab d={deal} canEdit={canEdit} onUpdate={onUpdate} onSaveField={(f,v) => onUpdate({ _fieldUpdate: { field: f, value: v } })} />}
           {tab === "notes" && <NotesTab d={deal} canEdit={canEdit} canPostNote={canPostNote} onUpdate={onUpdate} toast={toast} />}
@@ -6891,6 +6891,134 @@ function PocAdder({ pocs, canEdit, onAdd, onDelete }) {
   );
 }
 
+// L1B / L1C products shared with the customer, recorded by hand.
+//
+// The catalog sync only sees scenes cataloged into an Aurora workspace, which
+// is an L2A path — an L1B sent by secure link leaves no trace it can find. Until
+// the sync learns about those, this is where they get written down.
+const SHARED_PRODUCT_LEVELS = ["L1B", "L1C", "L2A", "Other"];
+function SharedProductsBlock({ items, canEdit, currentUserName, onAdd, onDelete }) {
+  const [open, setOpen] = useState(false);
+  const empty = () => ({ level: "L1B", imageId: "", sharedAt: todayISO(), sharedWith: "", link: "", note: "" });
+  const [form, setForm] = useState(empty());
+  const [err, setErr] = useState("");
+  const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
+  const list = items || [];
+
+  const submit = () => {
+    // An entry with no image and no note records nothing anyone can act on.
+    if (!form.imageId.trim() && !form.note.trim()) {
+      setErr("Add an image ID, or a note saying what was shared.");
+      return;
+    }
+    setErr("");
+    onAdd({
+      product_level: form.level,
+      image_id: form.imageId.trim() || null,
+      shared_at: form.sharedAt || null,
+      shared_with: form.sharedWith.trim() || null,
+      link: form.link.trim() || null,
+      note: form.note.trim() || null,
+      created_by: currentUserName || "You",
+    });
+    setForm(empty());
+    setOpen(false);
+  };
+
+  const levelColor = (l) => l === "L1B" ? "var(--se)" : l === "L1C" ? "var(--accent-deep)"
+    : l === "L2A" ? "var(--forest)" : "var(--muted)";
+  const fld = { width:"100%", border:"1px solid var(--line)", borderRadius:8, padding:"7px 10px",
+    fontFamily:"inherit", fontSize:13, outline:"none" };
+  const lbl = { fontFamily:"var(--font-mono)", fontSize:"9.5px", letterSpacing:".1em",
+    textTransform:"uppercase", color:"var(--muted2)", marginBottom:4 };
+
+  return (
+    <>
+      {list.length ? (
+        <div style={{ overflowX:"auto" }}>
+          <table className="qc-table">
+            <thead><tr><th>Product</th><th>Image ID</th><th>Shared</th><th>Recipient</th><th>Note</th>{canEdit && <th></th>}</tr></thead>
+            <tbody>
+              {list.map(r => (
+                <tr key={r.id}>
+                  <td><span className="tag" style={{ background:"var(--line-soft)", color:levelColor(r.level), fontWeight:600 }}>{r.level}</span></td>
+                  <td style={{ fontFamily:"var(--font-mono)", fontSize:11.5, whiteSpace:"nowrap" }}>
+                    {r.link
+                      ? <a href={r.link} target="_blank" rel="noreferrer" style={{ color:"var(--accent-deep)" }}>{r.imageId || "link"}</a>
+                      : (r.imageId || "—")}
+                  </td>
+                  <td style={{ fontSize:11.5, whiteSpace:"nowrap" }}>{asDateInput(r.sharedAt) || "—"}</td>
+                  <td style={{ fontSize:12 }}>{r.sharedWith || "—"}</td>
+                  <td style={{ fontSize:12, color:"var(--muted)", maxWidth:280 }}>{r.note || "—"}</td>
+                  {canEdit && (
+                    <td style={{ whiteSpace:"nowrap" }}>
+                      <button onClick={() => onDelete(r.id)} title="Remove"
+                        style={{ border:"none", background:"none", color:"var(--muted2)", cursor:"pointer", fontSize:13 }}>✕</button>
+                    </td>
+                  )}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ) : !open && (
+        <div className="empty"><Send size={15} /> No L1B / L1C products recorded as shared yet.</div>
+      )}
+
+      {canEdit && (open ? (
+        <div className="clog-form" style={{ marginTop:10 }}>
+          <div className="clog-form-row">
+            <div>
+              <div className="k" style={lbl}>Product level</div>
+              <div className="cp-select">
+                <select value={form.level} onChange={e => set("level", e.target.value)}>
+                  {SHARED_PRODUCT_LEVELS.map(l => <option key={l}>{l}</option>)}
+                </select>
+                <ChevronDown size={13} className="chev" />
+              </div>
+            </div>
+            <div>
+              <div className="k" style={lbl}>Image ID</div>
+              <input value={form.imageId} onChange={e => set("imageId", e.target.value)}
+                placeholder="e.g. FF01 0000018607" style={fld} />
+            </div>
+          </div>
+          <div className="clog-form-row">
+            <div>
+              <div className="k" style={lbl}>Date shared</div>
+              <input type="date" value={form.sharedAt} onChange={e => set("sharedAt", e.target.value)} style={fld} />
+            </div>
+            <div>
+              <div className="k" style={lbl}>Shared with</div>
+              <input value={form.sharedWith} onChange={e => set("sharedWith", e.target.value)}
+                placeholder="Who at the customer" style={fld} />
+            </div>
+          </div>
+          <div style={{ marginBottom:10 }}>
+            <div className="k" style={lbl}>Link (optional)</div>
+            <input value={form.link} onChange={e => set("link", e.target.value)}
+              placeholder="Secure link / bucket path, if there is one" style={fld} />
+          </div>
+          <div style={{ marginBottom:10 }}>
+            <div className="k" style={lbl}>Note</div>
+            <textarea value={form.note} onChange={e => set("note", e.target.value)}
+              placeholder="Anything worth knowing — how it went out, what it covers…"
+              style={{ ...fld, borderRadius:9, minHeight:52, resize:"vertical" }} />
+          </div>
+          <div style={{ display:"flex", gap:8, justifyContent:"flex-end", alignItems:"center", flexWrap:"wrap" }}>
+            {err && <span style={{ marginRight:"auto", fontSize:12, color:"var(--bad)" }}>{err}</span>}
+            <button className="btn ghost" style={{ color:"var(--muted)", border:"1px solid var(--line)", background:"var(--card)" }}
+              onClick={() => { setOpen(false); setErr(""); setForm(empty()); }}>Cancel</button>
+            <button className="btn solid" onClick={submit}><Send size={13} /> Record share</button>
+          </div>
+        </div>
+      ) : (
+        <button onClick={() => setOpen(true)} className="add-row"><Plus size={14} /> Record a shared product</button>
+      ))}
+    </>
+  );
+}
+
 function RiskAdder({ risks, canEdit, onAdd, onDelete }) {
   const [open, setOpen] = useState(false);
   const [form, setForm] = useState({ severity:"med", description:"" });
@@ -7203,7 +7331,7 @@ function CatalogOrgLinker({ orgs, canEdit, onLink, onUnlink }) {
   );
 }
 
-function ExecutionTab({ d, canEdit, onUpdate, onSaveField }) {
+function ExecutionTab({ d, canEdit, onUpdate, onSaveField, currentUserName }) {
   const e = d.execution;
   const st = d.sectionStamps || {};
 
@@ -7245,6 +7373,7 @@ function ExecutionTab({ d, canEdit, onUpdate, onSaveField }) {
   const paidImages = allDelivered.filter(di => deliveryKind(di) === "paid");
   const sampleImages = allDelivered.filter(di => deliveryKind(di) === "sample");
   const setDeliveredKind = (id, kind) => onUpdate({ _setDeliveredKind: { id, kind } });
+  const sharedProducts = e.sharedProducts || [];
 
   return (
     <>
@@ -7277,6 +7406,18 @@ function ExecutionTab({ d, canEdit, onUpdate, onSaveField }) {
       <Block icon={Layers} title={`Delivered images${paidImages.length ? ` (${paidImages.length})` : ""}`}>
         <DeliveredImagesBlock items={paidImages} totalDelivered={allDelivered.length}
           canEdit={canEdit} onSetKind={setDeliveredKind} />
+      </Block>
+
+      {/* Sits directly under Delivered images because it is the manual
+          counterpart: same question, the half the catalog sync can't answer. */}
+      <Block icon={Send} title={`L1B / L1C products shared${sharedProducts.length ? ` (${sharedProducts.length})` : ""}`}>
+        <div style={{ fontSize:12, color:"var(--muted2)", marginBottom:10 }}>
+          Recorded by hand. The catalog sync only sees scenes cataloged into the customer's Aurora
+          workspace, so anything sent as L1B or L1C — by link, bucket or email — has to be logged here.
+        </div>
+        <SharedProductsBlock items={sharedProducts} canEdit={canEdit} currentUserName={currentUserName}
+          onAdd={(row) => onUpdate({ _addSharedProduct: row })}
+          onDelete={(id) => onUpdate({ _deleteRecord: { table:"shared_products", id } })} />
       </Block>
 
       <div className="cols">
@@ -8489,7 +8630,7 @@ async function fetchPassports({ pipeline, stage, ownerFilter, search, archivedVi
 }
 
 async function fetchPassportDetail(id) {
-  const [passport, contacts, pocs, risks, sampleData, captureLog, actionItems, meetingNotes, activityFeed, attachments, feedback, collaborators, deliveredImages, catalogLinks] = await Promise.all([
+  const [passport, contacts, pocs, risks, sampleData, captureLog, actionItems, meetingNotes, activityFeed, attachments, feedback, collaborators, deliveredImages, catalogLinks, sharedProducts] = await Promise.all([
     sbGet("handover_passports", `?id=eq.${id}`).then(r => r[0]),
     sbGet("deal_contacts", `?passport_id=eq.${id}`),
     sbGet("deal_pocs", `?passport_id=eq.${id}`),
@@ -8504,8 +8645,11 @@ async function fetchPassportDetail(id) {
     sbGet("deal_collaborators", `?passport_id=eq.${id}&order=created_at.asc`).catch(() => []),
     sbGet("delivered_images", `?passport_id=eq.${id}&order=delivered_at.desc.nullslast`).catch(() => []),
     sbGet("catalog_org_links", `?passport_id=eq.${id}&status=eq.linked`).catch(() => []),
+    // .catch so a database that hasn't run the migration yet still opens the
+    // passport, just without this section.
+    sbGet("shared_products", `?passport_id=eq.${id}&order=shared_at.desc.nullslast,created_at.desc`).catch(() => []),
   ]);
-  return { passport, contacts: contacts||[], pocs: pocs||[], risks: risks||[], sampleData: sampleData||[], captureLog: captureLog||[], actionItems: actionItems||[], meetingNotes: meetingNotes||[], activityFeed: activityFeed||[], attachments: attachments||[], feedback: feedback||[], collaborators: collaborators||[], deliveredImages: deliveredImages||[], catalogLinks: catalogLinks||[] };
+  return { passport, contacts: contacts||[], pocs: pocs||[], risks: risks||[], sampleData: sampleData||[], captureLog: captureLog||[], actionItems: actionItems||[], meetingNotes: meetingNotes||[], activityFeed: activityFeed||[], attachments: attachments||[], feedback: feedback||[], collaborators: collaborators||[], deliveredImages: deliveredImages||[], catalogLinks: catalogLinks||[], sharedProducts: sharedProducts||[] };
 }
 
 function calcReadiness(passport, contacts) {
@@ -8574,6 +8718,9 @@ async function addPoc(passportId, poc) {
 }
 async function addContactRecord(passportId, contact) {
   await sbPost("deal_contacts", { passport_id: passportId, ...contact });
+}
+async function addSharedProduct(passportId, row) {
+  await sbPost("shared_products", { passport_id: passportId, ...row });
 }
 async function addRisk(passportId, risk) {
   await sbPost("deal_risks", { passport_id: passportId, ...risk });
@@ -8901,7 +9048,7 @@ function DealsSplit({ deals, onOpen, ownerFilter, setOwnerFilter }) {
    ================================================================ */
 
 function PassportDetail({ data, onBack, canEdit, canPostNote, onRefresh, onAssign, onNotifyAll, onPostToSlack, slackChannel, slackSending, slackStatus, toast, currentUserName }) {
-  const { passport: p, contacts, pocs, risks, sampleData, captureLog, actionItems, meetingNotes, activityFeed, attachments, feedback, collaborators, deliveredImages, catalogLinks } = data;
+  const { passport: p, contacts, pocs, risks, sampleData, captureLog, actionItems, meetingNotes, activityFeed, attachments, feedback, collaborators, deliveredImages, catalogLinks, sharedProducts } = data;
   const { score, items: readinessItems } = calcReadiness(p, contacts);
 
   // Map Supabase passport → the shape Passport component expects
@@ -8981,6 +9128,11 @@ function PassportDetail({ data, onBack, canEdit, canPostNote, onRefresh, onAssig
       taskedAois: p.tasked_aois || [],
       actionItems: actionItems.map(a => ({
         id: a.id, task: a.task, owner: a.owner, due: a.due_date, done: a.done,
+      })),
+      sharedProducts: (sharedProducts || []).map(sp => ({
+        id: sp.id, level: sp.product_level, imageId: sp.image_id || "",
+        sharedAt: sp.shared_at || "", sharedWith: sp.shared_with || "",
+        link: sp.link || "", note: sp.note || "", by: sp.created_by || "",
       })),
       deliveredImages: (deliveredImages || []).map(di => ({
         id: di.id, imageId: di.image_id, orderType: di.order_type || "",
@@ -9129,6 +9281,7 @@ function PassportDetail({ data, onBack, canEdit, canPostNote, onRefresh, onAssig
     // ── New child records ──────────────────────────────────────
     if (updated._addPoc) { await addPoc(p.id, updated._addPoc); await onRefresh(); return; }
     if (updated._addContact) { await addContactRecord(p.id, updated._addContact); await onRefresh(); return; }
+    if (updated._addSharedProduct) { await addSharedProduct(p.id, updated._addSharedProduct); await onRefresh(); return; }
     if (updated._addRisk) { await addRisk(p.id, updated._addRisk); await onRefresh(); return; }
     if (updated._addSample) { await addSampleData(p.id, updated._addSample); await onRefresh(); return; }
     if (updated._addMeetingNote) { await addMeetingNote(p.id, updated._addMeetingNote); await onRefresh(); return; }
