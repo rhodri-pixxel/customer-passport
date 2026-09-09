@@ -363,7 +363,6 @@ CREATE TABLE public.shared_products (
   product_level text DEFAULT 'L1B'::text NOT NULL,
   image_id text,
   shared_at date DEFAULT CURRENT_DATE,
-  shared_with text,
   link text,
   note text,
   created_by text,
@@ -415,7 +414,7 @@ ALTER TABLE public.captured_images ADD CONSTRAINT captured_images_pkey PRIMARY K
 ALTER TABLE public.captured_images ADD CONSTRAINT captured_images_image_key_key UNIQUE (image_key);
 ALTER TABLE public.slack_roster ADD CONSTRAINT slack_roster_pkey PRIMARY KEY (name);
 ALTER TABLE public.shared_products ADD CONSTRAINT shared_products_pkey PRIMARY KEY (id);
-ALTER TABLE public.shared_products ADD CONSTRAINT shared_products_level_check CHECK ((product_level = ANY (ARRAY['L1B'::text, 'L1C'::text, 'L2A'::text, 'Other'::text])));
+ALTER TABLE public.shared_products ADD CONSTRAINT shared_products_level_check CHECK ((product_level = ANY (ARRAY['L1B'::text, 'L1C'::text, 'Other'::text])));
 
 -- ---------------------------------------------------------------------------
 -- Foreign keys

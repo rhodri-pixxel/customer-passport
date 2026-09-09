@@ -6896,10 +6896,13 @@ function PocAdder({ pocs, canEdit, onAdd, onDelete }) {
 // The catalog sync only sees scenes cataloged into an Aurora workspace, which
 // is an L2A path — an L1B sent by secure link leaves no trace it can find. Until
 // the sync learns about those, this is where they get written down.
-const SHARED_PRODUCT_LEVELS = ["L1B", "L1C", "L2A", "Other"];
+// L2A is deliberately absent: it reaches customers through the Aurora catalog,
+// which the delivered_images sync already records. Offering it here would only
+// invite a second, hand-typed copy of a delivery the passport already shows.
+const SHARED_PRODUCT_LEVELS = ["L1B", "L1C", "Other"];
 function SharedProductsBlock({ items, canEdit, currentUserName, onAdd, onDelete }) {
   const [open, setOpen] = useState(false);
-  const empty = () => ({ level: "L1B", imageId: "", sharedAt: todayISO(), sharedWith: "", link: "", note: "" });
+  const empty = () => ({ level: "L1B", imageId: "", sharedAt: todayISO(), link: "", note: "" });
   const [form, setForm] = useState(empty());
   const [err, setErr] = useState("");
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
@@ -6916,7 +6919,6 @@ function SharedProductsBlock({ items, canEdit, currentUserName, onAdd, onDelete 
       product_level: form.level,
       image_id: form.imageId.trim() || null,
       shared_at: form.sharedAt || null,
-      shared_with: form.sharedWith.trim() || null,
       link: form.link.trim() || null,
       note: form.note.trim() || null,
       created_by: currentUserName || "You",
@@ -6925,8 +6927,7 @@ function SharedProductsBlock({ items, canEdit, currentUserName, onAdd, onDelete 
     setOpen(false);
   };
 
-  const levelColor = (l) => l === "L1B" ? "var(--se)" : l === "L1C" ? "var(--accent-deep)"
-    : l === "L2A" ? "var(--forest)" : "var(--muted)";
+  const levelColor = (l) => l === "L1B" ? "var(--se)" : l === "L1C" ? "var(--accent-deep)" : "var(--muted)";
   const fld = { width:"100%", border:"1px solid var(--line)", borderRadius:8, padding:"7px 10px",
     fontFamily:"inherit", fontSize:13, outline:"none" };
   const lbl = { fontFamily:"var(--font-mono)", fontSize:"9.5px", letterSpacing:".1em",
@@ -6937,7 +6938,7 @@ function SharedProductsBlock({ items, canEdit, currentUserName, onAdd, onDelete 
       {list.length ? (
         <div style={{ overflowX:"auto" }}>
           <table className="qc-table">
-            <thead><tr><th>Product</th><th>Image ID</th><th>Shared</th><th>Recipient</th><th>Note</th>{canEdit && <th></th>}</tr></thead>
+            <thead><tr><th>Product</th><th>Image ID</th><th>Shared</th><th>Note</th>{canEdit && <th></th>}</tr></thead>
             <tbody>
               {list.map(r => (
                 <tr key={r.id}>
@@ -6948,8 +6949,7 @@ function SharedProductsBlock({ items, canEdit, currentUserName, onAdd, onDelete 
                       : (r.imageId || "—")}
                   </td>
                   <td style={{ fontSize:11.5, whiteSpace:"nowrap" }}>{asDateInput(r.sharedAt) || "—"}</td>
-                  <td style={{ fontSize:12 }}>{r.sharedWith || "—"}</td>
-                  <td style={{ fontSize:12, color:"var(--muted)", maxWidth:280 }}>{r.note || "—"}</td>
+                  <td style={{ fontSize:12, color:"var(--muted)", maxWidth:380 }}>{r.note || "—"}</td>
                   {canEdit && (
                     <td style={{ whiteSpace:"nowrap" }}>
                       <button onClick={() => onDelete(r.id)} title="Remove"
@@ -6989,15 +6989,10 @@ function SharedProductsBlock({ items, canEdit, currentUserName, onAdd, onDelete 
               <input type="date" value={form.sharedAt} onChange={e => set("sharedAt", e.target.value)} style={fld} />
             </div>
             <div>
-              <div className="k" style={lbl}>Shared with</div>
-              <input value={form.sharedWith} onChange={e => set("sharedWith", e.target.value)}
-                placeholder="Who at the customer" style={fld} />
+              <div className="k" style={lbl}>Link (optional)</div>
+              <input value={form.link} onChange={e => set("link", e.target.value)}
+                placeholder="Secure link / bucket path, if there is one" style={fld} />
             </div>
-          </div>
-          <div style={{ marginBottom:10 }}>
-            <div className="k" style={lbl}>Link (optional)</div>
-            <input value={form.link} onChange={e => set("link", e.target.value)}
-              placeholder="Secure link / bucket path, if there is one" style={fld} />
           </div>
           <div style={{ marginBottom:10 }}>
             <div className="k" style={lbl}>Note</div>
@@ -9131,7 +9126,7 @@ function PassportDetail({ data, onBack, canEdit, canPostNote, onRefresh, onAssig
       })),
       sharedProducts: (sharedProducts || []).map(sp => ({
         id: sp.id, level: sp.product_level, imageId: sp.image_id || "",
-        sharedAt: sp.shared_at || "", sharedWith: sp.shared_with || "",
+        sharedAt: sp.shared_at || "",
         link: sp.link || "", note: sp.note || "", by: sp.created_by || "",
       })),
       deliveredImages: (deliveredImages || []).map(di => ({
